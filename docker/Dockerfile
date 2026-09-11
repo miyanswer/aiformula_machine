@@ -94,15 +94,15 @@ USER root
 
 # Configure system-wide ROS 2 environment for all shells (interactive, non-interactive, and login)
 RUN echo "source /opt/ros/humble/setup.bash" >> /etc/bash.bashrc \
-    && echo "if [ -f /aiformula_ws/install/setup.bash ]; then source /aiformula_ws/install/setup.bash; fi" >> /etc/bash.bashrc \
+    && echo "if [ -f /aiformula_machine/install/setup.bash ]; then source /aiformula_machine/install/setup.bash; fi" >> /etc/bash.bashrc \
     && mkdir -p /etc/profile.d \
     && echo "source /opt/ros/humble/setup.bash" > /etc/profile.d/ros.sh \
-    && echo "if [ -f /aiformula_ws/install/setup.bash ]; then source /aiformula_ws/install/setup.bash; fi" >> /etc/profile.d/ros.sh \
+    && echo "if [ -f /aiformula_machine/install/setup.bash ]; then source /aiformula_machine/install/setup.bash; fi" >> /etc/profile.d/ros.sh \
     && chmod +x /etc/profile.d/ros.sh
 
 # Configure .bashrc for rosuser (prepend to ensure it runs even for non-interactive subshells)
 RUN sed -i '1i source /opt/ros/humble/setup.bash' /home/$USERNAME/.bashrc \
-    && echo "if [ -f /aiformula_ws/install/setup.bash ]; then source /aiformula_ws/install/setup.bash; fi" >> /home/$USERNAME/.bashrc \
+    && echo "if [ -f /aiformula_machine/install/setup.bash ]; then source /aiformula_machine/install/setup.bash; fi" >> /home/$USERNAME/.bashrc \
     && echo "eval \"\$(register-python-argcomplete3 ros2)\"" >> /home/$USERNAME/.bashrc \
     && echo "eval \"\$(register-python-argcomplete3 colcon)\"" >> /home/$USERNAME/.bashrc \
     && echo "export ROS_DOMAIN_ID=100" >> /home/$USERNAME/.bashrc
@@ -127,8 +127,8 @@ COPY docker/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 # Workspace directory
-WORKDIR /aiformula_ws
-RUN chown -R $USERNAME:$USERNAME /aiformula_ws 2>/dev/null || true
+WORKDIR /aiformula_machine
+RUN chown -R $USERNAME:$USERNAME /aiformula_machine 2>/dev/null || true
 
 USER $USERNAME
 

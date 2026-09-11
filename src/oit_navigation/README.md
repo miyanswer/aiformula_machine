@@ -80,7 +80,7 @@ flowchart TD
 
 ### 1. ビルド & 環境設定
 ```bash
-# Docker コンテナ内 (/aiformula_ws) で実行
+# Docker コンテナ内 (/aiformula_machine) で実行
 colcon build --packages-select oit_navigation --symlink-install
 source install/setup.bash
 ```

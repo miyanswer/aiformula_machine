@@ -1,5 +1,5 @@
 services:
-  aiformula_ws:
+  aiformula_machine:
     build:
       context: .
       dockerfile: docker/Dockerfile
@@ -7,9 +7,9 @@ services:
         USERNAME: rosuser
         USER_UID: 1000
         USER_GID: 1000
-    image: aiformula_ws:humble
-    container_name: aiformula_ws_humble
-    hostname: aiformula-humble
+    image: aiformula_machine:humble
+    container_name: aiformula_machine_humble
+    hostname: aiformula-machine
     stdin_open: true
     tty: true
     privileged: true
@@ -26,10 +26,10 @@ services:
       - QT_X11_NO_MITSHM=1
     volumes:
       # Mount workspace
-      - .:/aiformula_ws
+      - .:/aiformula_machine
       # Persistent bash history
       - bash_history:/home/rosuser/.bash_history_dir
-    working_dir: /aiformula_ws
+    working_dir: /aiformula_machine
 
 volumes:
   bash_history:

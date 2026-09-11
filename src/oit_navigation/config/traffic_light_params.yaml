@@ -1,7 +1,7 @@
 /**:
   ros__parameters:
     # 1. YOLO モデル設定
-    model_path: "/aiformula_ws/models/traffic_light.pt"
+    model_path: "/aiformula_machine/models/traffic_light.pt"
     device: "cpu"                 # "cpu" / "mps" (Apple Silicon) / "0" (CUDA)
     imgsz: 640
     conf_threshold: 0.35

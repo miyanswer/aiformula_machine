@@ -32,11 +32,13 @@ DEFAULT_PORT = int(os.environ.get("VERIFICATION_GUI_PORT", "8090"))
 def _find_default_mp4_dir() -> str:
     """Find an existing mp4 folder without hardcoding one fixed layout.
 
-    "/aiformula_ws/mp4" only exists inside the Docker container (see
-    compose.yaml: ".:/aiformula_ws"). Running this GUI directly on the host,
-    or from a workspace mounted elsewhere, needs other candidates checked too.
+    "/aiformula_machine/mp4" only exists inside this project's Docker container
+    (see compose.yaml: ".:/aiformula_machine"). Running this GUI directly on
+    the host, or from a workspace mounted elsewhere, needs other candidates
+    checked too - including the older "/aiformula_ws" mount name.
     """
     candidates = [os.environ.get("AIFORMULA_MP4_DIR")]
+    candidates.append("/aiformula_machine/mp4")
     candidates.append("/aiformula_ws/mp4")
     # This file lives at <workspace_root>/src/oit_navigation/oit_navigation/verification_gui.py
     here = os.path.dirname(os.path.abspath(__file__))
@@ -46,7 +48,7 @@ def _find_default_mp4_dir() -> str:
     for candidate in candidates:
         if candidate and os.path.isdir(candidate):
             return candidate
-    return "/aiformula_ws/mp4"
+    return "/aiformula_machine/mp4"
 
 
 DEFAULT_MP4_DIR = _find_default_mp4_dir()

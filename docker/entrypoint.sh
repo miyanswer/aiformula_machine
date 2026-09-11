@@ -7,8 +7,8 @@ if [ -f "/opt/ros/humble/setup.bash" ]; then
 fi
 
 # Source workspace environment if built
-if [ -f "/aiformula_ws/install/setup.bash" ]; then
-    source "/aiformula_ws/install/setup.bash"
+if [ -f "/aiformula_machine/install/setup.bash" ]; then
+    source "/aiformula_machine/install/setup.bash"
 fi
 
 # Set virtual display

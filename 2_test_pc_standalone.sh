@@ -24,7 +24,7 @@ else
     echo "========================================="
     
     # コンテナが起動しているか確認
-    if ! docker compose ps --services --filter "status=running" | grep -q "aiformula_ws"; then
+    if ! docker compose ps --services --filter "status=running" | grep -q "aiformula_machine"; then
         echo "[INFO] Starting Docker container..."
         docker compose up -d
     fi
@@ -43,6 +43,6 @@ else
     echo "  Web GUI: http://localhost:8080 (ブラウザでRViz2等の画面が確認できます)"
     echo "========================================="
 
-    docker compose exec aiformula_ws bash -c \
+    docker compose exec aiformula_machine bash -c \
         "source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 launch oit_navigation video_test.launch.py ${VIDEO_ARG} use_device:=${DEVICE} rviz:=true"
 fi

@@ -62,7 +62,7 @@ aiformula_machine/
 docker compose up -d
 
 # コンテナのシェルに入る場合
-docker compose exec aiformula_ws bash
+docker compose exec aiformula_machine bash
 ```
 
 > **🌐 ブラウザでアクセス可能な Web UI:**
@@ -90,7 +90,7 @@ ros2 run oit_navigation verification_gui
 ./2_test_pc_standalone.sh
 
 # 任意の動画パスやデバイスを指定する場合:
-./2_test_pc_standalone.sh /aiformula_ws/mp4/custom_video.mp4 cpu
+./2_test_pc_standalone.sh /aiformula_machine/mp4/custom_video.mp4 cpu
 ```
 👉 ブラウザで [http://localhost:8080](http://localhost:8080) を開くと、リアルタイムに白線認識結果や緑色の目標走行ラインが RViz2 に描画されます。
 
