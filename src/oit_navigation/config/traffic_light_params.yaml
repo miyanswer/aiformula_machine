@@ -1,0 +1,36 @@
+/**:
+  ros__parameters:
+    # 1. YOLO モデル設定
+    model_path: "/aiformula_ws/models/traffic_light.pt"
+    device: "cpu"                 # "cpu" / "mps" (Apple Silicon) / "0" (CUDA)
+    imgsz: 640
+    conf_threshold: 0.35
+    iou_threshold: 0.45
+
+    # 2. トピック設定
+    image_topic: "/aiformula_sensing/zed_node/left_image/undistorted/compressed"
+    base_topic: "/aiformula_perception/traffic_light"
+    publish_annotated_image: true
+
+    # 3. 画面占有率 -> 距離 の逆算モデル
+    #    occupancy = bbox_height_px / image_height_px
+    #    distance  = distance_coeff / occupancy
+    #    distance_coeff の決定は優先順: distance_coeff > focal_length_y > vertical_fov_deg
+    real_height_m: 0.32          # 信号機の実寸縦幅 [m] (1辺32cmの正方形規格)
+
+    # --- カメラ: mp4/shihou_video_2026_08_24_15_37_28.mp4 で実測キャリブレーション ---
+    # 信号(1辺32cm)までの実距離20mの地点から撮影した動画から、
+    # 全検出フレームのbbox高さ平均(約35.8px @1920x1080, conf>=0.5)を用いて
+    # focal_length_y = 20m * 35.8px / 0.32m ≈ 2238.5px として逆算した値。
+    # ZED X 実機を使う場合は camera_info の K[4] (fy) に置き換えること:
+    #   ros2 topic echo -f /aiformula_sensing/zed_node/left_image/camera_info --field k
+    # グラブ解像度が HD1200 の場合は reference_image_height を 1200 に、
+    # SVGA(960x600) の場合は focal_length_y を解像度比で換算して変更。
+    focal_length_y: 2238.5       # 実測キャリブレーション済み垂直焦点距離 [px]
+    reference_image_height: 1080 # focal_length_y の基準画像高さ [px] (この動画も1920x1080)
+
+    vertical_fov_deg: 0.0        # focal_length_y<=0 のときの代替: 垂直画角 [deg] (ZED X HD1080 ~= 72.7)
+    distance_coeff: 0.0          # >0 で距離係数 k [m] を直接指定 (既知距離で実測キャリブレーション時)
+    min_occupancy: 0.0001        # ゼロ除算防止用の最小占有率
+    max_valid_distance: 50.0     # 有効距離の上限 [m]
+    smoothing_alpha: 0.7         # 指数平滑化 (EMA) 係数 (1.0 でフィルタ無効)

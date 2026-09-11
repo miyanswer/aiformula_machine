@@ -1,0 +1,46 @@
+/**:
+  ros__parameters:
+    # 1. Perception Topic Inputs & Outputs
+    input_image_topic: "/aiformula_sensing/zed_node/left_image/undistorted/compressed"
+    mask_image_topic: "/aiformula_perception/object_road_detector/mask_image"
+    annotated_image_topic: "/aiformula_visualization/object_road_detector/annotated_image"
+
+    # 2. Control Topic Outputs (ai_formula topic_list standard)
+    cmd_vel_topic: "/aiformula_control/handle_controller/cmd_vel"
+    status_topic: "/aiformula_control/lane_tracker/status"
+
+    # 3. Visualization Outputs (ai_formula standard)
+    marker_topic: "/aiformula_visualization/lane_target_marker"
+    path_topic: "/aiformula_visualization/target_trajectory"
+
+    # Frame IDs (sample_vehicle standard)
+    robot_frame_id: "base_link"
+
+    # 4. YOLOP Lane Detection Parameters
+    weight_path: "/aiformula_ws/models/shiho_lane_mask_v2_best.pth"
+    use_device: "cpu"            # "cpu" or "0" (CUDA GPU)
+    roi_mode: "mask_top"         # "none", "mask_top" (Method A), "crop_bottom" (Method B)
+    top_cut_ratio: 0.45
+    conf_thresh: 0.30
+    frame_skip: 2                # Infer every N frames (2 = 1 frame skip)
+    frame_skip: 2                # Infer 1 in every N frames to keep CPU load low
+    max_inference_hz: 8.0        # Max inference frequency in Hz
+
+    # 5. Camera & BEV Physical Projection Geometry (ZED X sample_vehicle calibrated)
+    camera_height: 0.56          # Ground clearance [m]
+    dist_min: 1.15               # Forward minimum distance [m]
+    dist_max: 10.0               # Forward maximum distance [m]
+    lateral_max: 5.0             # Lateral half-width (+-5.0m) [m]
+    lane_width: 3.5              # Road / Lane width [m]
+
+    # 6. 2-Point Anchor Control (Origin Anchor + 5.0m Preview Anchor)
+    lookahead_distance: 5.0      # Forward preview distance [m]
+    target_linear_speed: 1.0     # Default forward velocity [m/s]
+    angular_gain: 0.85           # Curvature steering gain
+    cross_track_gain: 0.95       # Origin cross-track error correction gain
+    max_angular_speed: 1.5       # Max angular velocity [rad/s]
+    max_angular_accel: 4.0       # Acceleration slew rate limit [rad/s^2]
+
+    # 7. Fallback & Rates
+    data_timeout: 0.8            # Fallback timeout if no mask received [sec]
+    control_rate_hz: 20.0        # Control loop frequency [Hz]

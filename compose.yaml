@@ -1,0 +1,35 @@
+services:
+  aiformula_ws:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+      args:
+        USERNAME: rosuser
+        USER_UID: 1000
+        USER_GID: 1000
+    image: aiformula_ws:humble
+    container_name: aiformula_ws_humble
+    hostname: aiformula-humble
+    stdin_open: true
+    tty: true
+    privileged: true
+    ipc: host
+    ports:
+      - "8080:8080"
+      - "8090:8090"
+    environment:
+      - ROS_DOMAIN_ID=100
+      - PYTHONUNBUFFERED=1
+      - HISTFILE=/home/rosuser/.bash_history_dir/.bash_history
+      - DISPLAY=:1
+      - LIBGL_ALWAYS_SOFTWARE=1
+      - QT_X11_NO_MITSHM=1
+    volumes:
+      # Mount workspace
+      - .:/aiformula_ws
+      # Persistent bash history
+      - bash_history:/home/rosuser/.bash_history_dir
+    working_dir: /aiformula_ws
+
+volumes:
+  bash_history:
