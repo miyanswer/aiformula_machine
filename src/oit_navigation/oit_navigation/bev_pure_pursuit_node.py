@@ -89,6 +89,10 @@ class BEVPurePursuitNode(Node):
         self.lane_markers_pub = self.create_publisher(MarkerArray, '/aiformula_visualization/detected_lane_lines', 10)
         self.path_pub = self.create_publisher(Path, self.path_topic, 10)
         self.bev_img_pub = self.create_publisher(Image, '/aiformula_visualization/bev_annotated_image', qos_img)
+        self.annotated_mask_pub = self.create_publisher(Image, self.annotated_mask_image_topic, qos_img)
+        self.lane_left_pub = self.create_publisher(Path, self.lane_line_left_topic, 10)
+        self.lane_right_pub = self.create_publisher(Path, self.lane_line_right_topic, 10)
+        self.lane_center_pub = self.create_publisher(Path, self.lane_line_center_topic, 10)
 
         # ROS Subscriber (Direct YOLOP mask image)
         self.create_subscription(Image, self.mask_image_topic, self._mask_cb, qos_img)
@@ -104,11 +108,20 @@ class BEVPurePursuitNode(Node):
     def _declare_parameters(self):
         # Topics
         self.declare_parameter('mask_image_topic', '/aiformula_perception/object_road_detector/mask_image')
-        self.declare_parameter('cmd_vel_topic', '/aiformula_control/handle_controller/cmd_vel')
+        # Autonomous steering output feeds the "mpc" input of twist_mux (see
+        # sample_launchers/launch/twist_mux.launch.py), which arbitrates it against
+        # the gamepad/handle_controller inputs before it ever reaches motor_controller.
+        self.declare_parameter('cmd_vel_topic', '/aiformula_control/extremum_seeking_mpc/cmd_vel')
         self.declare_parameter('status_topic', '/aiformula_control/lane_tracker/status')
 
         self.declare_parameter('marker_topic', '/aiformula_visualization/lane_target_marker')
         self.declare_parameter('path_topic', '/aiformula_visualization/target_trajectory')
+
+        # Lane-line outputs (unified with topic_list.yaml's perception.lane_lines.*)
+        self.declare_parameter('annotated_mask_image_topic', '/aiformula_perception/lane_line_publisher/annotated_mask_image')
+        self.declare_parameter('lane_line_left_topic', '/aiformula_perception/lane_line_publisher/lane_lines/left')
+        self.declare_parameter('lane_line_right_topic', '/aiformula_perception/lane_line_publisher/lane_lines/right')
+        self.declare_parameter('lane_line_center_topic', '/aiformula_perception/lane_line_publisher/lane_lines/center')
 
         # Frame IDs
         self.declare_parameter('robot_frame_id', 'base_link')
@@ -139,6 +152,11 @@ class BEVPurePursuitNode(Node):
         self.status_topic = p('status_topic').value
         self.marker_topic = p('marker_topic').value
         self.path_topic = p('path_topic').value
+
+        self.annotated_mask_image_topic = p('annotated_mask_image_topic').value
+        self.lane_line_left_topic = p('lane_line_left_topic').value
+        self.lane_line_right_topic = p('lane_line_right_topic').value
+        self.lane_line_center_topic = p('lane_line_center_topic').value
 
         self.robot_frame_id = p('robot_frame_id').value
 
@@ -186,9 +204,15 @@ class BEVPurePursuitNode(Node):
 
         # Publish BEV visualization image
         self._publish_bev_image(annotated_bev)
+        self._publish_annotated_mask_image(annotated_bev)
 
         # Publish 3D Lane Line Strips to RViz
         self._publish_detected_lane_markers(left_pts, right_pts)
+
+        # Publish raw lane-line point tracks (unified perception.lane_lines.* topics)
+        self._publish_lane_line_path(self.lane_left_pub, left_pts)
+        self._publish_lane_line_path(self.lane_right_pub, right_pts)
+        self._publish_lane_line_path(self.lane_center_pub, target_center)
 
         if target_center is None or len(target_center) < 2:
             self._handle_fallback(dt)
@@ -386,6 +410,34 @@ class BEVPurePursuitNode(Node):
             self.bev_img_pub.publish(img_msg)
         except Exception:
             pass
+
+    def _publish_annotated_mask_image(self, annotated_bev: np.ndarray):
+        try:
+            img_msg = cv2_to_imgmsg(
+                annotated_bev,
+                encoding='bgr8',
+                frame_id=self.robot_frame_id,
+                stamp=self.get_clock().now().to_msg()
+            )
+            self.annotated_mask_pub.publish(img_msg)
+        except Exception:
+            pass
+
+    def _publish_lane_line_path(self, publisher, points: Optional[np.ndarray]):
+        path_msg = Path()
+        path_msg.header.frame_id = self.robot_frame_id
+        path_msg.header.stamp = self.get_clock().now().to_msg()
+
+        if points is not None:
+            for pt in points:
+                pose = PoseStamped()
+                pose.header = path_msg.header
+                pose.pose.position.x = float(pt[0])
+                pose.pose.position.y = float(pt[1])
+                pose.pose.orientation.w = 1.0
+                path_msg.poses.append(pose)
+
+        publisher.publish(path_msg)
 
     def _publish_status(self, v_cmd: float, w_cmd: float, origin_pt: Tuple[float, float], far_pt: Tuple[float, float], mode: str):
         msg = String()

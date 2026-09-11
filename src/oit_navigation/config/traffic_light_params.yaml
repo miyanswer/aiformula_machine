@@ -10,6 +10,7 @@
     # 2. トピック設定
     image_topic: "/aiformula_sensing/zed_node/left_image/undistorted/compressed"
     base_topic: "/aiformula_perception/traffic_light"
+    visualization_topic: "/aiformula_visualization/traffic_light"
     publish_annotated_image: true
 
     # 3. 画面占有率 -> 距離 の逆算モデル

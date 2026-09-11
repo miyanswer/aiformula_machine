@@ -6,12 +6,19 @@
     annotated_image_topic: "/aiformula_visualization/object_road_detector/annotated_image"
 
     # 2. Control Topic Outputs (ai_formula topic_list standard)
-    cmd_vel_topic: "/aiformula_control/handle_controller/cmd_vel"
+    # "mpc" input of twist_mux - see sample_launchers/launch/twist_mux.launch.py
+    cmd_vel_topic: "/aiformula_control/extremum_seeking_mpc/cmd_vel"
     status_topic: "/aiformula_control/lane_tracker/status"
 
     # 3. Visualization Outputs (ai_formula standard)
     marker_topic: "/aiformula_visualization/lane_target_marker"
     path_topic: "/aiformula_visualization/target_trajectory"
+
+    # 3b. Lane-line publisher outputs (ai_formula topic_list standard)
+    annotated_mask_image_topic: "/aiformula_perception/lane_line_publisher/annotated_mask_image"
+    lane_line_left_topic: "/aiformula_perception/lane_line_publisher/lane_lines/left"
+    lane_line_right_topic: "/aiformula_perception/lane_line_publisher/lane_lines/right"
+    lane_line_center_topic: "/aiformula_perception/lane_line_publisher/lane_lines/center"
 
     # Frame IDs (sample_vehicle standard)
     robot_frame_id: "base_link"

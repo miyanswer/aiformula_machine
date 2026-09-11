@@ -16,7 +16,7 @@ def _cleanup_old_processes():
     """Kill lingering zombie processes from previous launches to prevent accumulation."""
     try:
         subprocess.run(
-            ["pkill", "-9", "-f", "video_publisher|yolop_lane_detector|bev_pure_pursuit_node|traffic_light_distance_node|rviz2|robot_state_publisher|joint_state_publisher"],
+            ["pkill", "-9", "-f", "video_publisher|yolop_lane_detector|bev_pure_pursuit_node|traffic_light_distance_node|object_publisher_node|rviz2|robot_state_publisher|joint_state_publisher"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,
@@ -96,6 +96,11 @@ def generate_launch_description():
             default_value=default_traffic_light_params_file,
             description="Path to traffic light distance params YAML",
         ),
+        DeclareLaunchArgument(
+            "object_publisher",
+            default_value="true",
+            description="Launch the object_publisher_node (converts YOLOP boxes to ObjectInfo)",
+        ),
     ]
 
     # 1. 車両 TF 座標系ブロードキャスター
@@ -168,7 +173,17 @@ def generate_launch_description():
         ],
     )
 
-    # 6. RViz2 可視化 (closing RViz shuts down all pipeline nodes cleanly)
+    # 6. 検出Rect -> 世界座標ObjectInfo変換ノード
+    object_publisher_node = Node(
+        package="oit_navigation",
+        executable="object_publisher_node",
+        name="object_publisher_node",
+        output="screen",
+        condition=IfCondition(LaunchConfiguration("object_publisher")),
+        parameters=[LaunchConfiguration("params_file")],
+    )
+
+    # 7. RViz2 可視化 (closing RViz shuts down all pipeline nodes cleanly)
     rviz_node = Node(
         package="rviz2",
         executable="rviz2",
@@ -187,6 +202,7 @@ def generate_launch_description():
             yolop_node,
             bev_controller_node,
             traffic_light_distance_node,
+            object_publisher_node,
             rviz_node,
         ]
     )

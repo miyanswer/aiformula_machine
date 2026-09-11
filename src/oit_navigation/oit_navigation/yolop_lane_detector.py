@@ -23,6 +23,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 from sensor_msgs.msg import Image, CompressedImage
 from std_msgs.msg import Header
+from aiformula_interfaces.msg import Rect, RectMultiArray
 
 from oit_navigation.utils.image_util import cv2_to_imgmsg, imgmsg_to_cv2
 from common_python.workspace_paths import default_workspace_asset, resolve_workspace_asset
@@ -144,6 +145,7 @@ class YOLOPLaneDetectorNode(Node):
 
         self.lane_mask_image_pub = self.create_publisher(Image, self.mask_image_topic, 1)
         self.annotated_image_pub = self.create_publisher(Image, self.annotated_image_topic, 1)
+        self.bbox_pub = self.create_publisher(RectMultiArray, self.bounding_box_topic, 1)
 
         # Start dedicated inference worker thread
         self._worker_thread = threading.Thread(target=self._inference_worker, daemon=True)
@@ -159,6 +161,7 @@ class YOLOPLaneDetectorNode(Node):
         self.declare_parameter('input_image_topic', '/aiformula_sensing/zed_node/left_image/undistorted')
         self.declare_parameter('mask_image_topic', '/aiformula_perception/object_road_detector/mask_image')
         self.declare_parameter('annotated_image_topic', '/aiformula_visualization/object_road_detector/annotated_image')
+        self.declare_parameter('bounding_box_topic', '/aiformula_perception/object_road_detector/rect')
 
         self.declare_parameter(
             'weight_path',
@@ -178,6 +181,7 @@ class YOLOPLaneDetectorNode(Node):
         self.input_image_topic = p('input_image_topic').value
         self.mask_image_topic = p('mask_image_topic').value
         self.annotated_image_topic = p('annotated_image_topic').value
+        self.bounding_box_topic = p('bounding_box_topic').value
 
         self.weight_path = p('weight_path').value
         self.device_str = str(p('use_device').value)
@@ -290,9 +294,28 @@ class YOLOPLaneDetectorNode(Node):
             draw_lane_lines(annotated_image, cur_mask)
         if cur_boxes is not None and cur_shape is not None:
             draw_bounding_boxes(annotated_image, cur_boxes, cur_shape)
+            self._publish_bounding_boxes(cur_boxes, cur_shape, annotated_image.shape, msg.header)
 
         annotated_msg = cv2_to_imgmsg(annotated_image, encoding='bgr8', frame_id=msg.header.frame_id, stamp=msg.header.stamp)
         self.annotated_image_pub.publish(annotated_msg)
+
+    def _publish_bounding_boxes(self, objects: torch.Tensor, input_image_shape: torch.Size,
+                                 output_image_shape, header: Header):
+        """Publish YOLOP's detected vehicle/obstacle boxes so downstream nodes (e.g. an
+        object_publisher-style node) can turn them into world-frame ObjectInfo without
+        re-running detection."""
+        rect_array = RectMultiArray()
+        rect_array.header = header
+        bboxes_coords = scale_coords(input_image_shape, objects[:, :4], output_image_shape).round()
+        for bboxes_coord in bboxes_coords:
+            x1, y1, x2, y2 = (float(v) for v in bboxes_coord[:4])
+            rect = Rect()
+            rect.x = x1
+            rect.y = y1
+            rect.width = x2 - x1
+            rect.height = y2 - y1
+            rect_array.rects.append(rect)
+        self.bbox_pub.publish(rect_array)
 
     def _inference_worker(self):
         """Dedicated inference loop that runs only when a new frame is queued (decimated)."""

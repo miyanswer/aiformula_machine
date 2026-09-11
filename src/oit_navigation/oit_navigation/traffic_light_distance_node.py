@@ -13,12 +13,14 @@ traffic_light_distance_node.py - 信号機検出 & 画面占有率による距�
     (distance_coeff は real_height_m と vertical_fov_deg から自動算出、
      または distance_coeff パラメータで直接指定)
 
-配信トピック (base_topic = /aiformula_perception/traffic_light):
+配信トピック:
+    (base_topic = /aiformula_perception/traffic_light)
     <base>/nearest_distance  std_msgs/Float32  最も近い信号機までの距離 [m]
     <base>/red_distance      std_msgs/Float32  最も近い赤信号までの距離 [m]
     <base>/green_distance    std_msgs/Float32  最も近い青信号までの距離 [m]
     <base>/status            std_msgs/String   検出内容の JSON
-    <base>/annotated_image   sensor_msgs/Image 可視化画像 (publish_annotated_image=true 時)
+    (visualization_topic = /aiformula_visualization/traffic_light)
+    <viz>/annotated_image    sensor_msgs/Image 可視化画像 (publish_annotated_image=true 時)
 """
 
 import json
@@ -80,7 +82,7 @@ class TrafficLightDistanceNode(Node):
         self.pub_green_distance = self.create_publisher(Float32, f"{self.base_topic}/green_distance", 10)
         self.pub_status = self.create_publisher(String, f"{self.base_topic}/status", 10)
         self.pub_annotated = (
-            self.create_publisher(Image, f"{self.base_topic}/annotated_image", 1)
+            self.create_publisher(Image, f"{self.visualization_topic}/annotated_image", 1)
             if self.publish_annotated_image else None
         )
 
@@ -113,6 +115,9 @@ class TrafficLightDistanceNode(Node):
         # Topics
         self.declare_parameter('image_topic', '/aiformula_sensing/zed_node/left_image/undistorted/compressed')
         self.declare_parameter('base_topic', '/aiformula_perception/traffic_light')
+        # Images are visualization output, not raw perception data - keep them in the
+        # same "visualization" namespace as every other annotated_image topic.
+        self.declare_parameter('visualization_topic', '/aiformula_visualization/traffic_light')
         self.declare_parameter('publish_annotated_image', True)
 
         # 画面占有率 -> 距離 の逆算モデル (優先順: distance_coeff > focal_length_y > vertical_fov_deg)
@@ -135,6 +140,7 @@ class TrafficLightDistanceNode(Node):
 
         self.image_topic = str(p('image_topic').value)
         self.base_topic = str(p('base_topic').value).rstrip('/')
+        self.visualization_topic = str(p('visualization_topic').value).rstrip('/')
         self.publish_annotated_image = bool(p('publish_annotated_image').value)
 
         self.real_height_m = float(p('real_height_m').value)

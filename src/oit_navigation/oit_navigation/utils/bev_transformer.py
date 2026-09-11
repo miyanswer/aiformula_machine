@@ -80,6 +80,13 @@ class BEVTransformer:
         bev = cv2.warpPerspective(image_or_mask, self.M, (self.bev_w, self.bev_h), flags=flags)
         return bev
 
+    def image_px_to_robot_xy(self, px: float, py: float) -> Tuple[float, float]:
+        """Converts a raw camera-image pixel (not yet warped to BEV) to robot metric (x, y)."""
+        pt = np.array([[[px, py]]], dtype=np.float32)
+        warped = cv2.perspectiveTransform(pt, self.M)
+        u, v = float(warped[0, 0, 0]), float(warped[0, 0, 1])
+        return self.bev_px_to_robot_xy(u, v)
+
     def bev_px_to_robot_xy(self, u: float, v: float) -> Tuple[float, float]:
         """
         Converts BEV pixel coordinate (u, v) to robot metric coordinates (x, y) in base_link.

@@ -25,6 +25,11 @@ perception:
     left: "/aiformula_perception/lane_line_publisher/lane_lines/left"
     right: "/aiformula_perception/lane_line_publisher/lane_lines/right"
     center: "/aiformula_perception/lane_line_publisher/lane_lines/center"
+  traffic_light:
+    nearest_distance: "/aiformula_perception/traffic_light/nearest_distance"
+    red_distance: "/aiformula_perception/traffic_light/red_distance"
+    green_distance: "/aiformula_perception/traffic_light/green_distance"
+    status: "/aiformula_perception/traffic_light/status"
 
 control:
   joy:
@@ -46,3 +51,4 @@ visualization:
   annotated_image: "/aiformula_visualization/object_road_detector/annotated_image"
   aiformula_pilot: "/aiformula_visualization/zed/left_image/compressed"
   unfiltered_object: "/aiformula_visualization/object_publisher/unfiltered_object"
+  traffic_light_annotated_image: "/aiformula_visualization/traffic_light/annotated_image"

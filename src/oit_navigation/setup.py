@@ -30,6 +30,8 @@ setup(
             'bev_lane_tracker = oit_navigation.bev_pure_pursuit_node:main',
             'pure_pursuit_controller = oit_navigation.bev_pure_pursuit_node:main',
             'traffic_light_distance_node = oit_navigation.traffic_light_distance_node:main',
+            'object_publisher_node = oit_navigation.object_publisher_node:main',
+            'image_compressor_node = oit_navigation.image_compressor_node:main',
             'verification_gui = oit_navigation.verification_gui:main',
         ],
     },
