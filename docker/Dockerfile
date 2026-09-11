@@ -55,8 +55,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Install AI / Perception and Hardware Communication dependencies
 # numpy/opencv-python are re-pinned in the second command too: without it, pip lets
-# ultralytics pull in numpy>=2 + a matching opencv-python, which breaks the apt-installed
-# cv_bridge and matplotlib (compiled against numpy 1.x) with "_ARRAY_API not found".
+# ultralytics (and separately onnx, needed by export_tensorrt.py) pull in numpy>=2 +
+# a matching opencv-python, which breaks the apt-installed cv_bridge and matplotlib
+# (compiled against numpy 1.x) with "_ARRAY_API not found".
 RUN pip3 install --no-cache-dir \
     "setuptools<70.0.0" \
     "numpy<2.0.0" \
@@ -71,7 +72,8 @@ RUN pip3 install --no-cache-dir \
     scipy \
     tqdm \
     tensorboardX \
-    seaborn
+    seaborn \
+    onnx
 
 # Setup noVNC default index
 RUN ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html 2>/dev/null || true

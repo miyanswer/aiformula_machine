@@ -13,3 +13,4 @@ pyserial>=3.5
 tensorboardX>=2.6
 seaborn>=0.13.0
 yacs>=0.1.8
+onnx>=1.16.0,<2.0  # needed by oit_navigation/export_tensorrt.py to build the TensorRT engine
