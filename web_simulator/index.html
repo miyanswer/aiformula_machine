@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AIFormula Web Simulator</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #1a1d21;
+    font-family: -apple-system, "Hiragino Kaku Gothic ProN", "Segoe UI", sans-serif;
+  }
+  #scene-container {
+    position: fixed;
+    inset: 0;
+  }
+  #scene-container canvas {
+    display: block;
+  }
+  #pip-frame {
+    position: fixed;
+    top: 12px;
+    right: 12px;
+    width: 320px;
+    height: 180px;
+    border: 2px solid rgba(127, 209, 255, 0.6);
+    border-radius: 6px;
+    pointer-events: none;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  }
+  #pip-label {
+    position: absolute;
+    top: -1px;
+    left: -1px;
+    background: rgba(20, 22, 26, 0.82);
+    color: #7fd1ff;
+    font-size: 11px;
+    padding: 2px 6px;
+    border-radius: 0 0 6px 0;
+  }
+  @media (max-width: 700px) {
+    #pip-frame { width: 45vw; height: calc(45vw * 9 / 16); }
+  }
+  #hud {
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    width: 300px;
+    color: #e8e8e8;
+    background: rgba(20, 22, 26, 0.82);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+    padding: 14px 16px;
+    font-size: 13px;
+    line-height: 1.5;
+    user-select: none;
+    backdrop-filter: blur(4px);
+  }
+  #hud h1 {
+    font-size: 14px;
+    margin: 0 0 10px 0;
+    color: #7fd1ff;
+    font-weight: 600;
+  }
+  #hud .row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+  }
+  #hud label {
+    width: 78px;
+    flex-shrink: 0;
+    color: #aab2bd;
+  }
+  #hud input[type="text"] {
+    flex: 1;
+    min-width: 0;
+    background: #0f1114;
+    border: 1px solid #3a3f47;
+    color: #e8e8e8;
+    border-radius: 4px;
+    padding: 4px 6px;
+    font-size: 12px;
+  }
+  #hud button {
+    background: #2a6f97;
+    border: none;
+    color: #fff;
+    border-radius: 4px;
+    padding: 5px 10px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  #hud button:hover { background: #35839c; }
+  #hud button:disabled { background: #444; cursor: default; }
+  #status-dot {
+    display: inline-block;
+    width: 9px;
+    height: 9px;
+    border-radius: 50%;
+    background: #888;
+    margin-right: 6px;
+  }
+  #status-dot.connected { background: #4caf50; }
+  #status-dot.connecting { background: #e0a800; }
+  #status-dot.error { background: #e05353; }
+  .divider {
+    border-top: 1px solid rgba(255,255,255,0.12);
+    margin: 10px 0;
+  }
+  #telemetry span { color: #7fd1ff; font-weight: 600; }
+  #keys {
+    display: flex;
+    gap: 6px;
+    margin-top: 8px;
+  }
+  .key {
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 1px solid #3a3f47;
+    border-radius: 4px;
+    background: #0f1114;
+    color: #888;
+    font-weight: 600;
+  }
+  .key.active {
+    background: #2a6f97;
+    color: #fff;
+    border-color: #7fd1ff;
+  }
+  #help {
+    margin-top: 10px;
+    color: #8b929c;
+    font-size: 11px;
+  }
+</style>
+</head>
+<body>
+<div id="scene-container"></div>
+
+<div id="pip-frame"><div id="pip-label">機体カメラ視点</div></div>
+
+<div id="hud">
+  <h1>AIFormula Web Simulator</h1>
+
+  <div class="row">
+    <label>rosbridge URL</label>
+    <input id="ros-url" type="text" value="ws://localhost:9090">
+  </div>
+  <div class="row">
+    <label>cmd_vel topic</label>
+    <input id="ros-topic" type="text" value="/aiformula_control/gamepad/cmd_vel">
+  </div>
+  <div class="row">
+    <span id="status-dot"></span>
+    <span id="status-text">未接続</span>
+    <button id="connect-btn" style="margin-left:auto">接続</button>
+  </div>
+
+  <div class="divider"></div>
+
+  <div id="telemetry">
+    速度: <span id="speed-val">0.00</span> m/s &nbsp;|&nbsp;
+    角速度: <span id="yaw-rate-val">0.00</span> rad/s
+  </div>
+
+  <div id="keys">
+    <div class="key" data-key="KeyW">W</div>
+    <div class="key" data-key="KeyA">A</div>
+    <div class="key" data-key="KeyS">S</div>
+    <div class="key" data-key="KeyD">D</div>
+  </div>
+
+  <div id="help">
+    W/S: 前進・後退（押しっぱなしで加速）<br>
+    A/D: 左右旋回<br>
+    離すと惰性走行、R キーで位置リセット<br>
+    マウスドラッグ: 視点回転 / ホイール: ズーム
+  </div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./vendor/three/three.module.js",
+    "three/addons/": "./vendor/three/examples/jsm/"
+  }
+}
+</script>
+<script src="./vendor/roslib.min.js"></script>
+<script type="module" src="./js/simulator.js"></script>
+</body>
+</html>

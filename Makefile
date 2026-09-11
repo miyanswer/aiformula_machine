@@ -13,6 +13,7 @@ PKG ?=
 .PHONY: help up down stop restart build rebuild ps logs bash shell root-bash root \
         build-ws colcon clean test-pc test test-tl test-yolop test-control \
         verification-gui vgui open-rviz gui open-vgui stop-nodes kill \
+        rosbridge sim open-sim \
         bringup-hw bringup-all teleop
 
 # Default: Show help message
@@ -49,7 +50,9 @@ help:
 	@echo "  make vgui             Run Web Verification GUI (open http://localhost:8090)"
 	@echo "  make stop-nodes       Kill all running ROS 2 nodes inside container"
 	@echo ""
-	@echo "🌐 [Browser Web UIs]"
+	@echo "🌐 [Web Simulator & UIs]"
+	@echo "  make rosbridge        Start rosbridge WebSocket server on port 9090"
+	@echo "  make open-sim (sim)   Open 3D Web Simulator in browser (http://localhost:8000)"
 	@echo "  make open-rviz (gui)  Open RViz2 Web Display in browser (http://localhost:8080)"
 	@echo "  make open-vgui        Open Web Verification GUI in browser (http://localhost:8090)"
 	@echo ""
@@ -194,6 +197,16 @@ open-rviz gui:
 
 open-vgui:
 	@which open > /dev/null && open http://localhost:8090 || which xdg-open > /dev/null && xdg-open http://localhost:8090 || echo "Open http://localhost:8090 in your browser"
+
+open-sim sim:
+	@which open > /dev/null && open http://localhost:8000 || which xdg-open > /dev/null && xdg-open http://localhost:8000 || echo "Open http://localhost:8000 in your browser"
+
+rosbridge:
+	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		docker compose up -d; \
+	fi
+	docker compose exec $(SERVICE_NAME) bash -c \
+		"source /opt/ros/humble/setup.bash && ros2 launch rosbridge_server rosbridge_websocket_launch.xml"
 
 # ------------------------------------------------------------------------------
 # Real Vehicle Operations

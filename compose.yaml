@@ -17,6 +17,7 @@ services:
     ports:
       - "8080:8080"
       - "8090:8090"
+      - "9090:9090"
     environment:
       - ROS_DOMAIN_ID=100
       - PYTHONUNBUFFERED=1
