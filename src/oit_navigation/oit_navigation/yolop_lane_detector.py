@@ -126,6 +126,7 @@ class YOLOPLaneDetectorNode(Node):
         # Threading buffers & cache for smooth real-time streaming
         self._infer_msg: Optional[Tuple[np.ndarray, Header]] = None
         self._msg_lock = threading.Lock()
+        self._infer_event = threading.Event()
         self._is_inferring = False
         self._latest_mask: Optional[np.ndarray] = None
         self._latest_boxes: Optional[torch.Tensor] = None
@@ -159,9 +160,10 @@ class YOLOPLaneDetectorNode(Node):
         self._worker_thread = threading.Thread(target=self._inference_worker, daemon=True)
         self._worker_thread.start()
 
+        backend = "TensorRT" if self.trt_runner is not None else "PyTorch"
         self.get_logger().info(
             f"YOLOP Lane Detector Initialized: topic={self.input_image_topic} (compressed={self.is_compressed}), "
-            f"device={self.device_str}, frame_skip={self.frame_skip}, "
+            f"device={self.device_str}, backend={backend}, frame_skip={self.frame_skip}, "
             f"weights={self.weight_path}, roi_mode={self.roi_mode}"
         )
 
@@ -184,6 +186,13 @@ class YOLOPLaneDetectorNode(Node):
         self.declare_parameter('norm_std', [0.229, 0.224, 0.225])
         self.declare_parameter('frame_skip', 1)
 
+        # TensorRT (real-hardware only; see export_tensorrt.py). Requires the
+        # NVIDIA TensorRT Python bindings, which are not installed in this
+        # project's default CPU/dev container - any failure to load falls
+        # back to plain PyTorch automatically.
+        self.declare_parameter('use_tensorrt', False)
+        self.declare_parameter('tensorrt_engine_path', '')  # default: weight_path with .engine extension
+
     def _load_parameters(self):
         p = self.get_parameter
         self.input_image_topic = p('input_image_topic').value
@@ -201,13 +210,14 @@ class YOLOPLaneDetectorNode(Node):
         self.norm_std = list(p('norm_std').value)
         self.frame_skip = max(1, int(p('frame_skip').value))
 
-    def _init_detector(self):
-        if cfg is None or get_net is None:
-            self.get_logger().error("Could not import YOLOP modules!")
-            self.detector = None
-            return
+        self.use_tensorrt = bool(p('use_tensorrt').value)
+        self.tensorrt_engine_path = str(p('tensorrt_engine_path').value)
 
-        # Device selection
+    def _init_detector(self):
+        self.trt_runner = None
+
+        # Device selection & preprocessing transform - needed regardless of
+        # which inference backend ends up running below.
         if self.device_str == 'cpu':
             self.use_device = torch.device('cpu')
         elif torch.cuda.is_available() and self.device_str != 'cpu':
@@ -217,12 +227,28 @@ class YOLOPLaneDetectorNode(Node):
         else:
             self.use_device = torch.device('cpu')
 
-        self.use_half_precision = (self.use_device.type == 'cuda')
-
         self.transform = transforms.Compose([
             transforms.ToTensor(),
             transforms.Normalize(mean=self.norm_mean, std=self.norm_std),
         ])
+
+        if self.use_tensorrt:
+            self._init_tensorrt_detector()
+            if self.trt_runner is not None:
+                # export_tensorrt.py always builds float32 input/output bindings,
+                # even for an FP16/INT8 engine (the engine handles internal
+                # precision itself) - never half() the input for this path.
+                self.use_half_precision = False
+                self.detector = None
+                return
+            self.get_logger().warning("TensorRT unavailable, falling back to PyTorch inference.")
+
+        self.use_half_precision = (self.use_device.type == 'cuda')
+
+        if cfg is None or get_net is None:
+            self.get_logger().error("Could not import YOLOP modules!")
+            self.detector = None
+            return
 
         # Resolve weights path
         weights = resolve_workspace_asset(self.weight_path)
@@ -260,6 +286,30 @@ class YOLOPLaneDetectorNode(Node):
         self.detector.eval()
         self.get_logger().info("YOLOP Model successfully loaded.")
 
+    def _init_tensorrt_detector(self):
+        """Best-effort TensorRT engine load (see export_tensorrt.py to build one).
+        Requires the NVIDIA TensorRT Python bindings + PyCUDA, which ship with
+        JetPack on real hardware but are never installed in this project's
+        default CPU/dev container - any failure here just leaves self.trt_runner
+        as None so _init_detector falls back to plain PyTorch."""
+        engine_path = self.tensorrt_engine_path
+        if engine_path:
+            engine_path = resolve_workspace_asset(engine_path)
+        else:
+            engine_path = os.path.splitext(resolve_workspace_asset(self.weight_path))[0] + ".engine"
+
+        if not os.path.exists(engine_path):
+            self.get_logger().warning(f"TensorRT engine not found at: {engine_path}")
+            return
+
+        try:
+            from oit_navigation.utils.tensorrt_runtime import TensorRTYOLOPRunner
+            self.trt_runner = TensorRTYOLOPRunner(engine_path)
+            self.get_logger().info(f"TensorRT engine loaded: {engine_path}")
+        except Exception as e:
+            self.get_logger().warning(f"Could not load TensorRT engine ({str(e)}).")
+            self.trt_runner = None
+
     def _image_callback(self, msg):
         """
         Runs at full stream FPS (15 FPS).
@@ -278,11 +328,12 @@ class YOLOPLaneDetectorNode(Node):
         if undistorted_image is None:
             return
 
-        # Queue for heavy inference on every `frame_skip` frames (e.g. 2 frames = 1 inference)
+        # Queue for heavy inference on every `frame_skip` frames (or instantly when worker is idle if frame_skip=1)
         if self.frame_skip <= 1 or (self._frame_count % self.frame_skip == 0):
             with self._msg_lock:
                 if not self._is_inferring:
                     self._infer_msg = (undistorted_image.copy(), msg.header)
+                    self._infer_event.set()
 
         # Get cached mask and boxes
         with self._msg_lock:
@@ -329,8 +380,13 @@ class YOLOPLaneDetectorNode(Node):
         self.bbox_pub.publish(rect_array)
 
     def _inference_worker(self):
-        """Dedicated inference loop that runs only when a new frame is queued (decimated)."""
+        """Dedicated event-driven inference loop that runs immediately when a new frame is available."""
         while rclpy.ok() and self._running:
+            # Wait for event without polling sleep
+            if not self._infer_event.wait(timeout=0.1):
+                continue
+            self._infer_event.clear()
+
             item = None
             with self._msg_lock:
                 if self._infer_msg is not None:
@@ -339,10 +395,9 @@ class YOLOPLaneDetectorNode(Node):
                     self._is_inferring = True
 
             if item is None:
-                time.sleep(0.005)
                 continue
 
-            if self.detector is None:
+            if self.detector is None and self.trt_runner is None:
                 with self._msg_lock:
                     self._is_inferring = False
                 time.sleep(0.05)
@@ -380,9 +435,13 @@ class YOLOPLaneDetectorNode(Node):
         input_image = input_image.unsqueeze(0)
         input_image_size = input_image.shape[2:]
 
-        # Heavy YOLOP Inference
-        with torch.no_grad():
-            object_raw_outputs, _, ll_seg_raw_outputs = self.detector(input_image)
+        # Heavy YOLOP Inference (PyTorch or, on real hardware, a TensorRT engine)
+        if self.trt_runner is not None:
+            raw_detections, ll_seg_raw_outputs = self.trt_runner.infer(input_image)
+        else:
+            with torch.no_grad():
+                det_out, _da_seg, ll_seg_raw_outputs = self.detector(input_image)
+                raw_detections, _features = det_out
 
         # Exact lane decoding
         sub_mask = self.decode_lane_line_output(
@@ -399,7 +458,7 @@ class YOLOPLaneDetectorNode(Node):
         else:
             ll_seg_mask = sub_mask
 
-        bbox_detections = self.decode_object_output(object_raw_outputs)
+        bbox_detections = self.decode_object_output(raw_detections)
 
         t_end = time.perf_counter()
         infer_duration_ms = (t_end - t_start) * 1000.0
@@ -434,11 +493,10 @@ class YOLOPLaneDetectorNode(Node):
         ll_seg_mask = np.array(ll_seg_map.int().squeeze().cpu().numpy(), dtype=np.uint8)
         return ll_seg_mask
 
-    def decode_object_output(self, object_raw_outputs: Tuple[torch.Tensor, list]) -> Optional[torch.Tensor]:
+    def decode_object_output(self, raw_detections: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
         """Exact 2027 Object NMS Decoding."""
-        if object_raw_outputs is None or non_max_suppression is None:
+        if raw_detections is None or non_max_suppression is None:
             return None
-        raw_detections, _ = object_raw_outputs
         batched_detections = non_max_suppression(
             raw_detections,
             conf_thres=self.confidence_threshold,
@@ -450,6 +508,7 @@ class YOLOPLaneDetectorNode(Node):
 
     def destroy_node(self):
         self._running = False
+        self._infer_event.set()
         if hasattr(self, '_worker_thread') and self._worker_thread.is_alive():
             self._worker_thread.join(timeout=0.5)
         super().destroy_node()

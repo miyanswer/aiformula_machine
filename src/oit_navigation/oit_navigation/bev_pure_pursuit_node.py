@@ -94,11 +94,17 @@ class BEVPurePursuitNode(Node):
         self.lane_right_pub = self.create_publisher(Path, self.lane_line_right_topic, 10)
         self.lane_center_pub = self.create_publisher(Path, self.lane_line_center_topic, 10)
 
-        # ROS Subscriber (Direct YOLOP mask image)
+        # ROS Subscriber (Direct YOLOP mask image) - the control step now runs
+        # directly off this callback instead of waiting for the next timer tick,
+        # so steering reacts to a new mask immediately rather than up to one
+        # control period late.
         self.create_subscription(Image, self.mask_image_topic, self._mask_cb, qos_img)
 
-        # Control Loop Timer (20Hz)
-        self.timer = self.create_timer(self.control_period, self._control_loop)
+        # Watchdog: the only thing on a timer now. If no mask arrives for
+        # data_timeout seconds (camera/YOLOP stall), decelerate to a stop -
+        # otherwise the vehicle would just keep coasting on the last command
+        # forever, since nothing would call _mask_cb to trigger a new one.
+        self.watchdog_timer = self.create_timer(max(0.05, self.data_timeout / 2.0), self._watchdog_check)
 
         self.get_logger().info(
             f'AI Formula OIT 2027 2-Point Anchor Controller Initialized: '
@@ -143,7 +149,6 @@ class BEVPurePursuitNode(Node):
 
         # Timing
         self.declare_parameter('data_timeout', 0.8)
-        self.declare_parameter('control_rate_hz', 20.0)
 
     def _load_parameters(self):
         p = self.get_parameter
@@ -174,8 +179,6 @@ class BEVPurePursuitNode(Node):
         self.max_angular_accel = float(p('max_angular_accel').value)
 
         self.data_timeout = float(p('data_timeout').value)
-        rate = float(p('control_rate_hz').value)
-        self.control_period = 1.0 / max(1.0, rate)
 
     def _mask_cb(self, msg: Image):
         try:
@@ -186,15 +189,25 @@ class BEVPurePursuitNode(Node):
             self.last_mask_time = time.time()
         except Exception as e:
             self.get_logger().warning(f"Error decoding mask_cb image: {str(e)}")
+            return
 
-    def _control_loop(self):
+        self._run_control_step()
+
+    def _watchdog_check(self):
+        """Only fires the fallback (decelerate-to-stop) path when the mask
+        stream has actually stalled. During healthy operation _mask_cb always
+        refreshes last_mask_time before this timer's period elapses, so this
+        is a no-op on every tick."""
+        if self.latest_mask_img is None or (time.time() - self.last_mask_time) > self.data_timeout:
+            now = time.time()
+            dt = now - self.last_control_time
+            self.last_control_time = now
+            self._handle_fallback(dt)
+
+    def _run_control_step(self):
         now = time.time()
         dt = now - self.last_control_time
         self.last_control_time = now
-
-        if self.latest_mask_img is None or (now - self.last_mask_time) > self.data_timeout:
-            self._handle_fallback(dt)
-            return
 
         # 1. Warp Camera Mask directly to 2D BEV
         bev_mask = self.bev_transformer.warp_to_bev(self.latest_mask_img, is_binary=True)

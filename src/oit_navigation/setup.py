@@ -32,6 +32,7 @@ setup(
             'traffic_light_distance_node = oit_navigation.traffic_light_distance_node:main',
             'object_publisher_node = oit_navigation.object_publisher_node:main',
             'image_compressor_node = oit_navigation.image_compressor_node:main',
+            'export_tensorrt = oit_navigation.export_tensorrt:main',
             'verification_gui = oit_navigation.verification_gui:main',
         ],
     },

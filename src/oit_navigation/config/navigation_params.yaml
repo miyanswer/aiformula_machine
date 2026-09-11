@@ -29,9 +29,8 @@
     roi_mode: "mask_top"         # "none", "mask_top" (Method A), "crop_bottom" (Method B)
     top_cut_ratio: 0.45
     conf_thresh: 0.30
-    frame_skip: 2                # Infer every N frames (2 = 1 frame skip)
-    frame_skip: 2                # Infer 1 in every N frames to keep CPU load low
-    max_inference_hz: 8.0        # Max inference frequency in Hz
+    frame_skip: 1                # 1 = Instant Asynchronous Free-run (Infers immediately when worker is ready)
+    max_inference_hz: 15.0       # Max inference frequency in Hz
 
     # 5. Camera & BEV Physical Projection Geometry (ZED X sample_vehicle calibrated)
     camera_height: 0.56          # Ground clearance [m]
@@ -48,6 +47,8 @@
     max_angular_speed: 1.5       # Max angular velocity [rad/s]
     max_angular_accel: 4.0       # Acceleration slew rate limit [rad/s^2]
 
-    # 7. Fallback & Rates
+    # 7. Fallback
+    # Control now runs directly off each incoming mask (see bev_pure_pursuit_node's
+    # _mask_cb), not a fixed-rate timer. data_timeout only gates the watchdog that
+    # decelerates the vehicle if the mask stream itself stalls.
     data_timeout: 0.8            # Fallback timeout if no mask received [sec]
-    control_rate_hz: 20.0        # Control loop frequency [Hz]
