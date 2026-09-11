@@ -84,13 +84,21 @@ def plot_one_box(image: np.ndarray, bbox_coords: torch.Tensor, color: Tuple[int,
     cv2.rectangle(image, top_left, bottom_right, color, thickness, lineType=cv2.LINE_AA)
 
 
-def draw_bounding_boxes(image: np.ndarray, objects: torch.Tensor, input_image_shape: torch.Size) -> None:
-    """Exact replication of object_road_detector_util.draw_bounding_boxes."""
-    if objects is None or len(objects) == 0:
+def draw_bounding_boxes(image: np.ndarray, scaled_boxes: torch.Tensor) -> None:
+    """Exact replication of object_road_detector_util.draw_bounding_boxes.
+    `scaled_boxes` must already be in `image`'s pixel space (see scale_detected_boxes)."""
+    if scaled_boxes is None or len(scaled_boxes) == 0:
         return
-    bboxes_coords = scale_coords(input_image_shape, objects[:, :4], image.shape).round()
-    for bboxes_coord in bboxes_coords:
+    for bboxes_coord in scaled_boxes:
         plot_one_box(image, bboxes_coord)
+
+
+def scale_detected_boxes(objects: torch.Tensor, input_image_shape: torch.Size, output_image_shape) -> torch.Tensor:
+    """Scales raw detection boxes into `output_image_shape` pixel space.
+    Clones first: `scale_coords` mutates its coords argument in place, and `objects` is a
+    view into the node's shared/cached detection tensor - mutating it would corrupt the
+    cache for every subsequent frame until the next inference cycle overwrites it."""
+    return scale_coords(input_image_shape, objects[:, :4].clone(), output_image_shape).round()
 
 
 class YOLOPLaneDetectorNode(Node):
@@ -293,21 +301,24 @@ class YOLOPLaneDetectorNode(Node):
         if cur_mask is not None:
             draw_lane_lines(annotated_image, cur_mask)
         if cur_boxes is not None and cur_shape is not None:
-            draw_bounding_boxes(annotated_image, cur_boxes, cur_shape)
-            self._publish_bounding_boxes(cur_boxes, cur_shape, annotated_image.shape, msg.header)
+            try:
+                scaled_boxes = scale_detected_boxes(cur_boxes, cur_shape, annotated_image.shape)
+                draw_bounding_boxes(annotated_image, scaled_boxes)
+                self._publish_bounding_boxes(scaled_boxes, msg.header)
+            except Exception as e:
+                # Never let box scaling/publishing block the always-wanted lane overlay below.
+                self.get_logger().warning(f"Error processing detection boxes: {str(e)}")
 
         annotated_msg = cv2_to_imgmsg(annotated_image, encoding='bgr8', frame_id=msg.header.frame_id, stamp=msg.header.stamp)
         self.annotated_image_pub.publish(annotated_msg)
 
-    def _publish_bounding_boxes(self, objects: torch.Tensor, input_image_shape: torch.Size,
-                                 output_image_shape, header: Header):
-        """Publish YOLOP's detected vehicle/obstacle boxes so downstream nodes (e.g. an
-        object_publisher-style node) can turn them into world-frame ObjectInfo without
-        re-running detection."""
+    def _publish_bounding_boxes(self, scaled_boxes: torch.Tensor, header: Header):
+        """Publish YOLOP's detected vehicle/obstacle boxes so downstream nodes (e.g.
+        object_publisher_node) can turn them into world-frame ObjectInfo without
+        re-running detection. `scaled_boxes` must already be in output-image pixel space."""
         rect_array = RectMultiArray()
         rect_array.header = header
-        bboxes_coords = scale_coords(input_image_shape, objects[:, :4], output_image_shape).round()
-        for bboxes_coord in bboxes_coords:
+        for bboxes_coord in scaled_boxes:
             x1, y1, x2, y2 = (float(v) for v in bboxes_coord[:4])
             rect = Rect()
             rect.x = x1

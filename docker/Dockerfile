@@ -54,11 +54,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install AI / Perception and Hardware Communication dependencies
+# numpy/opencv-python are re-pinned in the second command too: without it, pip lets
+# ultralytics pull in numpy>=2 + a matching opencv-python, which breaks the apt-installed
+# cv_bridge and matplotlib (compiled against numpy 1.x) with "_ARRAY_API not found".
 RUN pip3 install --no-cache-dir \
     "setuptools<70.0.0" \
     "numpy<2.0.0" \
     torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu \
     && pip3 install --no-cache-dir \
+    "numpy<2.0.0" \
+    "opencv-python<4.10" \
     python-can \
     pyserial \
     ultralytics \

@@ -6,8 +6,8 @@ Panels:
       Expanded:
         - /Visual Perception Views1
         - /TF1/Frames1
-      Splitter Ratio: 0.40
-    Tree Height: 250
+      Splitter Ratio: 0.4000000059604645
+    Tree Height: 197
   - Class: rviz_common/Views
     Expanded:
       - /Current View1
@@ -38,7 +38,7 @@ Visualization Manager:
       Position Transformer: ""
       Selectable: true
       Size (Pixels): 3
-      Size (m): 0.01
+      Size (m): 0.009999999776482582
       Style: Flat Squares
       Topic:
         Depth: 5
@@ -79,11 +79,11 @@ Visualization Manager:
       Class: rviz_default_plugins/Path
       Color: 0; 255; 255
       Enabled: true
-      Head Diameter: 0.3
-      Head Length: 0.2
-      Length: 0.3
+      Head Diameter: 0.30000001192092896
+      Head Length: 0.20000000298023224
+      Length: 0.30000001192092896
       Line Style: Lines
-      Line Width: 0.08
+      Line Width: 0.07999999821186066
       Name: Target BEV Trajectory Path
       Offset:
         X: 0
@@ -91,9 +91,9 @@ Visualization Manager:
         Z: 0
       Pose Color: 255; 85; 255
       Pose Style: None
-      Radius: 0.03
-      Shaft Diameter: 0.1
-      Shaft Length: 0.1
+      Radius: 0.029999999329447746
+      Shaft Diameter: 0.10000000149011612
+      Shaft Length: 0.10000000149011612
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -205,7 +205,7 @@ Visualization Manager:
       Color: 127; 127; 127
       Enabled: true
       Line Style:
-        Line Width: 0.03
+        Line Width: 0.029999999329447746
         Value: Lines
       Name: Minor grid
       Normal Cell Count: 0
@@ -223,7 +223,7 @@ Visualization Manager:
       Color: 255; 255; 255
       Enabled: true
       Line Style:
-        Line Width: 0.03
+        Line Width: 0.029999999329447746
         Value: Lines
       Name: Major grid
       Normal Cell Count: 0
@@ -243,12 +243,16 @@ Visualization Manager:
   Name: root
   Tools:
     - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
     - Class: rviz_default_plugins/MoveCamera
     - Class: rviz_default_plugins/Select
     - Class: rviz_default_plugins/FocusCamera
     - Class: rviz_default_plugins/Measure
       Line color: 128; 128; 0
     - Class: rviz_default_plugins/SetInitialPose
+      Covariance x: 0.25
+      Covariance y: 0.25
+      Covariance yaw: 0.06853891909122467
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -279,7 +283,7 @@ Visualization Manager:
       Class: rviz_default_plugins/Orbit
       Distance: 12
       Enable Stereo Rendering:
-        Stereo Eye Separation: 0.06
+        Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
@@ -288,24 +292,27 @@ Visualization Manager:
         Y: 0
         Z: 0
       Focal Shape Fixed Size: true
-      Focal Shape Size: 0.05
+      Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
-      Near Clip Distance: 0.01
-      Pitch: 1.15
+      Near Clip Distance: 0.009999999776482582
+      Pitch: 1.149999976158142
       Target Frame: base_link
       Value: Orbit (rviz)
-      Yaw: 3.141592
+      Yaw: 3.141592025756836
     Saved: ~
 Window Geometry:
+  BEV 2D Annotated Image:
+    collapsed: false
   Displays:
+    collapsed: false
+  Front Camera Detection Image:
     collapsed: false
   Height: 1000
   Hide Left Dock: false
   Hide Right Dock: false
-  Selection:
-    collapsed: false
-  Tool Properties:
+  QMainWindow State: 000000ff00000000fd0000000100000000000001b60000038dfc0200000005fb00000020005200610077002000460072006f006e0074002000430061006d006500720061010000003e000000990000002800fffffffb0000003800460072006f006e0074002000430061006d00650072006100200044006500740065006300740069006f006e00200049006d00610067006501000000dd0000009a0000002800fffffffb0000002c00420045005600200032004400200041006e006e006f0074006100740065006400200049006d006100670065010000017d000000990000002800fffffffb000000100044006900730070006c006100790073010000021c00000102000000cb00fffffffb0000000a005600690065007700730100000324000000a7000000a500ffffff000004840000038d00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  Raw Front Camera:
     collapsed: false
   Views:
     collapsed: false
