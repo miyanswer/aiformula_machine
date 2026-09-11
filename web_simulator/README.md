@@ -82,6 +82,9 @@ source /opt/ros/humble/setup.bash
 ros2 topic list                                          # トピックが出現しているか
 ros2 topic echo /aiformula_control/gamepad/cmd_vel        # 実際に Twist が流れているか
 ros2 topic hz /aiformula_control/gamepad/cmd_vel          # 20Hz 前後で来ているか
+
+ros2 topic hz /aiformula_sensing/zed_node/left_image/undistorted/compressed   # 画像も10Hz前後で来ているか
+ros2 run rqt_image_view rqt_image_view /aiformula_sensing/zed_node/left_image/undistorted/compressed  # 映像を目視確認
 ```
 
 ブラウザで W/A/S/D を押しながら `ros2 topic echo` を見て、`linear.x` / `angular.z` の値が
@@ -106,6 +109,25 @@ ros2 topic hz /aiformula_control/gamepad/cmd_vel          # 20Hz 前後で来て
 画面右上には、車体に搭載された ZED カメラ位置（`config/zedx/extrinsic/extrinsic.yaml`
 の取り付けオフセット）から前方を見た**機体カメラ視点**をピクチャーインピクチャーで
 常時表示します。
+
+## 機体カメラ映像の配信（compressed image）
+
+rosbridge 接続中は、右上 PiP と同じ機体カメラ視点を `sensor_msgs/msg/CompressedImage`
+として配信し続けます。
+
+- **topic**: `/aiformula_sensing/zed_node/left_image/undistorted/compressed`
+  （実車の `topic_list.yaml` にある `sensing.zedx.left_image.undistorted` に、
+  `image_transport` の標準的な `/compressed` サフィックスを付けたもの）
+- **frame_id**: `zed_left_camera_optical_frame`（`zed_macro.xacro` の命名に準拠）
+- **format**: `jpeg`（画質 0.7、解像度 640x360 固定、[`js/simulator.js`](js/simulator.js)
+  の `CAPTURE_WIDTH` / `CAPTURE_HEIGHT` / `CAPTURE_JPEG_QUALITY` で調整可能）
+- **配信レート**: 10Hz（`IMAGE_PUBLISH_HZ`）
+
+実装は、PiP 表示用とは別のオフスクリーン `WebGLRenderer` でオンボードカメラを毎回
+640x360 に描画し、`canvas.toDataURL('image/jpeg', ...)` で得た base64 文字列を
+そのまま `CompressedImage.data` に詰めて publish しています（rosbridge はバイト配列
+フィールドに base64 文字列が来ると自動でデコードするため、これで正しい
+`uint8[]` として届きます）。
 
 ## 車体モデル・物理パラメータ
 

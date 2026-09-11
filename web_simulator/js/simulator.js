@@ -38,6 +38,27 @@ camera.position.set(-2.5, 2.0, 2.5);
 const onboardCamera = new THREE.PerspectiveCamera(80, 16 / 9, 0.05, 500);
 const pipFrame = document.getElementById('pip-frame');
 
+// Offscreen capture of the onboard camera, published as a compressed image
+// topic mirroring the real vehicle's naming (see topic_list.yaml
+// sensing.zedx.left_image.undistorted) with the standard image_transport
+// "/compressed" suffix. Rendered separately from the on-screen PiP view so
+// its resolution/rate can be tuned independently of the display.
+const CAPTURE_WIDTH = 640;
+const CAPTURE_HEIGHT = 360;
+const CAPTURE_JPEG_QUALITY = 0.7;
+const captureCanvas = document.createElement('canvas');
+captureCanvas.width = CAPTURE_WIDTH;
+captureCanvas.height = CAPTURE_HEIGHT;
+const captureRenderer = new THREE.WebGLRenderer({
+  canvas: captureCanvas,
+  antialias: true,
+  preserveDrawingBuffer: true, // required so toDataURL() can read back this frame
+});
+captureRenderer.setPixelRatio(1);
+captureRenderer.setSize(CAPTURE_WIDTH, CAPTURE_HEIGHT, false);
+captureRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+captureRenderer.toneMappingExposure = 1.0;
+
 const renderer = new THREE.WebGLRenderer({ antialias: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setSize(window.innerWidth, window.innerHeight);
@@ -193,6 +214,9 @@ window.addEventListener('keyup', (e) => {
 // ---------------------------------------------------------------------------
 let ros = null;
 let cmdVelTopic = null;
+let compressedImageTopic = null;
+const IMAGE_TOPIC_NAME = '/aiformula_sensing/zed_node/left_image/undistorted/compressed';
+const IMAGE_FRAME_ID = 'zed_left_camera_optical_frame'; // matches zed_macro.xacro
 
 const urlInput = document.getElementById('ros-url');
 const topicInput = document.getElementById('ros-topic');
@@ -209,6 +233,7 @@ function disconnect() {
   if (ros) ros.close();
   ros = null;
   cmdVelTopic = null;
+  compressedImageTopic = null;
   connectBtn.textContent = '接続';
   setStatus('', '未接続');
 }
@@ -228,6 +253,11 @@ function connect() {
       name: topicInput.value,
       messageType: 'geometry_msgs/msg/Twist',
     });
+    compressedImageTopic = new ROSLIB.Topic({
+      ros,
+      name: IMAGE_TOPIC_NAME,
+      messageType: 'sensor_msgs/msg/CompressedImage',
+    });
   });
 
   ros.on('error', () => {
@@ -238,6 +268,7 @@ function connect() {
 
   ros.on('close', () => {
     cmdVelTopic = null;
+    compressedImageTopic = null;
     connectBtn.disabled = false;
     connectBtn.textContent = '接続';
     setStatus('', '未接続');
@@ -262,6 +293,37 @@ function publishCmdVel(v, omega) {
     new ROSLIB.Message({
       linear: { x: v, y: 0.0, z: 0.0 },
       angular: { x: 0.0, y: 0.0, z: omega },
+    })
+  );
+}
+
+const IMAGE_PUBLISH_HZ = 10;
+const IMAGE_PUBLISH_INTERVAL = 1 / IMAGE_PUBLISH_HZ;
+let imagePublishAccumulator = 0;
+
+// Renders the onboard camera to an offscreen canvas and publishes it as a
+// sensor_msgs/msg/CompressedImage. rosbridge decodes a base64 *string* into
+// the message's uint8[] "data" field for byte-array fields, so a stripped
+// canvas.toDataURL() output is exactly what's expected here.
+function publishCompressedImage() {
+  if (!compressedImageTopic) return;
+
+  onboardCamera.aspect = CAPTURE_WIDTH / CAPTURE_HEIGHT;
+  onboardCamera.updateProjectionMatrix();
+  captureRenderer.render(scene, onboardCamera);
+
+  const dataUrl = captureCanvas.toDataURL('image/jpeg', CAPTURE_JPEG_QUALITY);
+  const base64Data = dataUrl.slice(dataUrl.indexOf(',') + 1);
+  const nowMs = Date.now();
+
+  compressedImageTopic.publish(
+    new ROSLIB.Message({
+      header: {
+        stamp: { sec: Math.floor(nowMs / 1000), nanosec: (nowMs % 1000) * 1e6 },
+        frame_id: IMAGE_FRAME_ID,
+      },
+      format: 'jpeg',
+      data: base64Data,
     })
   );
 }
@@ -343,6 +405,12 @@ function animate() {
   if (publishAccumulator >= PUBLISH_INTERVAL) {
     publishAccumulator = 0;
     publishCmdVel(physics.v, physics.omega);
+  }
+
+  imagePublishAccumulator += dt;
+  if (imagePublishAccumulator >= IMAGE_PUBLISH_INTERVAL) {
+    imagePublishAccumulator = 0;
+    publishCompressedImage();
   }
 
   speedVal.textContent = physics.v.toFixed(2);
