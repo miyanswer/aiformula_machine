@@ -1,0 +1,209 @@
+# ==============================================================================
+# aiformula_machine Docker Management Makefile
+# ==============================================================================
+
+SERVICE_NAME := aiformula_machine
+CONTAINER_NAME := aiformula_machine_humble
+
+# Parameters with defaults
+DEVICE ?= cpu
+VIDEO ?=
+PKG ?=
+
+.PHONY: help up down stop restart build rebuild ps logs bash shell root-bash root \
+        build-ws colcon clean test-pc test test-tl test-yolop test-control \
+        verification-gui vgui open-rviz gui open-vgui stop-nodes kill \
+        bringup-hw bringup-all teleop
+
+# Default: Show help message
+help:
+	@echo "========================================================================"
+	@echo "  🏎️  AI Formula Machine - Docker & Development Commands"
+	@echo "========================================================================"
+	@echo ""
+	@echo "📦 [Container Management]"
+	@echo "  make up               Start Docker container in background"
+	@echo "  make down             Stop and remove Docker containers"
+	@echo "  make stop             Stop running container"
+	@echo "  make restart          Restart Docker container"
+	@echo "  make build            Build Docker image"
+	@echo "  make rebuild          Rebuild Docker image without cache"
+	@echo "  make ps               Check container status"
+	@echo "  make logs             Show container logs"
+	@echo ""
+	@echo "💻 [Shell Access]"
+	@echo "  make bash             Open interactive bash shell as 'rosuser'"
+	@echo "  make root             Open interactive bash shell as 'root'"
+	@echo ""
+	@echo "🔨 [Build & Clean]"
+	@echo "  make build-ws         Build all packages (colcon build --symlink-install)"
+	@echo "  make build-pkg PKG=xx Build specific package (e.g. make build-pkg PKG=oit_navigation)"
+	@echo "  make clean            Remove build/, install/, and log/ directories"
+	@echo ""
+	@echo "🧪 [PC Standalone Video Test]"
+	@echo "  make test-pc          Run full pipeline test (YOLOP + Control + Traffic Light + RViz)"
+	@echo "                        Options: DEVICE=cpu|cuda|mps  VIDEO=/path/to/video.mp4"
+	@echo "  make test-tl          Test traffic light detection & distance estimation"
+	@echo "  make test-yolop       Test YOLOP lane segmentation only"
+	@echo "  make test-control     Test lane detection + Pure Pursuit control"
+	@echo "  make vgui             Run Web Verification GUI (open http://localhost:8090)"
+	@echo "  make stop-nodes       Kill all running ROS 2 nodes inside container"
+	@echo ""
+	@echo "🌐 [Browser Web UIs]"
+	@echo "  make open-rviz (gui)  Open RViz2 Web Display in browser (http://localhost:8080)"
+	@echo "  make open-vgui        Open Web Verification GUI in browser (http://localhost:8090)"
+	@echo ""
+	@echo "🏎️ [Real Vehicle Operations]"
+	@echo "  make bringup-hw       Launch hardware nodes only"
+	@echo "  make bringup-all      Launch hardware + full autonomous stack"
+	@echo "  make teleop           Run keyboard teleoperation"
+	@echo "========================================================================"
+
+# ------------------------------------------------------------------------------
+# Container Management
+# ------------------------------------------------------------------------------
+
+up:
+	docker compose up -d
+
+down:
+	docker compose down
+
+stop:
+	docker compose stop
+
+restart: down up
+
+build:
+	docker compose build
+
+rebuild:
+	docker compose build --no-cache
+
+ps:
+	docker compose ps
+
+logs:
+	docker compose logs -f $(SERVICE_NAME)
+
+# ------------------------------------------------------------------------------
+# Shell Access (Auto-starts container if not running)
+# ------------------------------------------------------------------------------
+
+bash shell exec:
+	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		echo "[INFO] Container is not running. Starting $(SERVICE_NAME)..."; \
+		docker compose up -d; \
+	fi
+	docker compose exec -it $(SERVICE_NAME) bash
+
+root root-bash:
+	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		echo "[INFO] Container is not running. Starting $(SERVICE_NAME)..."; \
+		docker compose up -d; \
+	fi
+	docker compose exec -it -u root $(SERVICE_NAME) bash
+
+# ------------------------------------------------------------------------------
+# Build & Workspace Management
+# ------------------------------------------------------------------------------
+
+build-ws colcon:
+	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		docker compose up -d; \
+	fi
+	docker compose exec $(SERVICE_NAME) bash -c "source /opt/ros/humble/setup.bash && colcon build --symlink-install"
+
+build-pkg:
+	@if [ -z "$(PKG)" ]; then \
+		echo "[ERROR] Please specify PKG. Example: make build-pkg PKG=oit_navigation"; \
+		exit 1; \
+	fi
+	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		docker compose up -d; \
+	fi
+	docker compose exec $(SERVICE_NAME) bash -c "source /opt/ros/humble/setup.bash && colcon build --packages-select $(PKG) --symlink-install"
+
+clean:
+	rm -rf build install log
+
+# ------------------------------------------------------------------------------
+# Standalone Video Testing (PC Verification)
+# ------------------------------------------------------------------------------
+
+test-pc test:
+	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		docker compose up -d; \
+	fi
+	docker compose exec $(SERVICE_NAME) bash -c \
+		"source /opt/ros/humble/setup.bash && source install/setup.bash && \
+		 ros2 launch oit_navigation video_test.launch.py \
+		 $(if $(VIDEO),video_path:=$(VIDEO),) \
+		 use_device:=$(DEVICE) \
+		 rviz:=true"
+
+test-tl:
+	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		docker compose up -d; \
+	fi
+	docker compose exec $(SERVICE_NAME) bash -c \
+		"source /opt/ros/humble/setup.bash && source install/setup.bash && \
+		 ros2 launch oit_navigation traffic_light_video_test.launch.py \
+		 $(if $(VIDEO),video_path:=$(VIDEO),) \
+		 device:=$(DEVICE)"
+
+test-yolop:
+	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		docker compose up -d; \
+	fi
+	docker compose exec $(SERVICE_NAME) bash -c \
+		"source /opt/ros/humble/setup.bash && source install/setup.bash && \
+		 ros2 launch oit_navigation yolop_video_test.launch.py \
+		 $(if $(VIDEO),video_path:=$(VIDEO),) \
+		 use_device:=$(DEVICE)"
+
+test-control:
+	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		docker compose up -d; \
+	fi
+	docker compose exec $(SERVICE_NAME) bash -c \
+		"source /opt/ros/humble/setup.bash && source install/setup.bash && \
+		 ros2 launch oit_navigation video_test.launch.py \
+		 $(if $(VIDEO),video_path:=$(VIDEO),) \
+		 use_device:=$(DEVICE) \
+		 traffic_light:=false \
+		 rviz:=true"
+
+vgui verification-gui:
+	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		docker compose up -d; \
+	fi
+	docker compose exec $(SERVICE_NAME) bash -c \
+		"source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 run oit_navigation verification_gui"
+
+stop-nodes kill:
+	docker compose exec $(SERVICE_NAME) bash -c \
+		"pkill -9 -f 'ros2|rviz2|video_publisher|yolop_lane_detector|bev_pure_pursuit_node|traffic_light|robot_state_publisher|joint_state_publisher' || true"
+
+# ------------------------------------------------------------------------------
+# Web GUI Launchers (Host browser)
+# ------------------------------------------------------------------------------
+
+open-rviz gui:
+	@which open > /dev/null && open http://localhost:8080 || which xdg-open > /dev/null && xdg-open http://localhost:8080 || echo "Open http://localhost:8080 in your browser"
+
+open-vgui:
+	@which open > /dev/null && open http://localhost:8090 || which xdg-open > /dev/null && xdg-open http://localhost:8090 || echo "Open http://localhost:8090 in your browser"
+
+# ------------------------------------------------------------------------------
+# Real Vehicle Operations
+# ------------------------------------------------------------------------------
+
+bringup-hw:
+	bash bash/1_bringup_hardware.sh
+
+bringup-all:
+	bash bash/3_bringup_all_nodes.sh
+
+teleop:
+	bash bash/teleop_keyboard.sh
