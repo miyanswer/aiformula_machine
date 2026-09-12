@@ -21,7 +21,7 @@ const CASTER_SCALE = 0.10; // caster_back_macro.xacro SCALE
 
 // ZED camera mount, relative to base_link (config/zedx/extrinsic/extrinsic.yaml
 // "position"; the camera_joint origin has rpy=0, so it faces straight ahead).
-const CAMERA_MOUNT = { x: 0.055, y: 0.0, z: 0.56 };
+const CAMERA_MOUNT = { x: 0.055, y: 0.0, z: 0.44 };
 
 // ---------------------------------------------------------------------------
 // Scene setup
@@ -640,6 +640,10 @@ const odomYawVal = document.getElementById('odom-yaw');
 const odomVxVal = document.getElementById('odom-vx');
 const odomVyVal = document.getElementById('odom-vy');
 const odomWzVal = document.getElementById('odom-wz');
+const canRpmRVal = document.getElementById('can-rpm-r');
+const canRpmLVal = document.getElementById('can-rpm-l');
+const canTargetRpmRVal = document.getElementById('can-target-rpm-r');
+const canTargetRpmLVal = document.getElementById('can-target-rpm-l');
 
 // Odometry trail: the gyro_odometry_publisher's estimated ground track,
 // drawn on the ground plane. In this noise-free sim it coincides exactly
@@ -749,7 +753,7 @@ function animate() {
   const mountRos = {
     x: physics.x + CAMERA_MOUNT.x * Math.cos(physics.yaw) - CAMERA_MOUNT.y * Math.sin(physics.yaw),
     y: physics.y + CAMERA_MOUNT.x * Math.sin(physics.yaw) + CAMERA_MOUNT.y * Math.cos(physics.yaw),
-    z: CAMERA_MOUNT.z,
+    z: VEHICLE.wheelRadius + CAMERA_MOUNT.z, // 0.12m (base_link height) + 0.44m = 0.56m above ground
   };
   const lookAheadRos = {
     x: mountRos.x + Math.cos(physics.yaw) * LOOK_DIST,
@@ -801,6 +805,16 @@ function animate() {
   odomVxVal.textContent = `${(physics.v * Math.cos(physics.yaw)).toFixed(2)} m/s`;
   odomVyVal.textContent = `${(physics.v * Math.sin(physics.yaw)).toFixed(2)} m/s`;
   odomWzVal.textContent = `${physics.omega.toFixed(2)} rad/s`;
+
+  const wheelCircumference = CAN_WHEEL_DIAMETER * Math.PI;
+  const toRpm = (speedMps) => (speedMps / wheelCircumference) * 60;
+  if (canRpmRVal) canRpmRVal.textContent = `${Math.round(toRpm(right))} rpm`;
+  if (canRpmLVal) canRpmLVal.textContent = `${Math.round(toRpm(left))} rpm`;
+
+  const activeKeys = isCmdVelTimedOut() ? NO_KEYS : keys;
+  const targetSpeeds = physics.targetWheelSpeeds(activeKeys);
+  if (canTargetRpmRVal) canTargetRpmRVal.textContent = `${Math.round(toRpm(targetSpeeds.right))} rpm`;
+  if (canTargetRpmLVal) canTargetRpmLVal.textContent = `${Math.round(toRpm(targetSpeeds.left))} rpm`;
 
   render();
 }

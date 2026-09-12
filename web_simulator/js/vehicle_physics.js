@@ -91,12 +91,35 @@ export class VehiclePhysics {
     this.yaw = Math.atan2(Math.sin(this.yaw), Math.cos(this.yaw));
   }
 
-  // Standard differential-drive wheel speed decomposition.
+  // Standard differential-drive wheel speed decomposition (actual/measured).
   wheelSpeeds() {
     const halfTrack = VEHICLE.track / 2;
     return {
       left: this.v - this.omega * halfTrack,
       right: this.v + this.omega * halfTrack,
+    };
+  }
+
+  // Theoretical / commanded target wheel speeds from active key inputs.
+  targetWheelSpeeds(keys) {
+    let vTarget = 0;
+    let omegaTarget = 0;
+    if (keys.forward && !keys.backward) {
+      vTarget = MAX_SPEED;
+    } else if (keys.backward && !keys.forward) {
+      vTarget = MAX_REVERSE_SPEED;
+    }
+    if (keys.left && !keys.right) {
+      omegaTarget = MAX_ANGULAR;
+    } else if (keys.right && !keys.left) {
+      omegaTarget = -MAX_ANGULAR;
+    }
+    const halfTrack = VEHICLE.track / 2;
+    return {
+      vTarget,
+      omegaTarget,
+      left: vTarget - omegaTarget * halfTrack,
+      right: vTarget + omegaTarget * halfTrack,
     };
   }
 }

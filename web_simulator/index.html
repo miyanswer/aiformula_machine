@@ -233,6 +233,18 @@
     </dl>
   </div>
 
+  <div id="can-panel" class="sensor-panel">
+    <div class="panel-title">CAN 車輪速 (実測値 vs 理論値)</div>
+    <dl class="panel-grid">
+      <dt>実測 CAN (1809 / 0x711)</dt><dd style="color: #aaa;">FB</dd>
+      <dt>├ 右輪 実測 RPM</dt><dd id="can-rpm-r">0 rpm</dd>
+      <dt>└ 左輪 実測 RPM</dt><dd id="can-rpm-l">0 rpm</dd>
+      <dt>理論 CAN (0x210 / 528)</dt><dd style="color: #aaa;">CMD</dd>
+      <dt>├ 右輪 理論 RPM</dt><dd id="can-target-rpm-r">0 rpm</dd>
+      <dt>└ 左輪 理論 RPM</dt><dd id="can-target-rpm-l">0 rpm</dd>
+    </dl>
+  </div>
+
   <div id="keys">
     <div class="key" data-key="KeyW">W</div>
     <div class="key" data-key="KeyA">A</div>

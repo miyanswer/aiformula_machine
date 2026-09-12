@@ -204,38 +204,31 @@ rosbridge 接続中は、右上 PiP と同じ機体カメラ視点を `sensor_ms
   - `twist.twist.angular.z`: IMU の角速度
   - 共分散はすべて 0
 
-  > **注意**: 実際の `gyro_odometry_publisher` は ZED カメラの IMU
-  > (`sensing.zedx.imu`) を購読していますが、本シミュレータは IMU を1つしか
-  > 持たないため、ご指示のとおり VectorNav 側の IMU（`physics.yaw`/`physics.omega`）
-  > を代用しています。また、ホイールスリップやジャイロドリフトのノイズを
-  > モデル化していないため、このオドメトリは常に車体の真の位置と完全に一致します
-  > （実機では両者は徐々にずれていきます）。
+  > **仕様**: `gyro_odometry_publisher` は VectorNav の IMU (`/aiformula_sensing/vectornav/imu`)
+  > および車輪速 CAN (`/aiformula_sensing/vehicle_info`) を購読します。
+  > 本シミュレータでもこれらと同じトピック名・データ形式（REP 103 規約の姿勢・ID 1809のCANフレーム）で
+  > 配信しているため、シミュレータからのセンサデータで実機の ROS 2 ノードをそのまま動作させることができます。
 
 **可視化**: HUD に位置(X/Y)・Yaw・速度(X/Y)・角速度のパネルを表示するほか、
 3D シーン上に**水色の軌跡**としてオドメトリの走行経路を描画します（直近300点、
 0.15秒間隔でサンプリング）。R キーでリセットすると軌跡もクリアされます。
 
-## 車輪速CANの配信
+## 車輪速CANの配信（実測値 vs 理論値）
 
-`odometry_publisher/include/odometry_publisher/wheel.hpp` がデコードする形式に
-合わせて、車輪速を `can_msgs/msg/Frame` として配信します。
+`odometry_publisher/include/odometry_publisher/wheel.hpp` がデコードする形式に合わせて、車輪速を `can_msgs/msg/Frame` として配信します。
 
-- **topic**: `/aiformula_sensing/vehicle_info`（`topic_list.yaml` の
-  `sensing.input_can_data` と同じ）
-- **id**: `1809`（`RPM_ID`。`wheel.hpp` はこのIDのフレームだけを処理します）
-- **data (8バイト)**: `data[0..3]` = 右輪RPM、`data[4..7]` = 左輪RPM、
-  いずれも **符号付き32bit・リトルエンディアン**（実装の `Uint8ArrayToInt`
-  ユニオンと同じレイアウト）
+- **実測値 (Feedback / Measured RPM)**:
+  - **topic**: `/aiformula_sensing/vehicle_info`（`topic_list.yaml` の `sensing.input_can_data`）
+  - **CAN ID**: `1809` (`0x711`、`odometry_publisher` の `RPM_ID`)
+  - **内容**: 70kg 車体の質量・慣性・走行抵抗を受けた**現在の実際の車輪回転数**。
+  - **データ (8バイト)**: `data[0..3]` = 右輪RPM、`data[4..7]` = 左輪RPM（符号付き32bit・リトルエンディアン）
+- **理論値 / 指令値 (Target / Commanded RPM)**:
+  - **CAN ID**: `0x210` (`528`、`motor_controller.py` がモーターアンプへ送る指令)
+  - **内容**: 入力キー（WASD）や自律走行 `cmd_vel` が要求する**目標車輪回転数**。キーを押した瞬間に目標値へ切り替わり、実測値が慣性に従って徐々に追従します。
 - **RPM ⇔ 速度の変換**: `wheel.hpp` 側の decode 式
   `speed = rpm * (1/60) * (diameter * π)` に厳密に合わせ、逆算で
-  `rpm = speed / (diameter * π) * 60` を使用。ここでの `diameter` は
-  `vehicles/sample_vehicle/xacro` の `WHEEL_RADIUS`(0.12m) ではなく、
-  **decode側が実際に使う `config/wheel.yaml` の `wheel.diameter`(0.254m)**
-  を使っています（xacroとyamlの間に既存の半径不一致がありますが、
-  encode/decode双方でyamlの値に揃えることで、実際のノードが本シミュレータの
-  `wheelSpeeds()`(m/s)を正しく復元できるようにしています）
-- **配信レート**: 100Hz（実車のCAN計測周期 ~10ms に合わせた値。IMU/オドメトリ
-  と同様、描画ループとは切り離した専用の `setInterval` で配信）
+  `rpm = speed / (diameter * π) * 60` を使用（`diameter = 0.254m`）。
+- **配信レート**: 100Hz（実車のCAN計測周期 ~10ms に合わせた値）
 
 これを購読する `gyro_odometry_publisher`/`wheel_odometry_publisher` は、
 本シミュレータが配信するオドメトリ(`/aiformula_sensing/gyro_odometry_publisher/odom`)
