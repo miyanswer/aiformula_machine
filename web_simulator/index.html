@@ -129,6 +129,29 @@
     margin: 10px 0;
   }
   #telemetry span { color: #7fd1ff; font-weight: 600; }
+  .sensor-panel {
+    margin-top: 10px;
+  }
+  .sensor-panel .panel-title {
+    color: #aab2bd;
+    font-size: 11px;
+    margin-bottom: 4px;
+  }
+  .sensor-panel .panel-grid {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 2px 8px;
+    font-size: 12px;
+  }
+  .sensor-panel .panel-grid dt {
+    color: #8b929c;
+  }
+  .sensor-panel .panel-grid dd {
+    margin: 0;
+    color: #7fd1ff;
+    font-weight: 600;
+    text-align: right;
+  }
   #keys {
     display: flex;
     gap: 6px;
@@ -185,6 +208,29 @@
   <div id="telemetry">
     速度: <span id="speed-val">0.00</span> m/s &nbsp;|&nbsp;
     角速度: <span id="yaw-rate-val">0.00</span> rad/s
+  </div>
+
+  <div id="imu-panel" class="sensor-panel">
+    <div class="panel-title">IMU (VectorNav / base_link相当)</div>
+    <dl class="panel-grid">
+      <dt>加速度 X (前後)</dt><dd id="imu-ax">0.00</dd>
+      <dt>加速度 Y (左右)</dt><dd id="imu-ay">0.00</dd>
+      <dt>加速度 Z (上下)</dt><dd id="imu-az">0.00</dd>
+      <dt>角速度 Z (ヨー)</dt><dd id="imu-gz">0.00</dd>
+      <dt>Yaw</dt><dd id="imu-yaw">0.0°</dd>
+    </dl>
+  </div>
+
+  <div id="odom-panel" class="sensor-panel">
+    <div class="panel-title">Odometry (gyro_odometry_publisher)</div>
+    <dl class="panel-grid">
+      <dt>X</dt><dd id="odom-x">0.00 m</dd>
+      <dt>Y</dt><dd id="odom-y">0.00 m</dd>
+      <dt>Yaw</dt><dd id="odom-yaw">0.0°</dd>
+      <dt>速度 X</dt><dd id="odom-vx">0.00 m/s</dd>
+      <dt>速度 Y</dt><dd id="odom-vy">0.00 m/s</dd>
+      <dt>角速度 Z</dt><dd id="odom-wz">0.00 rad/s</dd>
+    </dl>
   </div>
 
   <div id="keys">

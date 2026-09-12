@@ -21,7 +21,7 @@ const CASTER_SCALE = 0.10; // caster_back_macro.xacro SCALE
 
 // ZED camera mount, relative to base_link (config/zedx/extrinsic/extrinsic.yaml
 // "position"; the camera_joint origin has rpy=0, so it faces straight ahead).
-const CAMERA_MOUNT = { x: 0.055, y: 0.0, z: 0.54 };
+const CAMERA_MOUNT = { x: 0.055, y: 0.0, z: 0.56 };
 
 // ---------------------------------------------------------------------------
 // Scene setup
@@ -35,7 +35,9 @@ const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerH
 camera.position.set(-2.5, 2.0, 2.5);
 
 // Onboard (vehicle-mounted) camera, rendered picture-in-picture top-right.
-const onboardCamera = new THREE.PerspectiveCamera(80, 16 / 9, 0.05, 500);
+// Vertical FOV = 70.6 deg, matching the real ZED X HD1080 intrinsic parameters
+// (see config/zedx/intrinsic/SN48442725/HD1080.yaml: 2 * atan(540 / 763.17) ≈ 70.6 deg).
+const onboardCamera = new THREE.PerspectiveCamera(70.6, 16 / 9, 0.05, 500);
 const pipFrame = document.getElementById('pip-frame');
 
 // Offscreen capture of the onboard camera, published as a compressed image
@@ -274,7 +276,11 @@ window.addEventListener('keydown', (e) => {
     case 'KeyS': keys.backward = true; break;
     case 'KeyA': keys.left = true; break;
     case 'KeyD': keys.right = true; break;
-    case 'KeyR': physics.reset(); break;
+    case 'KeyR':
+      physics.reset();
+      odomTrailPoints.length = 0;
+      odomTrailGeometry.setFromPoints([]);
+      break;
     default: return;
   }
   if (keyEls[e.code]) keyEls[e.code].classList.add('active');
@@ -298,8 +304,45 @@ window.addEventListener('keyup', (e) => {
 let ros = null;
 let cmdVelTopic = null;
 let compressedImageTopic = null;
+let imuTopic = null;
 const IMAGE_TOPIC_NAME = '/aiformula_sensing/zed_node/left_image/undistorted/compressed';
 const IMAGE_FRAME_ID = 'zed_left_camera_optical_frame'; // matches zed_macro.xacro
+const IMU_TOPIC_NAME = '/aiformula_sensing/vectornav/imu'; // topic_list.yaml sensing.vectornav.imu
+// The real vectornav driver publishes with frame_id "vectornav" (see
+// sensing/vectornav/vectornav/config/vectornav.yaml), but its mounting
+// offset relative to base_link isn't known here, so -- per instruction --
+// the simulator treats the sensor as coincident with base_link and computes
+// its readings directly from the vehicle's own pose/velocity.
+const IMU_FRAME_ID = 'vectornav';
+const GRAVITY = 9.81; // [m/s^2]
+
+let odomTopic = null;
+// Matches sensing/odometry_publisher's gyro_odometry_publisher exactly:
+// topic_list.yaml sensing.odometry.gyro, and the frame ids it's launched
+// with (odom_frame_id=FRAME_IDS.odom, vehicle_frame_id=FRAME_IDS.base_footprint).
+// Note: the real node actually subscribes to the ZED camera's IMU for this
+// (see odometry_publisher/launch/gyro_odometry_publisher.launch.py:
+// sub_imu -> sensing.zedx.imu), not vectornav -- but this simulator only
+// models one IMU, so per instruction it reuses the simulated vectornav IMU
+// (physics.yaw / physics.omega) as the gyro input instead.
+const ODOM_TOPIC_NAME = '/aiformula_sensing/gyro_odometry_publisher/odom';
+const ODOM_FRAME_ID = 'odom';
+const ODOM_CHILD_FRAME_ID = 'base_footprint';
+
+let canTopic = null;
+// Wheel-speed CAN frame, decoded on the real robot by
+// odometry_publisher/include/odometry_publisher/wheel.hpp:
+//   RPM_ID = 1809; data[0..3] = right wheel RPM, data[4..7] = left wheel RPM,
+//   both int32 little-endian; speed[m/s] = rpm * (1/60) * (diameter * PI).
+// Encoding uses config/wheel.yaml's diameter (0.254m, what that decoder
+// actually uses) rather than the xacro's WHEEL_RADIUS (0.12m, used only for
+// this simulator's own wheel-spin animation) so a real consumer decodes the
+// exact wheelSpeeds() m/s values back out, regardless of that pre-existing
+// xacro/yaml radius mismatch.
+const CAN_TOPIC_NAME = '/aiformula_sensing/vehicle_info';
+const CAN_RPM_ID = 1809;
+const CAN_WHEEL_DIAMETER = 0.254; // [m] config/wheel.yaml wheel.diameter
+const CAN_PUBLISH_HZ = 100; // matches the real CAN bus's ~10ms measurement cycle
 
 const urlInput = document.getElementById('ros-url');
 const topicInput = document.getElementById('ros-topic');
@@ -317,6 +360,9 @@ function disconnect() {
   ros = null;
   cmdVelTopic = null;
   compressedImageTopic = null;
+  imuTopic = null;
+  odomTopic = null;
+  canTopic = null;
   connectBtn.textContent = '接続';
   setStatus('', '未接続');
 }
@@ -341,6 +387,21 @@ function connect() {
       name: IMAGE_TOPIC_NAME,
       messageType: 'sensor_msgs/msg/CompressedImage',
     });
+    imuTopic = new ROSLIB.Topic({
+      ros,
+      name: IMU_TOPIC_NAME,
+      messageType: 'sensor_msgs/msg/Imu',
+    });
+    odomTopic = new ROSLIB.Topic({
+      ros,
+      name: ODOM_TOPIC_NAME,
+      messageType: 'nav_msgs/msg/Odometry',
+    });
+    canTopic = new ROSLIB.Topic({
+      ros,
+      name: CAN_TOPIC_NAME,
+      messageType: 'can_msgs/msg/Frame',
+    });
   });
 
   ros.on('error', () => {
@@ -352,6 +413,9 @@ function connect() {
   ros.on('close', () => {
     cmdVelTopic = null;
     compressedImageTopic = null;
+    imuTopic = null;
+    odomTopic = null;
+    canTopic = null;
     connectBtn.disabled = false;
     connectBtn.textContent = '接続';
     setStatus('', '未接続');
@@ -366,9 +430,30 @@ connectBtn.addEventListener('click', () => {
   }
 });
 
-const PUBLISH_HZ = 20;
+const PUBLISH_HZ = 10;
 const PUBLISH_INTERVAL = 1 / PUBLISH_HZ;
 let publishAccumulator = 0;
+
+// Mirrors twist_mux's own timeout for this input (topic_list.yaml: gamepad/
+// keyboard timeout: 0.3s) -- but applied to the *simulated vehicle itself*,
+// not just the published topic. On the real robot, if cmd_vel stops
+// arriving for 0.3s, twist_mux treats that source as timed out and the
+// vehicle gets zero velocity from it. Previously this simulator only
+// mirrored that on the wire (publishCmdVel no-ops once disconnected) while
+// the local physics kept driving forever off raw key state, regardless of
+// connection status -- so a dropped rosbridge connection here never looked
+// like what it actually causes on the real vehicle. Now, once armed (after
+// the first successful publish), if CMD_VEL_TIMEOUT_SEC elapses without a
+// fresh publish (disconnect, or the publish loop stalling), held keys are
+// ignored and the vehicle coasts to a stop via the normal coast-resistance
+// physics, same as releasing every key.
+const CMD_VEL_TIMEOUT_SEC = 0.3;
+const NO_KEYS = { forward: false, backward: false, left: false, right: false };
+let lastCmdVelPublishTime = null;
+
+function isCmdVelTimedOut() {
+  return lastCmdVelPublishTime !== null && (performance.now() - lastCmdVelPublishTime) / 1000 > CMD_VEL_TIMEOUT_SEC;
+}
 
 function publishCmdVel(v, omega) {
   if (!cmdVelTopic) return;
@@ -378,9 +463,10 @@ function publishCmdVel(v, omega) {
       angular: { x: 0.0, y: 0.0, z: omega },
     })
   );
+  lastCmdVelPublishTime = performance.now();
 }
 
-const IMAGE_PUBLISH_HZ = 10;
+const IMAGE_PUBLISH_HZ = 15;
 const IMAGE_PUBLISH_INTERVAL = 1 / IMAGE_PUBLISH_HZ;
 let imagePublishAccumulator = 0;
 
@@ -411,12 +497,171 @@ function publishCompressedImage() {
   );
 }
 
+const IMU_PUBLISH_HZ = 100;
+
+// Synthesizes sensor_msgs/msg/Imu from the vehicle's own 2D physics state.
+// The vehicle never rolls/pitches in this sim, so orientation is yaw-only,
+// gyro is just the yaw rate, and linear_acceleration is: forward accel from
+// physics.linearAccel, lateral accel approximated as the centripetal term
+// v*omega (turning while moving), and +g on Z (a level, stationary
+// accelerometer reads ~+9.81 as the reaction to gravity). This is noise-free
+// synthetic data, so all covariances are left at zero rather than modeling
+// real VectorNav sensor noise.
+function publishImu() {
+  if (!imuTopic) return;
+
+  const halfYaw = physics.yaw / 2;
+  const lateralAccel = physics.v * physics.omega;
+  const nowMs = Date.now();
+
+  imuTopic.publish(
+    new ROSLIB.Message({
+      header: {
+        stamp: { sec: Math.floor(nowMs / 1000), nanosec: (nowMs % 1000) * 1e6 },
+        frame_id: IMU_FRAME_ID,
+      },
+      orientation: { x: 0, y: 0, z: Math.sin(halfYaw), w: Math.cos(halfYaw) },
+      orientation_covariance: new Array(9).fill(0),
+      angular_velocity: { x: 0, y: 0, z: physics.omega },
+      angular_velocity_covariance: new Array(9).fill(0),
+      linear_acceleration: { x: physics.linearAccel, y: lateralAccel, z: GRAVITY },
+      linear_acceleration_covariance: new Array(9).fill(0),
+    })
+  );
+}
+
+// Decoupled from the requestAnimationFrame render loop (which tops out at
+// the display's refresh rate, typically 60Hz, and would otherwise cap the
+// achievable publish rate) since publishing is cheap -- just reading the
+// current physics state and sending JSON over the WebSocket -- so it can
+// safely run on its own high-frequency timer without affecting render
+// performance. Note: physics itself is still only integrated once per
+// rendered frame (~60Hz), so consecutive IMU messages within the same
+// frame will carry identical values; only the transmission rate is 100Hz.
+setInterval(publishImu, 1000 / IMU_PUBLISH_HZ);
+
+// Reproduces gyro_odometry_publisher's fusion: heading + yaw rate come from
+// the (simulated) IMU, forward speed comes from the vehicle's own speed
+// (standing in for the real node's CAN wheel-RPM input), integrated exactly
+// as OdometryPublisher::updatePosition does: vx=v*cos(yaw), vy=v*sin(yaw),
+// pos += (vx,vy)*dt -- which is the same integration vehicle_physics.js
+// already does for physics.x/y. With no wheel-slip or gyro-drift noise
+// modeled, this "sensor" output is therefore numerically identical to
+// ground truth here, unlike the real robot where it would drift.
+const ODOM_PUBLISH_HZ = 100; // matches gyro_odometry_publisher.yaml publish_timer_loop_duration: 10ms
+
+function publishOdometry() {
+  if (!odomTopic) return;
+
+  const halfYaw = physics.yaw / 2;
+  const vx = physics.v * Math.cos(physics.yaw);
+  const vy = physics.v * Math.sin(physics.yaw);
+  const nowMs = Date.now();
+  const zeroCovariance36 = new Array(36).fill(0);
+
+  odomTopic.publish(
+    new ROSLIB.Message({
+      header: {
+        stamp: { sec: Math.floor(nowMs / 1000), nanosec: (nowMs % 1000) * 1e6 },
+        frame_id: ODOM_FRAME_ID,
+      },
+      child_frame_id: ODOM_CHILD_FRAME_ID,
+      pose: {
+        pose: {
+          position: { x: physics.x, y: physics.y, z: 0 },
+          orientation: { x: 0, y: 0, z: Math.sin(halfYaw), w: Math.cos(halfYaw) },
+        },
+        covariance: zeroCovariance36,
+      },
+      twist: {
+        twist: {
+          linear: { x: vx, y: vy, z: 0 },
+          angular: { x: 0, y: 0, z: physics.omega },
+        },
+        covariance: zeroCovariance36,
+      },
+    })
+  );
+}
+
+setInterval(publishOdometry, 1000 / ODOM_PUBLISH_HZ);
+
+function int32ToLittleEndianBytes(value) {
+  const buffer = new ArrayBuffer(4);
+  new DataView(buffer).setInt32(0, Math.round(value), /* littleEndian= */ true);
+  return Array.from(new Uint8Array(buffer));
+}
+
+// Publishes a can_msgs/msg/Frame carrying wheel RPM, in the exact byte
+// layout odometry_publisher/include/odometry_publisher/wheel.hpp expects
+// (see CAN_* constants above): data[0..3]=right RPM, data[4..7]=left RPM,
+// both int32 little-endian, derived from physics.wheelSpeeds() (m/s).
+function publishVehicleInfoCan() {
+  if (!canTopic) return;
+
+  const { left, right } = physics.wheelSpeeds();
+  const wheelCircumference = CAN_WHEEL_DIAMETER * Math.PI;
+  const toRpm = (speedMetersPerSecond) => (speedMetersPerSecond / wheelCircumference) * 60;
+  const data = [...int32ToLittleEndianBytes(toRpm(right)), ...int32ToLittleEndianBytes(toRpm(left))];
+  const nowMs = Date.now();
+
+  canTopic.publish(
+    new ROSLIB.Message({
+      header: {
+        stamp: { sec: Math.floor(nowMs / 1000), nanosec: (nowMs % 1000) * 1e6 },
+        frame_id: '',
+      },
+      id: CAN_RPM_ID,
+      is_rtr: false,
+      is_extended: false,
+      is_error: false,
+      dlc: 8,
+      data,
+    })
+  );
+}
+
+setInterval(publishVehicleInfoCan, 1000 / CAN_PUBLISH_HZ);
+
 // ---------------------------------------------------------------------------
 // Physics + render loop
 // ---------------------------------------------------------------------------
 const physics = new VehiclePhysics();
 const speedVal = document.getElementById('speed-val');
 const yawRateVal = document.getElementById('yaw-rate-val');
+const imuAxVal = document.getElementById('imu-ax');
+const imuAyVal = document.getElementById('imu-ay');
+const imuAzVal = document.getElementById('imu-az');
+const imuGzVal = document.getElementById('imu-gz');
+const imuYawVal = document.getElementById('imu-yaw');
+const odomXVal = document.getElementById('odom-x');
+const odomYVal = document.getElementById('odom-y');
+const odomYawVal = document.getElementById('odom-yaw');
+const odomVxVal = document.getElementById('odom-vx');
+const odomVyVal = document.getElementById('odom-vy');
+const odomWzVal = document.getElementById('odom-wz');
+
+// Odometry trail: the gyro_odometry_publisher's estimated ground track,
+// drawn on the ground plane. In this noise-free sim it coincides exactly
+// with the vehicle's true path (see publishOdometry() above, which reads
+// physics.x/y/yaw directly) -- there's no wheel-slip or gyro-drift model --
+// but the same drawing code would show real drift if that's ever added.
+const ODOM_TRAIL_MAX_POINTS = 300;
+const ODOM_TRAIL_SAMPLE_INTERVAL = 0.15; // [s] between recorded points
+const odomTrailPoints = [];
+const odomTrailGeometry = new THREE.BufferGeometry();
+const odomTrailLine = new THREE.Line(odomTrailGeometry, new THREE.LineBasicMaterial({ color: 0x35d0ff }));
+// geometry.setFromPoints() (used below to grow/slide the trail) only
+// rewrites the position attribute -- it never touches geometry.boundingSphere,
+// which Three.js computes once (lazily, from whichever points happened to
+// exist at the first frustum-culling check) and then never recomputes. As
+// the trail grows/moves away from that stale sphere, the line gets
+// incorrectly frustum-culled depending on camera angle/distance, making it
+// flicker in and out of view. Disabling frustum culling for this object
+// sidesteps the stale-bounds check entirely.
+odomTrailLine.frustumCulled = false;
+scene.add(odomTrailLine);
+let odomTrailAccumulator = 0;
 
 // Camera stays a fixed distance behind/above the vehicle, expressed in ROS
 // (x-forward, z-up) space, then converted to Three.js space the same way
@@ -465,7 +710,7 @@ function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.1);
 
-  physics.step(keys, dt);
+  physics.step(isCmdVelTimedOut() ? NO_KEYS : keys, dt);
 
   vehicleRoot.position.set(physics.x, physics.y, 0);
   vehicleRoot.rotation.set(0, 0, physics.yaw, 'ZYX'); // pure yaw; order is a no-op here but kept consistent with setPose
@@ -497,17 +742,19 @@ function animate() {
 
   controls.update();
 
-  // Onboard (ZED mount) camera: rigidly attached to the vehicle, looking
-  // straight ahead along its heading (mount joint has rpy=0 in the xacro).
+  // Onboard (ZED mount) camera: rigidly attached to the vehicle.
+  // Pitch down angle is 1.8 deg, matching real extrinsic.yaml orientation (r: -88.2 -> ~1.8 deg tilt).
+  const PITCH_DOWN_RAD = (1.8 * Math.PI) / 180;
+  const LOOK_DIST = 5.0;
   const mountRos = {
     x: physics.x + CAMERA_MOUNT.x * Math.cos(physics.yaw) - CAMERA_MOUNT.y * Math.sin(physics.yaw),
     y: physics.y + CAMERA_MOUNT.x * Math.sin(physics.yaw) + CAMERA_MOUNT.y * Math.cos(physics.yaw),
     z: CAMERA_MOUNT.z,
   };
   const lookAheadRos = {
-    x: mountRos.x + Math.cos(physics.yaw) * 5,
-    y: mountRos.y + Math.sin(physics.yaw) * 5,
-    z: mountRos.z - 0.5,
+    x: mountRos.x + Math.cos(physics.yaw) * LOOK_DIST,
+    y: mountRos.y + Math.sin(physics.yaw) * LOOK_DIST,
+    z: mountRos.z - LOOK_DIST * Math.tan(PITCH_DOWN_RAD),
   };
   onboardCamera.position.copy(rosToThree(mountRos.x, mountRos.y, mountRos.z));
   onboardCamera.lookAt(rosToThree(lookAheadRos.x, lookAheadRos.y, lookAheadRos.z));
@@ -524,8 +771,36 @@ function animate() {
     publishCompressedImage();
   }
 
+  // publishImu() itself runs on a separate setInterval (see below), not here.
+
+  // Lateral (centripetal) acceleration component, still shown in the IMU HUD panel.
+  const imuLateralAccel = physics.v * physics.omega;
+
+  // Odometry ground-track trail (see publishOdometry()/odom-panel setup for
+  // why this coincides with the vehicle's true path in this simulator).
+  odomTrailAccumulator += dt;
+  if (odomTrailAccumulator >= ODOM_TRAIL_SAMPLE_INTERVAL) {
+    odomTrailAccumulator = 0;
+    odomTrailPoints.push(rosToThree(physics.x, physics.y, 0.05));
+    if (odomTrailPoints.length > ODOM_TRAIL_MAX_POINTS) odomTrailPoints.shift();
+    odomTrailGeometry.setFromPoints(odomTrailPoints);
+  }
+
   speedVal.textContent = physics.v.toFixed(2);
   yawRateVal.textContent = physics.omega.toFixed(2);
+  imuAxVal.textContent = physics.linearAccel.toFixed(2);
+  imuAyVal.textContent = imuLateralAccel.toFixed(2);
+  imuAzVal.textContent = GRAVITY.toFixed(2);
+  imuGzVal.textContent = physics.omega.toFixed(2);
+  imuYawVal.textContent = `${THREE.MathUtils.radToDeg(physics.yaw).toFixed(1)}°`;
+
+  const odomYawDeg = THREE.MathUtils.radToDeg(physics.yaw).toFixed(1);
+  odomXVal.textContent = `${physics.x.toFixed(2)} m`;
+  odomYVal.textContent = `${physics.y.toFixed(2)} m`;
+  odomYawVal.textContent = `${odomYawDeg}°`;
+  odomVxVal.textContent = `${(physics.v * Math.cos(physics.yaw)).toFixed(2)} m/s`;
+  odomVyVal.textContent = `${(physics.v * Math.sin(physics.yaw)).toFixed(2)} m/s`;
+  odomWzVal.textContent = `${physics.omega.toFixed(2)} rad/s`;
 
   render();
 }

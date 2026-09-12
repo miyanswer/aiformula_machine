@@ -206,7 +206,12 @@ rosbridge:
 		docker compose up -d; \
 	fi
 	docker compose exec $(SERVICE_NAME) bash -c \
-		"source /opt/ros/humble/setup.bash && ros2 launch rosbridge_server rosbridge_websocket_launch.xml"
+		"source /opt/ros/humble/setup.bash && \
+		 if ! ros2 pkg list | grep -q '^rosbridge_server$$'; then \
+		   echo '[INFO] Installing ros-humble-rosbridge-server...'; \
+		   sudo apt-get update && sudo apt-get install -y ros-humble-rosbridge-server; \
+		 fi && \
+		 ros2 launch rosbridge_server rosbridge_websocket_launch.xml"
 
 # ------------------------------------------------------------------------------
 # Real Vehicle Operations

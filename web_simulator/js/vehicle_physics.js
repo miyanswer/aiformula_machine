@@ -41,6 +41,7 @@ export class VehiclePhysics {
     this.yaw = 0; // [rad], 0 = facing +X, positive = CCW (REP103)
     this.v = 0; // [m/s] forward speed
     this.omega = 0; // [rad/s] yaw rate
+    this.linearAccel = 0; // [m/s^2] forward (body x) accel, for IMU simulation
   }
 
   reset() {
@@ -49,11 +50,13 @@ export class VehiclePhysics {
     this.yaw = 0;
     this.v = 0;
     this.omega = 0;
+    this.linearAccel = 0;
   }
 
   // keys: { forward, backward, left, right } booleans
   step(keys, dt) {
     const mass = VEHICLE.massKg;
+    const previousV = this.v;
 
     // --- Longitudinal (linear.x) ---
     if (keys.forward && !keys.backward) {
@@ -68,6 +71,7 @@ export class VehiclePhysics {
       this.v = approachZero(this.v, COAST_RESISTANCE_N / mass, dt);
     }
     this.v = clamp(this.v, MAX_REVERSE_SPEED, MAX_SPEED);
+    this.linearAccel = dt > 0 ? (this.v - previousV) / dt : 0;
 
     // --- Yaw rate (angular.z) ---
     if (keys.left && !keys.right) {
@@ -83,6 +87,8 @@ export class VehiclePhysics {
     this.x += this.v * Math.cos(this.yaw) * dt;
     this.y += this.v * Math.sin(this.yaw) * dt;
     this.yaw += this.omega * dt;
+    // Normalize yaw to [-PI, PI] (REP 103 standard)
+    this.yaw = Math.atan2(Math.sin(this.yaw), Math.cos(this.yaw));
   }
 
   // Standard differential-drive wheel speed decomposition.

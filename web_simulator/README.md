@@ -27,14 +27,13 @@ Three.js / roslib.js はオフライン環境でも動くよう `vendor/` 配下
 
 ### 2. rosbridge_server を起動する
 
-ROS 2 (Humble) 環境で、`rosbridge_server` パッケージが未導入なら先にインストールします
-（この Docker イメージには現状含まれていません）。
+`rosbridge_server` は Dockerfile に標準搭載されており、ホスト側のターミナルから `make rosbridge` を実行するだけで起動できます（未インストールの環境でも自動検知してインストール・起動されます）。
 
 ```bash
-sudo apt-get update && sudo apt-get install -y ros-humble-rosbridge-server
+make rosbridge
 ```
 
-ROS 2 環境を source した状態で起動します。
+またはコンテナ内で直接起動する場合：
 
 ```bash
 source /opt/ros/humble/setup.bash
@@ -69,8 +68,18 @@ Web シミュレータの HUD 左上で以下を設定し、「接続」ボタ�
   twist_mux を単体起動している場合は、ここを `key_vel` に変更してください）
 
 ステータスが緑の「接続済み」になれば成功です。接続した時点で、停止中でも
-`geometry_msgs/msg/Twist` を 20Hz で publish し続けます（速度 0 の Twist が流れるので、
+`geometry_msgs/msg/Twist` を 10Hz で publish し続けます（速度 0 の Twist が流れるので、
 twist_mux 側のタイムアウトでロックされることもありません）。
+
+**cmd_vel タイムアウト（0.3秒）のシミュレーション**: `twist_mux`
+はこの入力ソースを 0.3 秒（`topic_list.yaml` の gamepad/keyboard timeout）受信できないと
+タイムアウトとして扱い、実車はその入力からは速度 0 を受け取ります。本シミュレータでも
+同じ 0.3 秒のウォッチドッグを**車体そのものの挙動**に適用しています。rosbridge が
+切断された（あるいは何らかの理由で publish が 0.3 秒以上止まった）場合、以後 WASD を
+押し続けていても新しい入力として扱われず、通常の惰性走行と同じ減速で自動的に停止します
+（[js/simulator.js](js/simulator.js) の `CMD_VEL_TIMEOUT_SEC`）。接続中はブラウザ内蔵の
+描画ループが cmd_vel を継続的に publish しているため、この機構は通常は作動しません
+（切断時など、実際にタイムアウトが起きる状況でのみ発火します）。
 
 ### 4. トピックが流れているか確認する
 
@@ -81,10 +90,19 @@ source /opt/ros/humble/setup.bash
 
 ros2 topic list                                          # トピックが出現しているか
 ros2 topic echo /aiformula_control/gamepad/cmd_vel        # 実際に Twist が流れているか
-ros2 topic hz /aiformula_control/gamepad/cmd_vel          # 20Hz 前後で来ているか
+ros2 topic hz /aiformula_control/gamepad/cmd_vel          # 10Hz 前後で来ているか
 
-ros2 topic hz /aiformula_sensing/zed_node/left_image/undistorted/compressed   # 画像も10Hz前後で来ているか
+ros2 topic hz /aiformula_sensing/zed_node/left_image/undistorted/compressed   # 画像も15Hz前後で来ているか
 ros2 run rqt_image_view rqt_image_view /aiformula_sensing/zed_node/left_image/undistorted/compressed  # 映像を目視確認
+
+ros2 topic echo /aiformula_sensing/vectornav/imu    # IMUが流れているか
+ros2 topic hz /aiformula_sensing/vectornav/imu      # レートを確認（下記の制約参照）
+
+ros2 topic echo /aiformula_sensing/gyro_odometry_publisher/odom   # オドメトリが流れているか
+ros2 topic hz /aiformula_sensing/gyro_odometry_publisher/odom     # レートを確認
+
+ros2 topic echo /aiformula_sensing/vehicle_info     # 車輪速CANが流れているか（id: 1809）
+ros2 topic hz /aiformula_sensing/vehicle_info       # レートを確認
 ```
 
 ブラウザで W/A/S/D を押しながら `ros2 topic echo` を見て、`linear.x` / `angular.z` の値が
@@ -130,13 +148,99 @@ rosbridge 接続中は、右上 PiP と同じ機体カメラ視点を `sensor_ms
 - **frame_id**: `zed_left_camera_optical_frame`（`zed_macro.xacro` の命名に準拠）
 - **format**: `jpeg`（画質 0.7、解像度 640x360 固定、[`js/simulator.js`](js/simulator.js)
   の `CAPTURE_WIDTH` / `CAPTURE_HEIGHT` / `CAPTURE_JPEG_QUALITY` で調整可能）
-- **配信レート**: 10Hz（`IMAGE_PUBLISH_HZ`）
+- **配信レート**: 15Hz（`IMAGE_PUBLISH_HZ`）
 
 実装は、PiP 表示用とは別のオフスクリーン `WebGLRenderer` でオンボードカメラを毎回
 640x360 に描画し、`canvas.toDataURL('image/jpeg', ...)` で得た base64 文字列を
 そのまま `CompressedImage.data` に詰めて publish しています（rosbridge はバイト配列
 フィールドに base64 文字列が来ると自動でデコードするため、これで正しい
 `uint8[]` として届きます）。
+
+## IMU（VectorNav）の配信・可視化
+
+搭載されている VectorNav IMU を模した `sensor_msgs/msg/Imu` を rosbridge 接続中に配信します。
+
+- **topic**: `/aiformula_sensing/vectornav/imu`（`topic_list.yaml` の
+  `sensing.vectornav.imu` と同じ）
+- **frame_id**: `vectornav`（実車の `sensing/vectornav/vectornav/config/vectornav.yaml`
+  と同じ命名）。ただし base_link に対する実際の取り付けオフセットが不明なため、
+  シミュレータ上では **base_link と同一位置**として扱い、車体の姿勢・速度から
+  直接センサ値を計算しています。
+- **配信レート**: 100Hz（[`js/simulator.js`](js/simulator.js) の `IMU_PUBLISH_HZ`）。
+  描画ループ（`requestAnimationFrame`、通常60fps程度）とは切り離した専用の
+  `setInterval` で配信しているため、描画フレームレートに左右されず実際に100Hzで
+  publish されます。ただし車体の物理状態（速度・角速度など）自体は描画フレームと
+  同じ ~60Hz でしか更新されないため、同じ描画フレーム内で送られる複数のIMU
+  メッセージは同一の値を持つことがあります（伝送レートのみ100Hz）。
+- **中身**:
+  - `orientation`: yaw のみのクォータニオン（REP 103 規約に準拠し、Yaw は常に `-180° 〜 +180°` / `[-π, π]` に正規化。ロール・ピッチは 0）
+  - `angular_velocity.z`: 旋回角速度（HUD の「角速度」と同じ値）
+  - `linear_acceleration`: `x`=前後加速度（`vehicle_physics.js` の `linearAccel`）、
+    `y`=旋回による遠心成分（`v * omega` の近似）、`z`=重力反力として固定 `+9.81`
+  - 共分散はすべて 0（ノイズなしの合成データのため、実センサのノイズはモデル化していません）
+
+**可視化**: HUD 左下に IMU の数値パネル（加速度 X/Y/Z・角速度 Z・Yaw）を常時表示します。
+
+## オドメトリ（gyro_odometry_publisher）の配信・可視化
+
+上記の IMU を使い、実車の `sensing/odometry_publisher`（`gyro_odometry_publisher`）
+と同じ融合ロジックで `nav_msgs/msg/Odometry` を配信します。
+
+- **topic**: `/aiformula_sensing/gyro_odometry_publisher/odom`
+  （`topic_list.yaml` の `sensing.odometry.gyro` と同じ）
+- **frame_id / child_frame_id**: `odom` / `base_footprint`
+  （実際の起動パラメータ `odom_frame_id`/`vehicle_frame_id` と同じ）
+- **配信レート**: 100Hz（`gyro_odometry_publisher.yaml` の
+  `publish_timer_loop_duration: 10ms` に合わせた値。IMU と同様、描画ループとは
+  切り離した専用の `setInterval` で配信）
+- **アルゴリズム**: 実装（`odometry_publisher.cpp` の `updatePosition`/
+  `createOdometryMsg`）をそのまま踏襲し、IMU由来の yaw・yaw rate と、車体の
+  前後速度から `vx=v*cos(yaw)`, `vy=v*sin(yaw)` を計算して積分しています。
+  - `pose.pose.position`: 積分した x, y（z=0）
+  - `pose.pose.orientation`: yaw のみのクォータニオン
+  - `twist.twist.linear`: `(vx, vy, 0)`（実装に合わせて **odom座標系** 表現。
+    通常の ROS 規約が期待するボディ座標系ではない点に注意 — 実車のコードの
+    挙動をそのまま再現しています）
+  - `twist.twist.angular.z`: IMU の角速度
+  - 共分散はすべて 0
+
+  > **注意**: 実際の `gyro_odometry_publisher` は ZED カメラの IMU
+  > (`sensing.zedx.imu`) を購読していますが、本シミュレータは IMU を1つしか
+  > 持たないため、ご指示のとおり VectorNav 側の IMU（`physics.yaw`/`physics.omega`）
+  > を代用しています。また、ホイールスリップやジャイロドリフトのノイズを
+  > モデル化していないため、このオドメトリは常に車体の真の位置と完全に一致します
+  > （実機では両者は徐々にずれていきます）。
+
+**可視化**: HUD に位置(X/Y)・Yaw・速度(X/Y)・角速度のパネルを表示するほか、
+3D シーン上に**水色の軌跡**としてオドメトリの走行経路を描画します（直近300点、
+0.15秒間隔でサンプリング）。R キーでリセットすると軌跡もクリアされます。
+
+## 車輪速CANの配信
+
+`odometry_publisher/include/odometry_publisher/wheel.hpp` がデコードする形式に
+合わせて、車輪速を `can_msgs/msg/Frame` として配信します。
+
+- **topic**: `/aiformula_sensing/vehicle_info`（`topic_list.yaml` の
+  `sensing.input_can_data` と同じ）
+- **id**: `1809`（`RPM_ID`。`wheel.hpp` はこのIDのフレームだけを処理します）
+- **data (8バイト)**: `data[0..3]` = 右輪RPM、`data[4..7]` = 左輪RPM、
+  いずれも **符号付き32bit・リトルエンディアン**（実装の `Uint8ArrayToInt`
+  ユニオンと同じレイアウト）
+- **RPM ⇔ 速度の変換**: `wheel.hpp` 側の decode 式
+  `speed = rpm * (1/60) * (diameter * π)` に厳密に合わせ、逆算で
+  `rpm = speed / (diameter * π) * 60` を使用。ここでの `diameter` は
+  `vehicles/sample_vehicle/xacro` の `WHEEL_RADIUS`(0.12m) ではなく、
+  **decode側が実際に使う `config/wheel.yaml` の `wheel.diameter`(0.254m)**
+  を使っています（xacroとyamlの間に既存の半径不一致がありますが、
+  encode/decode双方でyamlの値に揃えることで、実際のノードが本シミュレータの
+  `wheelSpeeds()`(m/s)を正しく復元できるようにしています）
+- **配信レート**: 100Hz（実車のCAN計測周期 ~10ms に合わせた値。IMU/オドメトリ
+  と同様、描画ループとは切り離した専用の `setInterval` で配信）
+
+これを購読する `gyro_odometry_publisher`/`wheel_odometry_publisher` は、
+本シミュレータが配信するオドメトリ(`/aiformula_sensing/gyro_odometry_publisher/odom`)
+とは独立した別トピック(`sub_can`)からの入力であり、両者は連動していません
+（本シミュレータのオドメトリは IMU + 車体速度から直接計算しています）。
 
 ## 車体モデル・物理パラメータ
 
