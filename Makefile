@@ -13,7 +13,7 @@ PKG ?=
 .PHONY: help up down stop restart build rebuild ps logs bash shell root-bash root \
         build-ws colcon clean test-pc test test-tl test-yolop test-control \
         verification-gui vgui open-rviz gui open-vgui stop-nodes kill \
-        rosbridge sim open-sim \
+        rosbridge sim open-sim rqt rqt-graph \
         bringup-hw bringup-all teleop
 
 # Default: Show help message
@@ -54,6 +54,8 @@ help:
 	@echo "  make rosbridge        Start rosbridge WebSocket server on port 9090"
 	@echo "  make open-sim (sim)   Open 3D Web Simulator in browser (http://localhost:8000)"
 	@echo "  make open-rviz (gui)  Open RViz2 Web Display in browser (http://localhost:8080)"
+	@echo "  make rqt-graph        Open rqt_graph in browser GUI (http://localhost:8080)"
+	@echo "  make rqt              Open full rqt dashboard in browser GUI (http://localhost:8080)"
 	@echo "  make open-vgui        Open Web Verification GUI in browser (http://localhost:8090)"
 	@echo ""
 	@echo "🏎️ [Real Vehicle Operations]"
@@ -200,6 +202,20 @@ open-vgui:
 
 open-sim sim:
 	@which open > /dev/null && open http://localhost:8000 || which xdg-open > /dev/null && xdg-open http://localhost:8000 || echo "Open http://localhost:8000 in your browser"
+
+rqt-graph:
+	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		docker compose up -d; \
+	fi
+	@which open > /dev/null && open http://localhost:8080 || which xdg-open > /dev/null && xdg-open http://localhost:8080 || echo "Open http://localhost:8080 in your browser"
+	docker compose exec $(SERVICE_NAME) bash -c "source /opt/ros/humble/setup.bash && rqt_graph"
+
+rqt:
+	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		docker compose up -d; \
+	fi
+	@which open > /dev/null && open http://localhost:8080 || which xdg-open > /dev/null && xdg-open http://localhost:8080 || echo "Open http://localhost:8080 in your browser"
+	docker compose exec $(SERVICE_NAME) bash -c "source /opt/ros/humble/setup.bash && rqt"
 
 rosbridge:
 	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \

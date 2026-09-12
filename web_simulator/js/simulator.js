@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { VehiclePhysics, VEHICLE } from './vehicle_physics.js';
+import { createCourseTexture, COURSE_WIDTH_M, COURSE_DEPTH_M } from './course.js';
 
 // ---------------------------------------------------------------------------
 // Geometry taken directly from vehicles/sample_vehicle/xacro/ai_car1.xacro
@@ -117,6 +118,22 @@ scene.add(rosRoot);
 
 const vehicleRoot = new THREE.Group();
 rosRoot.add(vehicleRoot);
+
+// Course layout the user asked to add, textured from their own course image
+// (see course.js). Real-world scale not modeled yet -- visual only, no
+// collision or lap/gate logic. A child of rosRoot (like everything else
+// placed in ROS coordinates) so it can be positioned directly with ROS
+// x/y/yaw: THREE.PlaneGeometry already lies in its local XY plane with a
+// +Z normal by default, which is exactly "flat on the ground, facing up"
+// in ROS convention -- unlike `ground` above (added straight to `scene`,
+// Three.js's own Y-up world), this needs no extra rotation.x tilt.
+const COURSE_POSE = { x: 13.22, y: 35.41, z: 0.01, roll: 0, pitch: 0, yaw: Math.PI / 2 };
+const course = new THREE.Mesh(
+  new THREE.PlaneGeometry(COURSE_WIDTH_M, COURSE_DEPTH_M),
+  new THREE.MeshBasicMaterial({ map: createCourseTexture() })
+);
+setPose(course, COURSE_POSE); // setPose is defined just below; hoisted, so usable here
+rosRoot.add(course);
 
 function setPose(object3d, pose) {
   object3d.position.set(pose.x, pose.y, pose.z);

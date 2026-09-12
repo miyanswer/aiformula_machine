@@ -34,20 +34,24 @@ function approachZero(value, decel, dt) {
   return 0;
 }
 
+const INITIAL_X = 0;
+const INITIAL_Y = 0;
+const INITIAL_YAW = 0;
+
 export class VehiclePhysics {
   constructor() {
-    this.x = 0; // [m] ROS convention, world/odom frame
-    this.y = 0; // [m]
-    this.yaw = 0; // [rad], 0 = facing +X, positive = CCW (REP103)
+    this.x = INITIAL_X; // [m] ROS convention, world/odom frame
+    this.y = INITIAL_Y; // [m]
+    this.yaw = INITIAL_YAW; // [rad], 0 = facing +X, positive = CCW (REP103)
     this.v = 0; // [m/s] forward speed
     this.omega = 0; // [rad/s] yaw rate
     this.linearAccel = 0; // [m/s^2] forward (body x) accel, for IMU simulation
   }
 
   reset() {
-    this.x = 0;
-    this.y = 0;
-    this.yaw = 0;
+    this.x = INITIAL_X;
+    this.y = INITIAL_Y;
+    this.yaw = INITIAL_YAW;
     this.v = 0;
     this.omega = 0;
     this.linearAccel = 0;
