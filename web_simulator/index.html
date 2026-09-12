@@ -98,6 +98,21 @@
   }
   #hud button:hover { background: #35839c; }
   #hud button:disabled { background: #444; cursor: default; }
+  #view-controls {
+    display: flex;
+    gap: 8px;
+    margin-top: 10px;
+  }
+  #view-controls button {
+    flex: 1;
+    background: #2b2f36;
+    border: 1px solid #3a3f47;
+  }
+  #view-controls button:hover { background: #383e47; }
+  #view-controls button.active {
+    background: #2a6f97;
+    border-color: #7fd1ff;
+  }
   #status-dot {
     display: inline-block;
     width: 9px;
@@ -179,11 +194,17 @@
     <div class="key" data-key="KeyD">D</div>
   </div>
 
+  <div id="view-controls">
+    <button id="rotate-view-btn">視点回転</button>
+    <button id="reset-view-btn">視点リセット</button>
+  </div>
+
   <div id="help">
     W/S: 前進・後退（押しっぱなしで加速）<br>
     A/D: 左右旋回<br>
     離すと惰性走行、R キーで位置リセット<br>
-    マウスドラッグ: 視点回転 / ホイール: ズーム
+    マウスドラッグ: 視点回転 / ホイール: ズーム<br>
+    「視点回転」: 車体を中心に自動で一周 / 「視点リセット」: 標準の追従視点に戻す
   </div>
 </div>
 

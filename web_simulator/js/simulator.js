@@ -72,11 +72,19 @@ controls.dampingFactor = 0.1;
 controls.minDistance = 1.0;
 controls.maxDistance = 40;
 controls.maxPolarAngle = Math.PI * 0.49;
+controls.autoRotate = false;
+controls.autoRotateSpeed = 6; // ~10s per revolution at 60fps (default 2 = 30s)
 
 scene.add(new THREE.AmbientLight(0xffffff, 0.5));
 const sun = new THREE.DirectionalLight(0xffffff, 0.9);
 sun.position.set(6, 10, 4);
 scene.add(sun);
+// Dim fill light from roughly the opposite side, so the side facing away
+// from the sun isn't left almost black -- a single directional light
+// otherwise makes one side of the body look "broken"/unlit by comparison.
+const fill = new THREE.DirectionalLight(0xffffff, 0.35);
+fill.position.set(-6, 4, -4);
+scene.add(fill);
 
 // Unlit so it stays a flat, readable black regardless of light intensity
 // (MeshStandardMaterial was blowing out to near-white under the sun light).
@@ -145,7 +153,76 @@ casterJoint.add(casterSpin);
 // ---------------------------------------------------------------------------
 const loader = new ColladaLoader();
 
-function loadInto(parent, url) {
+// tire.dae/AIF_body.dae carry Phong materials with a specular highlight
+// baked in by the exporter; at certain camera/light angles that highlight
+// blows out to solid white. Kill specular entirely so shading stays flat
+// and readable from any angle.
+//
+// tire.dae's own color texture (tire_color.png) is not real tire artwork --
+// it's a rainbow UV-checker placeholder image -- so instead of using it
+// (which would render the wheels as a rainbow grid rather than fixing
+// anything), wheel/caster loads are given a plain dark rubber color and
+// their texture map is dropped.
+//
+// tire.dae also has 32 unmaterialed <lines> baked in by the exporter (edge
+// lines with no material binding), which ColladaLoader defaults to plain
+// white LineBasicMaterial (see buildObjects: `materials.push(new
+// LineBasicMaterial())`). Those render as LineSegments, not Mesh, so they
+// were previously skipped here entirely -- leaving bright white lines
+// overlaid on the tire regardless of the mesh tint below. Style those too.
+//
+// tire.dae's 320 vertices sit in 3 clean concentric radius bands around the
+// local rotation axis (measured as sqrt(y^2+z^2) in its own object space,
+// checked directly against the .dae's raw position array): ~0.20 (center
+// hub cap), ~0.56-0.60 (spokes), ~0.96-1.0 (outer tread), with real gaps
+// between them -- so a single radius threshold cleanly separates "hub cap"
+// vertices from everything else. hubRadius/hubColor below paint just that
+// inner disc a different (non-rubber) color via per-vertex colors.
+function styleMaterials(object3d, { tintColor, hubColor, hubRadius } = {}) {
+  object3d.traverse((obj) => {
+    if (!obj.isMesh && !obj.isLine && !obj.isLineSegments && !obj.isPoints) return;
+
+    if (tintColor === undefined) {
+      const materials = Array.isArray(obj.material) ? obj.material : [obj.material];
+      materials.forEach((mat) => {
+        if (!mat) return;
+        if (mat.specular) mat.specular.setRGB(0, 0, 0);
+        if (typeof mat.shininess === 'number') mat.shininess = 0;
+      });
+      return;
+    }
+
+    // Replace with a fully unlit material so the tint is immune to
+    // directional-light angle, specular, and tone-mapping entirely -- no
+    // dependence on how the source Lambert material shades per pixel.
+    if (obj.isMesh && hubColor !== undefined) {
+      applyHubTint(obj, tintColor, hubColor, hubRadius);
+    } else {
+      const flat = new THREE.MeshBasicMaterial({ color: tintColor });
+      obj.material = Array.isArray(obj.material) ? obj.material.map(() => flat) : flat;
+    }
+  });
+}
+
+function applyHubTint(mesh, treadColor, hubColor, hubRadius) {
+  const position = mesh.geometry.attributes.position;
+  const tread = new THREE.Color(treadColor);
+  const hub = new THREE.Color(hubColor);
+  const colors = new Float32Array(position.count * 3);
+  for (let i = 0; i < position.count; i++) {
+    const y = position.getY(i);
+    const z = position.getZ(i);
+    const radius = Math.sqrt(y * y + z * z);
+    const c = radius < hubRadius ? hub : tread;
+    colors[i * 3] = c.r;
+    colors[i * 3 + 1] = c.g;
+    colors[i * 3 + 2] = c.b;
+  }
+  mesh.geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  mesh.material = new THREE.MeshBasicMaterial({ vertexColors: true });
+}
+
+function loadInto(parent, url, styleOptions) {
   loader.load(
     url,
     (collada) => {
@@ -155,6 +232,7 @@ function loadInto(parent, url) {
       // for the whole vehicle, so undo ColladaLoader's own rotation here to
       // avoid applying it twice (which was pitching/mispositioning meshes).
       collada.scene.rotation.x = 0;
+      styleMaterials(collada.scene, styleOptions);
       parent.add(collada.scene);
     },
     undefined,
@@ -162,14 +240,19 @@ function loadInto(parent, url) {
   );
 }
 
+const WHEEL_RUBBER_COLOR = 0x1c1c1c;
+const WHEEL_HUB_COLOR = 0x9a9ea3; // center cap / hub, distinct from the tire rubber
+const WHEEL_HUB_RADIUS = 0.4; // tire.dae local units; hub cluster sits at r~0.20, next band starts ~0.56
+const WHEEL_STYLE = { tintColor: WHEEL_RUBBER_COLOR, hubColor: WHEEL_HUB_COLOR, hubRadius: WHEEL_HUB_RADIUS };
+
 wheelLeftSpin.scale.set(WHEEL_SCALE.thickness, WHEEL_SCALE.size, WHEEL_SCALE.size);
 wheelRightSpin.scale.set(WHEEL_SCALE.thickness, WHEEL_SCALE.size, WHEEL_SCALE.size);
 casterSpin.scale.set(CASTER_SCALE, CASTER_SCALE, CASTER_SCALE);
 
 loadInto(bodyGroup, MESH_DIR + 'AIF_body.dae');
-loadInto(wheelLeftSpin, MESH_DIR + 'tire.dae');
-loadInto(wheelRightSpin, MESH_DIR + 'tire.dae');
-loadInto(casterSpin, MESH_DIR + 'tire.dae');
+loadInto(wheelLeftSpin, MESH_DIR + 'tire.dae', WHEEL_STYLE);
+loadInto(wheelRightSpin, MESH_DIR + 'tire.dae', WHEEL_STYLE);
+loadInto(casterSpin, MESH_DIR + 'tire.dae', WHEEL_STYLE);
 
 // ---------------------------------------------------------------------------
 // Keyboard input (held-down state; ignored while typing in an HUD input)
@@ -344,8 +427,37 @@ function rosToThree(x, y, z) {
   return new THREE.Vector3(x, z, -y);
 }
 
+// Default "behind and above" chase position, in current vehicle-relative
+// world coordinates. Used to seed the camera on load and by the view-reset
+// button; ongoing frame-to-frame following is handled in animate() below by
+// translating camera.position with the vehicle instead of re-snapping here,
+// so it doesn't fight the user's manual orbit/zoom.
+function chaseCameraPosition() {
+  return rosToThree(
+    physics.x - CAM_BACK * Math.cos(physics.yaw),
+    physics.y - CAM_BACK * Math.sin(physics.yaw),
+    CAM_HEIGHT
+  );
+}
+
 const followTarget = new THREE.Vector3();
 let cameraInitialized = false;
+
+// --- View controls: rotate (auto-orbit toggle) / reset ---
+const rotateViewBtn = document.getElementById('rotate-view-btn');
+const resetViewBtn = document.getElementById('reset-view-btn');
+
+rotateViewBtn.addEventListener('click', () => {
+  controls.autoRotate = !controls.autoRotate;
+  rotateViewBtn.classList.toggle('active', controls.autoRotate);
+});
+
+resetViewBtn.addEventListener('click', () => {
+  camera.position.copy(chaseCameraPosition());
+  followTarget.copy(rosToThree(physics.x, physics.y, 0.3));
+  controls.target.copy(followTarget);
+  controls.update();
+});
 
 const clock = new THREE.Clock();
 
@@ -363,24 +475,23 @@ function animate() {
   wheelRightSpin.rotation.x += (right / VEHICLE.wheelRadius) * dt;
   casterSpin.rotation.x += (physics.v / CASTER_JOINT.z) * dt; // CASTER_JOINT.z == CASTER_RADIUS
 
-  // Smoothly follow the vehicle from a fixed relative offset, computed in
-  // ROS space and converted to Three.js space to match the model transforms.
-  const desiredCamThree = rosToThree(
-    physics.x - CAM_BACK * Math.cos(physics.yaw),
-    physics.y - CAM_BACK * Math.sin(physics.yaw),
-    CAM_HEIGHT
-  );
+  // The orbit target always tracks the vehicle. camera.position is only
+  // ever translated by the vehicle's own movement (not re-snapped to a
+  // fixed offset) so free orbiting via mouse drag / autoRotate / the view
+  // buttons isn't fought every frame -- whatever relative angle/distance
+  // the user has set is preserved while still following the car around.
   const targetThree = rosToThree(physics.x, physics.y, 0.3);
 
   if (!cameraInitialized) {
-    camera.position.copy(desiredCamThree);
+    camera.position.copy(chaseCameraPosition());
     followTarget.copy(targetThree);
     controls.target.copy(followTarget);
     cameraInitialized = true;
   } else {
     const smoothing = 1 - Math.pow(0.001, dt);
-    camera.position.lerp(desiredCamThree, smoothing);
+    const previousTarget = followTarget.clone();
     followTarget.lerp(targetThree, smoothing);
+    camera.position.add(followTarget.clone().sub(previousTarget));
     controls.target.copy(followTarget);
   }
 
