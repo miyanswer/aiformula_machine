@@ -175,7 +175,7 @@ class YOLOPLaneDetectorNode(Node):
 
         self.declare_parameter(
             'weight_path',
-            default_workspace_asset('models', 'shiho_lane_mask_v2_best.pth'),
+            default_workspace_asset('models', 'honda_shihou_finetuned_best.pth'),
         )
         self.declare_parameter('use_device', 'cpu')  # 'cpu' or '0' (CUDA)
         self.declare_parameter('confidence_threshold', 0.80)
@@ -255,6 +255,7 @@ class YOLOPLaneDetectorNode(Node):
         if not os.path.exists(weights):
             alt_names = [
                 os.path.basename(weights),
+                "honda_shihou_finetuned_best.pth",
                 "shiho_lane_mask_v2_best.pth",
                 "shiho_lane_crop_best.pth",
                 "shiho_lane_mask_best.pth",

@@ -13,8 +13,8 @@ without an NVIDIA GPU at all (see yolop_lane_detector.py's PyTorch fallback).
 
 Usage (on the Jetson, with the workspace sourced):
     ros2 run oit_navigation export_tensorrt -- \\
-        --weights /aiformula_machine/models/shiho_lane_mask_v2_best.pth \\
-        --output /aiformula_machine/models/shiho_lane_mask_v2_best.engine --fp16
+        --weights /aiformula_machine/models/honda_shihou_finetuned_best.pth \\
+        --output /aiformula_machine/models/honda_shihou_finetuned_best.engine --fp16
 
     # INT8 needs representative calibration images from real track footage -
     # accuracy depends entirely on how representative these images are:

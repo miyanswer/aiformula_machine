@@ -63,7 +63,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "weight_path",
-            default_value=default_workspace_asset("models", "shiho_lane_mask_v2_best.pth"),
+            default_value=default_workspace_asset("models", "honda_shihou_finetuned_best.pth"),
             description="YOLOP 白線認識モデル (.pth) のパス",
         ),
         DeclareLaunchArgument(

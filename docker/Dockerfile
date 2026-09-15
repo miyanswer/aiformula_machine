@@ -51,6 +51,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-teleop-twist-keyboard \
     ros-humble-vision-msgs \
     ros-humble-xacro \
+    ros-humble-rosbridge-server \
+    ros-humble-rosbridge-suite \
     && rm -rf /var/lib/apt/lists/*
 
 # Install AI / Perception and Hardware Communication dependencies
