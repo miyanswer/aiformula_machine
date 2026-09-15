@@ -60,10 +60,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ultralytics (and separately onnx, needed by export_tensorrt.py) pull in numpy>=2 +
 # a matching opencv-python, which breaks the apt-installed cv_bridge and matplotlib
 # (compiled against numpy 1.x) with "_ARRAY_API not found".
+ARG ENABLE_CUDA=0
 RUN pip3 install --no-cache-dir \
     "setuptools<70.0.0" \
     "numpy<2.0.0" \
-    torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu \
+    && if [ "$ENABLE_CUDA" = "1" ]; then \
+        echo "[INFO] Installing PyTorch with CUDA support (cu121)..." && \
+        pip3 install --no-cache-dir torch torchvision --extra-index-url https://download.pytorch.org/whl/cu121; \
+    else \
+        echo "[INFO] Installing PyTorch with CPU support..." && \
+        pip3 install --no-cache-dir torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu; \
+    fi \
     && pip3 install --no-cache-dir \
     "numpy<2.0.0" \
     "opencv-python<4.10" \

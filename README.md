@@ -53,19 +53,25 @@ aiformula_machine/
 
 ## 💻 開発・実行ワークフロー
 
-### 1. Docker 環境のセットアップ（PC単体開発・Mac / Linux / Windows）
+### 1. Docker 環境のセットアップ（Mac / Ubuntu / Windows 自動対応）
 
-本リポジトリは Docker Compose を利用して、ホストOSを汚さずに ROS 2 Humble 環境と GUI ツールを起動できます。
+本リポジトリは `Makefile` により **Mac（Apple Silicon / CPU）** と **Ubuntu（NVIDIA GPU）** を自動検知して最適な環境を立ち上げます。
 
 ```bash
-# コンテナのビルド & 起動 (バックグラウンド)
-docker compose up -d
+# コンテナのビルド (MacはCPU版、Ubuntu+GPUはCUDA版PyTorchを自動選択)
+make build
 
-# コンテナのシェルに入る場合
-docker compose exec aiformula_machine bash
+# コンテナの起動 & シェルに入る
+make bash
 ```
 
+> **🖥️ 環境の自動判定について:**
+> - **Mac (Apple Silicon / Intel)**: CPU モードで起動（手動設定不要）。
+> - **Ubuntu (NVIDIA GPU)**: `nvidia-smi` を自動検知し、GPU パススルー（`compose.gpu.yaml`）および CUDA 12.1 対応 PyTorch でビルド・起動。
+>   *(※ Ubuntu 側には `docker-ce` と `nvidia-container-toolkit` をインストールしておくだけでOKです)*
+
 > **🌐 ブラウザでアクセス可能な Web UI:**
+> - **3D 走行シミュレータ:** [http://localhost:8000/web_simulator/](http://localhost:8000/web_simulator/)
 > - **RViz2 / noVNC 画面:** [http://localhost:8080](http://localhost:8080)
 > - **動画検証 Web GUI:** [http://localhost:8090](http://localhost:8090)
 

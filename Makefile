@@ -5,8 +5,28 @@
 SERVICE_NAME := aiformula_machine
 CONTAINER_NAME := aiformula_machine_humble
 
+# ------------------------------------------------------------------------------
+# Environment & GPU Auto-Detection (Mac vs Ubuntu/Linux)
+# ------------------------------------------------------------------------------
+OS := $(shell uname -s)
+ARCH := $(shell uname -m)
+HAS_NVIDIA := $(shell which nvidia-smi 2>/dev/null)
+
+COMPOSE_FILES := -f compose.yaml
+ENABLE_CUDA := 0
+
+# If running on Linux and NVIDIA GPU is detected, add GPU compose override and enable CUDA
+ifeq ($(OS),Linux)
+  ifneq ($(HAS_NVIDIA),)
+    COMPOSE_FILES += -f docker/compose.gpu.yaml
+    ENABLE_CUDA := 1
+  endif
+endif
+
+DOCKER_COMPOSE := docker compose $(COMPOSE_FILES)
+
 # Parameters with defaults
-DEVICE ?= cpu
+DEVICE ?= $(if $(filter 1,$(ENABLE_CUDA)),cuda,cpu)
 VIDEO ?=
 PKG ?=
 
@@ -20,6 +40,7 @@ PKG ?=
 help:
 	@echo "========================================================================"
 	@echo "  🏎️  AI Formula Machine - Docker & Development Commands"
+	@echo "  🖥️  Environment: OS=$(OS) ($(ARCH)) | GPU Mode=$(if $(filter 1,$(ENABLE_CUDA)),Enabled (NVIDIA GPU),Disabled (CPU/Mac))"
 	@echo "========================================================================"
 	@echo ""
 	@echo "📦 [Container Management]"
@@ -27,7 +48,7 @@ help:
 	@echo "  make down             Stop and remove Docker containers"
 	@echo "  make stop             Stop running container"
 	@echo "  make restart          Restart Docker container"
-	@echo "  make build            Build Docker image"
+	@echo "  make build            Build Docker image (Auto-detects CPU/CUDA)"
 	@echo "  make rebuild          Rebuild Docker image without cache"
 	@echo "  make ps               Check container status"
 	@echo "  make logs             Show container logs"
@@ -69,65 +90,65 @@ help:
 # ------------------------------------------------------------------------------
 
 up:
-	docker compose up -d
+	$(DOCKER_COMPOSE) up -d
 
 down:
-	docker compose down
+	$(DOCKER_COMPOSE) down
 
 stop:
-	docker compose stop
+	$(DOCKER_COMPOSE) stop
 
 restart: down up
 
 build:
-	docker compose build
+	$(DOCKER_COMPOSE) build --build-arg ENABLE_CUDA=$(ENABLE_CUDA)
 
 rebuild:
-	docker compose build --no-cache
+	$(DOCKER_COMPOSE) build --no-cache --build-arg ENABLE_CUDA=$(ENABLE_CUDA)
 
 ps:
-	docker compose ps
+	$(DOCKER_COMPOSE) ps
 
 logs:
-	docker compose logs -f $(SERVICE_NAME)
+	$(DOCKER_COMPOSE) logs -f $(SERVICE_NAME)
 
 # ------------------------------------------------------------------------------
 # Shell Access (Auto-starts container if not running)
 # ------------------------------------------------------------------------------
 
 bash shell exec:
-	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
 		echo "[INFO] Container is not running. Starting $(SERVICE_NAME)..."; \
-		docker compose up -d; \
+		$(DOCKER_COMPOSE) up -d; \
 	fi
-	docker compose exec -it $(SERVICE_NAME) bash
+	$(DOCKER_COMPOSE) exec -it $(SERVICE_NAME) bash
 
 root root-bash:
-	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
 		echo "[INFO] Container is not running. Starting $(SERVICE_NAME)..."; \
-		docker compose up -d; \
+		$(DOCKER_COMPOSE) up -d; \
 	fi
-	docker compose exec -it -u root $(SERVICE_NAME) bash
+	$(DOCKER_COMPOSE) exec -it -u root $(SERVICE_NAME) bash
 
 # ------------------------------------------------------------------------------
 # Build & Workspace Management
 # ------------------------------------------------------------------------------
 
 build-ws colcon:
-	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
-		docker compose up -d; \
+	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		$(DOCKER_COMPOSE) up -d; \
 	fi
-	docker compose exec $(SERVICE_NAME) bash -c "source /opt/ros/humble/setup.bash && colcon build --symlink-install"
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "source /opt/ros/humble/setup.bash && colcon build --symlink-install"
 
 build-pkg:
 	@if [ -z "$(PKG)" ]; then \
 		echo "[ERROR] Please specify PKG. Example: make build-pkg PKG=oit_navigation"; \
 		exit 1; \
 	fi
-	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
-		docker compose up -d; \
+	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		$(DOCKER_COMPOSE) up -d; \
 	fi
-	docker compose exec $(SERVICE_NAME) bash -c "source /opt/ros/humble/setup.bash && colcon build --packages-select $(PKG) --symlink-install"
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "source /opt/ros/humble/setup.bash && colcon build --packages-select $(PKG) --symlink-install"
 
 clean:
 	rm -rf build install log
@@ -137,10 +158,10 @@ clean:
 # ------------------------------------------------------------------------------
 
 test-pc test:
-	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
-		docker compose up -d; \
+	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		$(DOCKER_COMPOSE) up -d; \
 	fi
-	docker compose exec $(SERVICE_NAME) bash -c \
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
 		"source /opt/ros/humble/setup.bash && source install/setup.bash && \
 		 ros2 launch oit_navigation video_test.launch.py \
 		 $(if $(VIDEO),video_path:=$(VIDEO),) \
@@ -148,30 +169,30 @@ test-pc test:
 		 rviz:=true"
 
 test-tl:
-	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
-		docker compose up -d; \
+	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		$(DOCKER_COMPOSE) up -d; \
 	fi
-	docker compose exec $(SERVICE_NAME) bash -c \
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
 		"source /opt/ros/humble/setup.bash && source install/setup.bash && \
 		 ros2 launch oit_navigation traffic_light_video_test.launch.py \
 		 $(if $(VIDEO),video_path:=$(VIDEO),) \
 		 device:=$(DEVICE)"
 
 test-yolop:
-	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
-		docker compose up -d; \
+	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		$(DOCKER_COMPOSE) up -d; \
 	fi
-	docker compose exec $(SERVICE_NAME) bash -c \
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
 		"source /opt/ros/humble/setup.bash && source install/setup.bash && \
 		 ros2 launch oit_navigation yolop_video_test.launch.py \
 		 $(if $(VIDEO),video_path:=$(VIDEO),) \
 		 use_device:=$(DEVICE)"
 
 test-control:
-	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
-		docker compose up -d; \
+	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		$(DOCKER_COMPOSE) up -d; \
 	fi
-	docker compose exec $(SERVICE_NAME) bash -c \
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
 		"source /opt/ros/humble/setup.bash && source install/setup.bash && \
 		 ros2 launch oit_navigation video_test.launch.py \
 		 $(if $(VIDEO),video_path:=$(VIDEO),) \
@@ -180,14 +201,14 @@ test-control:
 		 rviz:=true"
 
 vgui verification-gui:
-	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
-		docker compose up -d; \
+	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		$(DOCKER_COMPOSE) up -d; \
 	fi
-	docker compose exec $(SERVICE_NAME) bash -c \
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
 		"source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 run oit_navigation verification_gui"
 
 stop-nodes kill:
-	docker compose exec $(SERVICE_NAME) bash -c \
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
 		"pkill -9 -f 'ros2|rviz2|video_publisher|yolop_lane_detector|bev_pure_pursuit_node|traffic_light|robot_state_publisher|joint_state_publisher' || true"
 
 # ------------------------------------------------------------------------------
@@ -204,24 +225,24 @@ open-sim sim:
 	@which open > /dev/null && open http://localhost:8000 || which xdg-open > /dev/null && xdg-open http://localhost:8000 || echo "Open http://localhost:8000 in your browser"
 
 rqt-graph:
-	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
-		docker compose up -d; \
+	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		$(DOCKER_COMPOSE) up -d; \
 	fi
 	@which open > /dev/null && open http://localhost:8080 || which xdg-open > /dev/null && xdg-open http://localhost:8080 || echo "Open http://localhost:8080 in your browser"
-	docker compose exec $(SERVICE_NAME) bash -c "source /opt/ros/humble/setup.bash && rqt_graph"
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "source /opt/ros/humble/setup.bash && rqt_graph"
 
 rqt:
-	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
-		docker compose up -d; \
+	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		$(DOCKER_COMPOSE) up -d; \
 	fi
 	@which open > /dev/null && open http://localhost:8080 || which xdg-open > /dev/null && xdg-open http://localhost:8080 || echo "Open http://localhost:8080 in your browser"
-	docker compose exec $(SERVICE_NAME) bash -c "source /opt/ros/humble/setup.bash && rqt"
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "source /opt/ros/humble/setup.bash && rqt"
 
 rosbridge:
-	@if ! docker compose ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
-		docker compose up -d; \
+	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		$(DOCKER_COMPOSE) up -d; \
 	fi
-	docker compose exec $(SERVICE_NAME) bash -c \
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
 		"source /opt/ros/humble/setup.bash && \
 		 if ! ros2 pkg list | grep -q '^rosbridge_server$$'; then \
 		   echo '[INFO] Installing ros-humble-rosbridge-server...'; \
