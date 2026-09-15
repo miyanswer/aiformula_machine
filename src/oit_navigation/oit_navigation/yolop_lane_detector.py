@@ -288,27 +288,72 @@ class YOLOPLaneDetectorNode(Node):
         self.get_logger().info("YOLOP Model successfully loaded.")
 
     def _init_tensorrt_detector(self):
-        """Best-effort TensorRT engine load (see export_tensorrt.py to build one).
-        Requires the NVIDIA TensorRT Python bindings + PyCUDA, which ship with
-        JetPack on real hardware but are never installed in this project's
-        default CPU/dev container - any failure here just leaves self.trt_runner
-        as None so _init_detector falls back to plain PyTorch."""
-        engine_path = self.tensorrt_engine_path
-        if engine_path:
-            engine_path = resolve_workspace_asset(engine_path)
-        else:
-            engine_path = os.path.splitext(resolve_workspace_asset(self.weight_path))[0] + ".engine"
-
-        if not os.path.exists(engine_path):
-            self.get_logger().warning(f"TensorRT engine not found at: {engine_path}")
+        """Load or automatically compile a TensorRT engine optimized for the current GPU.
+        If an engine matching the current GPU model/architecture does not exist yet,
+        it builds and caches it on the fly using export_tensorrt."""
+        if not torch.cuda.is_available():
+            self.get_logger().warning("TensorRT requires CUDA, but CUDA is not available. Falling back to CPU/PyTorch.")
             return
 
+        # Resolve weights path
+        weights = resolve_workspace_asset(self.weight_path)
+        if not os.path.exists(weights):
+            alt_names = [
+                os.path.basename(weights),
+                "honda_shihou_finetuned_best.pth",
+                "shiho_lane_mask_v2_best.pth",
+                "shiho_lane_crop_best.pth",
+                "shiho_lane_mask_best.pth",
+            ]
+            for name in alt_names:
+                alt = resolve_workspace_asset(os.path.join("models", name))
+                if os.path.exists(alt):
+                    weights = alt
+                    break
+
+        gpu_tag = "cuda0"
+        try:
+            from oit_navigation.export_tensorrt import get_gpu_device_tag, export_engine_for_current_gpu
+            gpu_tag = get_gpu_device_tag(0)
+        except Exception:
+            export_engine_for_current_gpu = None
+
+        # Determine target engine path
+        if self.tensorrt_engine_path:
+            engine_path = resolve_workspace_asset(self.tensorrt_engine_path)
+        else:
+            base_name = os.path.splitext(weights)[0]
+            engine_path = f"{base_name}_{gpu_tag}.engine"
+            # Fallback check for plain .engine
+            if not os.path.exists(engine_path) and os.path.exists(base_name + ".engine"):
+                engine_path = base_name + ".engine"
+
+        # Check if engine exists; if not, attempt on-demand compilation
+        if not os.path.exists(engine_path):
+            self.get_logger().info(f"[TensorRT] No pre-built engine found for GPU '{gpu_tag}'.")
+            if export_engine_for_current_gpu is not None and os.path.exists(weights):
+                self.get_logger().info(f"[TensorRT] Compiling optimized TensorRT engine for {gpu_tag} -> {engine_path} ...")
+                try:
+                    export_engine_for_current_gpu(weights_path=weights, engine_path=engine_path, fp16=True)
+                    self.get_logger().info(f"[TensorRT] Engine successfully compiled and cached: {engine_path}")
+                except Exception as build_err:
+                    self.get_logger().warning(
+                        f"[TensorRT] Automatic engine compilation skipped/failed ({str(build_err)}). Falling back to PyTorch."
+                    )
+                    self.trt_runner = None
+                    return
+            else:
+                self.get_logger().warning(f"[TensorRT] Engine not found and compiler unavailable: {engine_path}")
+                self.trt_runner = None
+                return
+
+        # Load engine
         try:
             from oit_navigation.utils.tensorrt_runtime import TensorRTYOLOPRunner
             self.trt_runner = TensorRTYOLOPRunner(engine_path)
-            self.get_logger().info(f"TensorRT engine loaded: {engine_path}")
+            self.get_logger().info(f"[TensorRT] Engine loaded successfully on GPU ({gpu_tag}): {engine_path}")
         except Exception as e:
-            self.get_logger().warning(f"Could not load TensorRT engine ({str(e)}).")
+            self.get_logger().warning(f"Could not load TensorRT engine ({str(e)}). Falling back to PyTorch.")
             self.trt_runner = None
 
     def _image_callback(self, msg):

@@ -216,10 +216,44 @@ def build_engine(onnx_path: str, engine_path: str, fp16: bool, int8: bool, calib
     print(f"[export_tensorrt] Wrote TensorRT engine: {engine_path}")
 
 
+def get_gpu_device_tag(device_id: int = 0) -> str:
+    """Returns a sanitized identifier for the current GPU and compute capability,
+    e.g. 'rtx4090_sm89' or 'orin_sm87' or 'cuda0_sm86'."""
+    if not torch.cuda.is_available():
+        return "cpu"
+    try:
+        raw_name = torch.cuda.get_device_name(device_id)
+        # Clean up common brand prefixes
+        clean = raw_name.replace("NVIDIA", "").replace("GeForce", "").replace("Laptop GPU", "")
+        clean = "".join(c if c.isalnum() else "_" for c in clean).strip("_").lower()
+        while "__" in clean:
+            clean = clean.replace("__", "_")
+        major, minor = torch.cuda.get_device_capability(device_id)
+        return f"{clean}_sm{major}{minor}"
+    except Exception:
+        return f"cuda{device_id}"
+
+
+def export_engine_for_current_gpu(
+    weights_path: str,
+    engine_path: str,
+    fp16: bool = True,
+    int8: bool = False,
+    calib_images_dir: str = "",
+) -> str:
+    """Exports and builds a TensorRT engine directly for the current GPU,
+    returning the engine_path on success."""
+    model = load_model(weights_path)
+    onnx_path = os.path.splitext(engine_path)[0] + ".onnx"
+    export_onnx(model, onnx_path)
+    build_engine(onnx_path, engine_path, fp16=fp16, int8=int8, calib_images_dir=calib_images_dir)
+    return engine_path
+
+
 def main(args=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--weights", required=True, help="Path to the trained YOLOP .pth weights")
-    parser.add_argument("--output", required=True, help="Path to write the .engine file to")
+    parser.add_argument("--output", default="", help="Path to write the .engine file to (auto-named by GPU if omitted)")
     parser.add_argument("--onnx-out", default=None, help="Optional path to keep the intermediate .onnx file")
     parser.add_argument("--fp16", action="store_true", help="Build an FP16 engine (recommended default)")
     parser.add_argument("--int8", action="store_true", help="Build an INT8 engine (needs calibration data)")
@@ -229,11 +263,19 @@ def main(args=None):
     if parsed.int8 and parsed.fp16:
         parser.error("--fp16 and --int8 are mutually exclusive (TensorRT builds one precision mode at a time)")
 
-    model = load_model(parsed.weights)
+    output_path = parsed.output
+    if not output_path:
+        gpu_tag = get_gpu_device_tag(0)
+        base_name = os.path.splitext(parsed.weights)[0]
+        output_path = f"{base_name}_{gpu_tag}.engine"
 
-    onnx_path = parsed.onnx_out or (os.path.splitext(parsed.output)[0] + ".onnx")
-    export_onnx(model, onnx_path)
-    build_engine(onnx_path, parsed.output, fp16=parsed.fp16, int8=parsed.int8, calib_images_dir=parsed.calib_images_dir)
+    export_engine_for_current_gpu(
+        weights_path=parsed.weights,
+        engine_path=output_path,
+        fp16=parsed.fp16 or not parsed.int8,
+        int8=parsed.int8,
+        calib_images_dir=parsed.calib_images_dir,
+    )
 
 
 if __name__ == "__main__":

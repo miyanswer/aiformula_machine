@@ -65,8 +65,9 @@ RUN pip3 install --no-cache-dir \
     "setuptools<70.0.0" \
     "numpy<2.0.0" \
     && if [ "$ENABLE_CUDA" = "1" ]; then \
-        echo "[INFO] Installing PyTorch with CUDA support (cu121)..." && \
-        pip3 install --no-cache-dir torch torchvision --extra-index-url https://download.pytorch.org/whl/cu121; \
+        echo "[INFO] Installing PyTorch with CUDA support (cu121) and TensorRT..." && \
+        pip3 install --no-cache-dir torch torchvision --extra-index-url https://download.pytorch.org/whl/cu121 && \
+        (pip3 install --no-cache-dir tensorrt pycuda 2>/dev/null || true); \
     else \
         echo "[INFO] Installing PyTorch with CPU support..." && \
         pip3 install --no-cache-dir torch torchvision --extra-index-url https://download.pytorch.org/whl/cpu; \
