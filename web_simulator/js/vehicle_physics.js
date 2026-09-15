@@ -17,12 +17,16 @@ const REVERSE_FORCE_N = 98; // S held while stopped/reversing -> ~1.4 m/s^2
 const BRAKE_FORCE_N = 231; // S held while still moving forward -> ~3.3 m/s^2
 const COAST_RESISTANCE_N = 35; // rolling resistance + drag while coasting -> ~0.5 m/s^2
 
-const MAX_SPEED = 1.5; // [m/s]
+// Exported so js/simulator.js can pass them to the autonomous-driving Pure
+// Pursuit control law (oit_lane_pipeline.js) as its target speed / angular
+// clamp -- per instruction, autonomous driving keeps these same limits
+// rather than oit_navigation's own real-vehicle defaults.
+export const MAX_SPEED = 1.5; // [m/s]
 const MAX_REVERSE_SPEED = -0.75; // [m/s]
 
 const ANGULAR_ACCEL = 2.5; // [rad/s^2] while A/D held
 const ANGULAR_DAMPING = 4.0; // [rad/s^2] while A/D released (coasts back to 0)
-const MAX_ANGULAR = 1.2; // [rad/s]
+export const MAX_ANGULAR = 1.2; // [rad/s]
 
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
@@ -92,6 +96,46 @@ export class VehiclePhysics {
     this.y += this.v * Math.sin(this.yaw) * dt;
     this.yaw += this.omega * dt;
     // Normalize yaw to [-PI, PI] (REP 103 standard)
+    this.yaw = Math.atan2(Math.sin(this.yaw), Math.cos(this.yaw));
+  }
+
+  // Drives the vehicle from a commanded (v, omega) instead of WASD key
+  // state -- used by the autonomous-driving toggle (js/simulator.js), fed
+  // from the ported oit_navigation Pure Pursuit control law
+  // (js/oit_lane_pipeline.js's stepPurePursuitControl). Ramps toward the
+  // command using the same force/accel budget as manual driving (so
+  // autonomous driving has the same inertia "feel"), then clamps to the
+  // same MAX_SPEED/MAX_REVERSE_SPEED/MAX_ANGULAR limits WASD is bound by --
+  // per instruction, autonomous mode keeps these limits unchanged (1.5 m/s
+  // forward, 1.2 rad/s turning) rather than adopting oit_navigation's own
+  // real-vehicle defaults (target_linear_speed=1.0, max_angular_speed=1.5).
+  stepAutonomous(vCmd, omegaCmd, dt) {
+    const mass = VEHICLE.massKg;
+    const previousV = this.v;
+
+    vCmd = clamp(vCmd, MAX_REVERSE_SPEED, MAX_SPEED);
+    omegaCmd = clamp(omegaCmd, -MAX_ANGULAR, MAX_ANGULAR);
+
+    if (this.v < vCmd) {
+      const accel = (vCmd > 0 ? DRIVE_FORCE_N : REVERSE_FORCE_N) / mass;
+      this.v = Math.min(vCmd, this.v + accel * dt);
+    } else if (this.v > vCmd) {
+      const decel = (this.v > 0 ? BRAKE_FORCE_N : REVERSE_FORCE_N) / mass;
+      this.v = Math.max(vCmd, this.v - decel * dt);
+    }
+    this.v = clamp(this.v, MAX_REVERSE_SPEED, MAX_SPEED);
+    this.linearAccel = dt > 0 ? (this.v - previousV) / dt : 0;
+
+    if (this.omega < omegaCmd) {
+      this.omega = Math.min(omegaCmd, this.omega + ANGULAR_ACCEL * dt);
+    } else if (this.omega > omegaCmd) {
+      this.omega = Math.max(omegaCmd, this.omega - ANGULAR_ACCEL * dt);
+    }
+    this.omega = clamp(this.omega, -MAX_ANGULAR, MAX_ANGULAR);
+
+    this.x += this.v * Math.cos(this.yaw) * dt;
+    this.y += this.v * Math.sin(this.yaw) * dt;
+    this.yaw += this.omega * dt;
     this.yaw = Math.atan2(Math.sin(this.yaw), Math.cos(this.yaw));
   }
 

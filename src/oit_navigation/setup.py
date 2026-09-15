@@ -33,6 +33,7 @@ setup(
             'object_publisher_node = oit_navigation.object_publisher_node:main',
             'image_compressor_node = oit_navigation.image_compressor_node:main',
             'export_tensorrt = oit_navigation.export_tensorrt:main',
+            'export_onnx_web = oit_navigation.export_onnx_web:main',
             'verification_gui = oit_navigation.verification_gui:main',
         ],
     },

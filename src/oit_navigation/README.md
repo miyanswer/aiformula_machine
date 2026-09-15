@@ -15,7 +15,7 @@ flowchart TD
     end
 
     subgraph Perception ["2. 認識 (YOLOP & YOLO11n)"]
-        YOLOP["YOLOP 白線セグメンテーション<br>(yolop_lane_detector)<br>models/shiho_lane_mask_v2_best.pth"]
+        YOLOP["YOLOP 白線セグメンテーション<br>(yolop_lane_detector)<br>models/honda_shihou_finetuned_best.pth"]
         YOLO_TL["YOLO11n 信号機検出 & 距離推定<br>(traffic_light_distance_node)<br>models/traffic_light.pt"]
     end
 

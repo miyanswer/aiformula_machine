@@ -24,7 +24,7 @@
     robot_frame_id: "base_link"
 
     # 4. YOLOP Lane Detection Parameters
-    weight_path: "/aiformula_machine/models/shiho_lane_mask_v2_best.pth"
+    weight_path: "/aiformula_machine/models/honda_shihou_finetuned_best.pth"
     use_device: "cpu"            # "cpu" or "0" (CUDA GPU)
     roi_mode: "mask_top"         # "none", "mask_top" (Method A), "crop_bottom" (Method B)
     top_cut_ratio: 0.45
