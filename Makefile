@@ -42,22 +42,24 @@ endif
 #   driver >= 520 : CUDA 11.8 only -> cu118
 #   driver <  520 : too old, fall back to CPU build
 ifeq ($(ENABLE_CUDA),1)
-  DRIVER_OK_121 := $(shell [ "$(NVIDIA_DRIVER_MAJOR)" -ge 530 ] 2>/dev/null && echo 1)
-  DRIVER_OK_118 := $(shell [ "$(NVIDIA_DRIVER_MAJOR)" -ge 520 ] 2>/dev/null && echo 1)
-  ifeq ($(DRIVER_OK_121),1)
-    TORCH_CUDA_CHANNEL := cu121
-    TORCH_VERSION := 2.5.1
-    TORCHVISION_VERSION := 0.20.1
-    CUDA_APT_VERSION := 12-1
-    TENSORRT_CU := cu12
-  else ifeq ($(DRIVER_OK_118),1)
-    TORCH_CUDA_CHANNEL := cu118
-    TORCH_VERSION := 2.6.0
-    TORCHVISION_VERSION := 0.21.0
-    CUDA_APT_VERSION := 11-8
-    TENSORRT_CU := cu11
-  else
-    ENABLE_CUDA := 0
+  ifeq ($(IS_JETSON),)
+    DRIVER_OK_121 := $(shell [ "$(NVIDIA_DRIVER_MAJOR)" -ge 530 ] 2>/dev/null && echo 1)
+    DRIVER_OK_118 := $(shell [ "$(NVIDIA_DRIVER_MAJOR)" -ge 520 ] 2>/dev/null && echo 1)
+    ifeq ($(DRIVER_OK_121),1)
+      TORCH_CUDA_CHANNEL := cu121
+      TORCH_VERSION := 2.5.1
+      TORCHVISION_VERSION := 0.20.1
+      CUDA_APT_VERSION := 12-1
+      TENSORRT_CU := cu12
+    else ifeq ($(DRIVER_OK_118),1)
+      TORCH_CUDA_CHANNEL := cu118
+      TORCH_VERSION := 2.6.0
+      TORCHVISION_VERSION := 0.21.0
+      CUDA_APT_VERSION := 11-8
+      TENSORRT_CU := cu11
+    else
+      ENABLE_CUDA := 0
+    endif
   endif
 endif
 
