@@ -1,0 +1,217 @@
+ARG JETSON_BASE_TAG=r35.3.1
+FROM dustynv/ros:humble-pytorch-l4t-${JETSON_BASE_TAG}
+
+# Prevent interactive prompts during installation
+ENV DEBIAN_FRONTEND=noninteractive
+# Set explicitly (rather than trusting the base image to have it) since
+# every RUN step below that sources /opt/ros/${ROS_DISTRO}/... depends on
+# it being correct from the very first RUN.
+ENV ROS_DISTRO=humble
+
+# Refresh the ROS 2 apt archive signing key baked into this base image.
+# packages.ros.org's old key (F42ED6FBAB17C654) expired as part of ROS's
+# 2025 signing-key rotation, which makes `apt-get update` fail below with
+# "repository ... is not signed" before any package (not just ROS ones)
+# can install, since apt-get update && apt-get install is one && chain.
+# curl is already present in the base image, so there's no bootstrapping
+# problem fetching the replacement key before installing anything else.
+RUN curl -fsSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+    -o /usr/share/keyrings/ros-archive-keyring.gpg
+
+# Non-ROS system packages: dev tools + the noVNC/RViz debug stack (kept for
+# parity with docker/Dockerfile's PC-standalone verification workflow) +
+# CAN utilities. Deliberately NOT installing a CUDA toolkit or PyTorch/
+# TensorRT here - the dustynv base image already ships versions matched to
+# this exact L4T release; a generic x86_64 wheel/apt repo would either fail
+# outright (wrong arch) or silently disable GPU support.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    bash-completion \
+    build-essential \
+    cmake \
+    curl \
+    gdb \
+    git \
+    htop \
+    iputils-ping \
+    nano \
+    net-tools \
+    novnc \
+    python3-argcomplete \
+    python3-pip \
+    python3-rosdep \
+    python3-vcstool \
+    sudo \
+    tmux \
+    tree \
+    vim \
+    websockify \
+    wget \
+    fluxbox \
+    xvfb \
+    x11vnc \
+    libgl1-mesa-dri \
+    libgl1-mesa-glx \
+    libasio-dev \
+    kmod \
+    iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# ---------------------------------------------------------------------------
+# ROS packages this project needs that the base image doesn't include, built
+# the same way sensing/zed-ros2-wrapper/docker/Dockerfile.l4t35_1-humble-release
+# vendors ZED's own extra deps: vcs-clone + colcon build into a workspace
+# OUTSIDE /aiformula_machine (compose.yaml bind-mounts the whole repo over
+# /aiformula_machine at runtime, so anything built there at image-build time
+# would just be shadowed and lost).
+#
+# If a first `make build` fails with "package 'X' not found" during rosdep
+# or colcon, add its repo to this block and rebuild - the exact package set
+# a given dustynv tag ships is not guaranteed across versions.
+# ---------------------------------------------------------------------------
+WORKDIR /opt/extra_ros_ws/src
+RUN git clone --branch ros2 https://github.com/RobotWebTools/rosbridge_suite.git && \
+    git clone --branch humble-devel https://github.com/cra-ros-pkg/robot_localization.git && \
+    git clone --branch humble-devel https://github.com/ros/angles.git && \
+    git clone --branch ros2 https://github.com/ros-geographic-info/geographic_info.git && \
+    git clone --branch ros2-humble https://github.com/ros/diagnostics.git && \
+    git clone --branch humble https://github.com/autowarefoundation/ros2_socketcan.git && \
+    git clone --branch ros2 https://github.com/ros-drivers/nmea_msgs.git && \
+    git clone --branch ros2 https://github.com/ros-perception/vision_msgs.git && \
+    git clone --branch humble https://github.com/ros2/teleop_twist_keyboard.git && \
+    git clone --branch humble https://github.com/ros2/teleop_twist_joy.git && \
+    git clone --branch ros2 https://github.com/ros-drivers/joystick_drivers.git && \
+    git clone --branch ros2 https://github.com/ros/joint_state_publisher.git
+
+# can_msgs (needed by ros2_socketcan above, see its package.xml) isn't
+# tracked as its own repo in rosdistro - it's released out of the legacy
+# ros-industrial/ros_canopen monorepo's "dashing-devel" branch (name aside,
+# the can_msgs package itself is a plain ament_cmake/rosidl message package
+# with no ROS-distro-specific code). Only vendor the can_msgs subdirectory,
+# not the rest of that repo's unrelated (and largely unmaintained) CANopen
+# driver packages, which colcon would otherwise also try to build.
+RUN git clone --branch dashing-devel --depth 1 https://github.com/ros-industrial/ros_canopen.git /tmp/ros_canopen && \
+    mv /tmp/ros_canopen/can_msgs /opt/extra_ros_ws/src/can_msgs && \
+    rm -rf /tmp/ros_canopen
+
+WORKDIR /opt/extra_ros_ws
+RUN apt-get update && rosdep update && \
+    rosdep install --from-paths src --ignore-src -r -y --rosdistro ${ROS_DISTRO} && \
+    rm -rf /var/lib/apt/lists/*
+
+# --packages-skip vision_msgs_rviz_plugins: this subpackage of the
+# vision_msgs repo above needs rviz_common, which this image intentionally
+# doesn't ship (no rviz2/rviz_aiformula_plugins on the headless Jetson
+# target - see docker/Dockerfile.jetson's design brief). The vision_msgs
+# package itself (which oit_navigation actually depends on) builds fine
+# without it.
+# -DBUILD_TESTING=OFF: several vendored packages' CMakeLists.txt only
+# find_package() their test/lint tooling (e.g. rosbridge_library needs
+# ament_cmake_mypy) inside `if (BUILD_TESTING)`. None of that tooling is
+# installed here (this image doesn't run these repos' own test suites), so
+# leaving BUILD_TESTING at colcon's default (on) fails the build over
+# dependencies that are irrelevant to actually running these packages.
+RUN /bin/bash -c "source /opt/ros/${ROS_DISTRO}/install/setup.bash && \
+    colcon build --merge-install --parallel-workers \$(nproc) \
+    --packages-skip vision_msgs_rviz_plugins \
+    --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF"
+
+# Setup noVNC default index
+RUN ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html 2>/dev/null || true
+
+# Python deps for oit_navigation (mirrors docker/Dockerfile's pip block,
+# minus torch/torchvision/onnx-tensorrt which the base image already has
+# matched to this L4T release - see the comment above the apt block).
+#
+# The base image ships its own cv2 at
+# /usr/local/lib/python3.8/dist-packages/cv2, built from source (not via
+# pip - `pip3 show opencv-python` finds nothing) and linked against the
+# real Jetson GStreamer/multimedia stack. `pip install opencv-python`
+# installs into that exact same directory, but since pip has no RECORD of
+# that pre-existing non-pip install, it can't fully clean it up first, so
+# without removing it first the two installs' files end up mixed and
+# `import cv2` fails with "AttributeError: partially initialized module
+# 'cv2' has no attribute 'gapi_wip_gst_GStreamerPipeline'" (verified via
+# Mac build/run; confirmed by reproducing it, then fixing it by purging
+# the directory first). Removing the pre-existing cv2 first gives pip a
+# clean target. opencv-python is also pinned to 4.8.1.78 rather than
+# docker/Dockerfile's open "<4.10" range purely to stay on a version this
+# was actually verified against, while still satisfying the same
+# numpy<2 ABI-compat reason "<4.10" was chosen for.
+RUN find /usr/local/lib/python3.8/dist-packages -maxdepth 1 \( -iname 'cv2*' -o -iname '*opencv*' \) -exec rm -rf {} + && \
+    pip3 install --no-cache-dir \
+    "setuptools<70.0.0" \
+    "numpy<2.0.0" \
+    "opencv-python==4.8.1.78" \
+    python-can \
+    pyserial \
+    yacs \
+    scipy \
+    tqdm \
+    tensorboardX \
+    seaborn \
+    onnx
+
+# ultralytics is installed with --no-deps, and its non-torch runtime deps
+# added explicitly, rather than a plain `pip3 install ultralytics`: this
+# base image's pre-matched torch is tagged "2.0.0.nv23.05" (a dot, not a
+# "+", before the local-version suffix), which isn't valid PEP 440, so
+# pip's resolver can't see it as satisfying ultralytics' `torch>=1.8.0` and
+# silently replaces it with a generic non-Jetson PyPI torch/CPU wheel -
+# exactly the GPU-support regression this Dockerfile is designed to avoid
+# (see the comment above the apt block). torchvision's version string
+# ("0.15.1a0+42759b1") is PEP 440-valid, so pip leaves it alone either way.
+RUN pip3 install --no-cache-dir --no-deps ultralytics ultralytics-thop && \
+    pip3 install --no-cache-dir \
+    cloudpickle \
+    filelock \
+    matplotlib \
+    psutil \
+    polars \
+    nvidia-ml-py
+
+# Create non-root user 'rosuser' with sudo privileges
+ARG USERNAME=rosuser
+ARG USER_UID=1000
+ARG USER_GID=1000
+RUN groupadd --gid $USER_GID $USERNAME 2>/dev/null || true \
+    && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME -s /bin/bash 2>/dev/null || true \
+    && echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$USERNAME \
+    && chmod 0440 /etc/sudoers.d/$USERNAME
+
+# Configure system-wide ROS 2 environment for all shells (interactive,
+# non-interactive, and login) - sources the base image's Humble install,
+# this image's extra_ros_ws overlay, and (once built) the project's own
+# workspace, in that order.
+RUN echo "source /opt/ros/${ROS_DISTRO}/install/setup.bash" >> /etc/bash.bashrc \
+    && echo "if [ -f /opt/extra_ros_ws/install/setup.bash ]; then source /opt/extra_ros_ws/install/setup.bash; fi" >> /etc/bash.bashrc \
+    && echo "if [ -f /aiformula_machine/install/setup.bash ]; then source /aiformula_machine/install/setup.bash; fi" >> /etc/bash.bashrc \
+    && mkdir -p /etc/profile.d \
+    && echo "source /opt/ros/${ROS_DISTRO}/install/setup.bash" > /etc/profile.d/ros.sh \
+    && echo "if [ -f /opt/extra_ros_ws/install/setup.bash ]; then source /opt/extra_ros_ws/install/setup.bash; fi" >> /etc/profile.d/ros.sh \
+    && echo "if [ -f /aiformula_machine/install/setup.bash ]; then source /aiformula_machine/install/setup.bash; fi" >> /etc/profile.d/ros.sh \
+    && chmod +x /etc/profile.d/ros.sh
+
+# Configure .bashrc for rosuser (prepend to ensure it runs even for non-interactive subshells)
+RUN sed -i '1i source /opt/ros/'"${ROS_DISTRO}"'/install/setup.bash' /home/$USERNAME/.bashrc \
+    && echo "if [ -f /opt/extra_ros_ws/install/setup.bash ]; then source /opt/extra_ros_ws/install/setup.bash; fi" >> /home/$USERNAME/.bashrc \
+    && echo "if [ -f /aiformula_machine/install/setup.bash ]; then source /aiformula_machine/install/setup.bash; fi" >> /home/$USERNAME/.bashrc \
+    && echo "eval \"\$(register-python-argcomplete3 ros2)\"" >> /home/$USERNAME/.bashrc \
+    && echo "eval \"\$(register-python-argcomplete3 colcon)\"" >> /home/$USERNAME/.bashrc \
+    && echo "export ROS_DOMAIN_ID=100" >> /home/$USERNAME/.bashrc
+
+ENV DISPLAY=:1
+ENV LIBGL_ALWAYS_SOFTWARE=1
+ENV QT_X11_NO_MITSHM=1
+
+# Set up entrypoint (same as docker/Dockerfile - starts Xvfb/fluxbox/x11vnc/websockify)
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+# Workspace directory
+WORKDIR /aiformula_machine
+RUN chown -R $USERNAME:$USERNAME /aiformula_machine 2>/dev/null || true
+
+USER $USERNAME
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["bash"]
