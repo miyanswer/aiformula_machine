@@ -70,6 +70,12 @@ make bash
 > - **Ubuntu (NVIDIA GPU)**: `nvidia-smi` を自動検知し、GPU パススルー（`compose.gpu.yaml`）および CUDA 12.1 対応 PyTorch でビルド・起動。
 >   *(※ Ubuntu 側には `docker-ce` と `nvidia-container-toolkit` をインストールしておくだけでOKです)*
 
+> **🤖 Jetson AGX Orin (JetPack 5.1.x / L4T R35) での実行:**
+> - `make build` 実行前に `cat /etc/nv_tegra_release` で搭載中のL4Tバージョンを確認してください。`docker/Dockerfile.jetson` は既定で `r35.3.1`（JetPack 5.1.1相当）のベースイメージを使いますが、異なる場合は `make build JETSON_BASE_TAG=r35.2.1` のように上書きしてください（ズレると `torch.cuda.is_available()` が `False` になります）。
+> - `docker info | grep -i runtime` で `nvidia` ランタイムが登録されていることを事前に確認してください（JetPack標準セットアップ済みであれば通常は有効です）。
+> - `models/*_rtx_2070_..._sm75.engine` はRTX2070(sm75)向けのTensorRTエンジンで、Orin(sm87)では使われません。`yolop_lane_detector` は起動時に現在のGPU向けのエンジンが無ければ自動でコンパイル直すため（`src/oit_navigation/oit_navigation/yolop_lane_detector.py` の `_init_tensorrt_detector` 参照）、追加の手動作業は不要ですが、初回起動時は数分ほど余分に時間がかかります。
+> - Jetsonでは `rviz_aiformula_plugins` パッケージ（RViz専用プラグイン、実車走行には不要）はビルド対象から外しています: `make build-ws` の代わりに `docker compose exec aiformula_machine bash -c "source /opt/ros/humble/setup.bash && colcon build --symlink-install --packages-skip rviz_aiformula_plugins"` を使ってください。
+
 > **🌐 ブラウザでアクセス可能な Web UI:**
 > - **3D 走行シミュレータ:** [http://localhost:8000/web_simulator/](http://localhost:8000/web_simulator/)
 > - **RViz2 / noVNC 画面:** [http://localhost:8080](http://localhost:8080)
