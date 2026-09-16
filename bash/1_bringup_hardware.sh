@@ -37,5 +37,18 @@ echo "========================================="
 echo "  [AI Formula] Launching Hardware Bringup..."
 echo "========================================="
 
+# rosbridge WebSocket (port 9090) - lets the Mac web_simulator drive this
+# vehicle over the LAN via WASD (see web_simulator/index.html's rosbridge
+# URL field). Idempotent so re-running this script doesn't double-launch it.
+start_rosbridge() {
+    if ! pgrep -f "rosbridge_websocket" > /dev/null; then
+        echo "[INFO] Starting rosbridge_server (port 9090) for remote (Mac) teleop..."
+        ros2 launch rosbridge_server rosbridge_websocket_launch.xml > /tmp/rosbridge.log 2>&1 &
+        sleep 1
+    fi
+}
+
+start_rosbridge
+
 # ハードウェアBringup Launchの実行
 ros2 launch sample_launchers hardware_bringup.launch.py

@@ -124,6 +124,15 @@ bash bash/3_bringup_all_nodes.sh
 bash bash/teleop_keyboard.sh
 ```
 
+#### D. Mac から WASD で遠隔操作する
+実機（Jetson）で `bash/1_bringup_hardware.sh` か `bash/3_bringup_all_nodes.sh` を起動すると、rosbridge WebSocket サーバー（port 9090）が自動で立ち上がります。
+
+1. Mac とJetsonを同じLANに接続する。
+2. Jetson側でLAN IPを確認する: `hostname -I` （例: `192.168.1.50`）
+3. Macのブラウザで `web_simulator/index.html` を開く（`python3 web_simulator/serve.py` などで配信するか、ファイルを直接開く）。
+4. 画面上部の「rosbridge URL」欄を `ws://<JetsonのLAN IP>:9090` に書き換えて接続する（デフォルトは `ws://localhost:9090` になっている）。
+5. 接続後、WASDキーで操作すると `/aiformula_control/gamepad/cmd_vel` トピック経由で実機の `twist_mux`（gamepad優先度150）に届き、実車が動く。
+
 ---
 
 ## 📚 各機能の詳細ドキュメント
