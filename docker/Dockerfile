@@ -53,6 +53,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ros-humble-xacro \
     ros-humble-rosbridge-server \
     ros-humble-rosbridge-suite \
+    kmod \
+    iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install AI / Perception and Hardware Communication dependencies
@@ -80,38 +82,38 @@ RUN pip3 install --no-cache-dir \
     "setuptools<70.0.0" \
     "numpy<2.0.0" \
     && if [ "$ENABLE_CUDA" = "1" ]; then \
-        echo "[INFO] Installing PyTorch ${TORCH_VERSION} with CUDA support (${TORCH_CUDA_CHANNEL}) and TensorRT..." && \
-        pip3 install --no-cache-dir \
-            "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" \
-            --index-url https://download.pytorch.org/whl/${TORCH_CUDA_CHANNEL} && \
-        python3 -c "import torch, sys; v=torch.version.cuda or ''; print('[INFO] installed torch', torch.__version__, 'cuda', v); sys.exit(0 if v.startswith('12.') or v.startswith('11.') else 1)" && \
-        ( \
-            echo "[INFO] Installing CUDA Toolkit dev headers/libs (${CUDA_APT_VERSION}) for TensorRT/PyCUDA..." && \
-            curl -fsSL -o /tmp/cuda-keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb && \
-            dpkg -i /tmp/cuda-keyring.deb && rm -f /tmp/cuda-keyring.deb && \
-            apt-get update && \
-            apt-get install -y --no-install-recommends \
-                cuda-cudart-dev-${CUDA_APT_VERSION} \
-                cuda-driver-dev-${CUDA_APT_VERSION} \
-                cuda-profiler-api-${CUDA_APT_VERSION} \
-                cuda-nvcc-${CUDA_APT_VERSION} \
-                libcurand-dev-${CUDA_APT_VERSION} \
-            && rm -rf /var/lib/apt/lists/* && \
-            echo "[INFO] Installing PyCUDA (needs the headers above - the pip nvidia-cuda-runtime wheel alone lacks cudaProfiler.h/curand.h/crt/host_config.h)..." && \
-            CPATH=/usr/local/cuda/include \
-            LIBRARY_PATH=/usr/local/cuda/targets/x86_64-linux/lib:/usr/local/cuda/targets/x86_64-linux/lib/stubs \
-            pip3 install --no-cache-dir pycuda && \
-            echo "[INFO] Installing TensorRT (${TENSORRT_CU} ${TENSORRT_VERSION})..." && \
-            pip3 install --no-cache-dir \
-                "tensorrt-${TENSORRT_CU}==${TENSORRT_VERSION}" \
-                "tensorrt-${TENSORRT_CU}-libs==${TENSORRT_VERSION}" \
-                "tensorrt-${TENSORRT_CU}-bindings==${TENSORRT_VERSION}" \
-        ) || echo "[WARN] TensorRT/PyCUDA installation failed - yolop_lane_detector will fall back to plain PyTorch inference at runtime (use_tensorrt has no effect)."; \
+    echo "[INFO] Installing PyTorch ${TORCH_VERSION} with CUDA support (${TORCH_CUDA_CHANNEL}) and TensorRT..." && \
+    pip3 install --no-cache-dir \
+    "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" \
+    --index-url https://download.pytorch.org/whl/${TORCH_CUDA_CHANNEL} && \
+    python3 -c "import torch, sys; v=torch.version.cuda or ''; print('[INFO] installed torch', torch.__version__, 'cuda', v); sys.exit(0 if v.startswith('12.') or v.startswith('11.') else 1)" && \
+    ( \
+    echo "[INFO] Installing CUDA Toolkit dev headers/libs (${CUDA_APT_VERSION}) for TensorRT/PyCUDA..." && \
+    curl -fsSL -o /tmp/cuda-keyring.deb https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb && \
+    dpkg -i /tmp/cuda-keyring.deb && rm -f /tmp/cuda-keyring.deb && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+    cuda-cudart-dev-${CUDA_APT_VERSION} \
+    cuda-driver-dev-${CUDA_APT_VERSION} \
+    cuda-profiler-api-${CUDA_APT_VERSION} \
+    cuda-nvcc-${CUDA_APT_VERSION} \
+    libcurand-dev-${CUDA_APT_VERSION} \
+    && rm -rf /var/lib/apt/lists/* && \
+    echo "[INFO] Installing PyCUDA (needs the headers above - the pip nvidia-cuda-runtime wheel alone lacks cudaProfiler.h/curand.h/crt/host_config.h)..." && \
+    CPATH=/usr/local/cuda/include \
+    LIBRARY_PATH=/usr/local/cuda/targets/x86_64-linux/lib:/usr/local/cuda/targets/x86_64-linux/lib/stubs \
+    pip3 install --no-cache-dir pycuda && \
+    echo "[INFO] Installing TensorRT (${TENSORRT_CU} ${TENSORRT_VERSION})..." && \
+    pip3 install --no-cache-dir \
+    "tensorrt-${TENSORRT_CU}==${TENSORRT_VERSION}" \
+    "tensorrt-${TENSORRT_CU}-libs==${TENSORRT_VERSION}" \
+    "tensorrt-${TENSORRT_CU}-bindings==${TENSORRT_VERSION}" \
+    ) || echo "[WARN] TensorRT/PyCUDA installation failed - yolop_lane_detector will fall back to plain PyTorch inference at runtime (use_tensorrt has no effect)."; \
     else \
-        echo "[INFO] Installing PyTorch with CPU support..." && \
-        pip3 install --no-cache-dir \
-            "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" \
-            --index-url https://download.pytorch.org/whl/cpu; \
+    echo "[INFO] Installing PyTorch with CPU support..." && \
+    pip3 install --no-cache-dir \
+    "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}" \
+    --index-url https://download.pytorch.org/whl/cpu; \
     fi \
     && pip3 install --no-cache-dir \
     "numpy<2.0.0" \
@@ -132,7 +134,7 @@ RUN ln -s /usr/share/novnc/vnc.html /usr/share/novnc/index.html 2>/dev/null || t
 
 # Initialize and update rosdep
 RUN if [ ! -f /etc/ros/rosdep/sources.list.d/20-default.list ]; then \
-        rosdep init; \
+    rosdep init; \
     fi
 
 # Create non-root user 'rosuser' with sudo privileges
