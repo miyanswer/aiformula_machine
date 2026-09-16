@@ -1,0 +1,38 @@
+# Version control
+.git
+.gitignore
+
+# IDE & OS
+.vscode
+.DS_Store
+*.swp
+*~
+
+# Large media & datasets (prevent ~10GB build context transfer)
+mp4/
+*.mp4
+jpeg/
+*.jpg
+*.jpeg
+*.png
+
+# Pretrained model weights
+models/
+*.pth
+*.pt
+*.onnx
+*.engine
+
+# ROS 2 build artifacts & logs
+build/
+install/
+log/
+
+# Web Simulator & Docs (mounted at runtime via compose.yaml)
+web_simulator/
+docs/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
