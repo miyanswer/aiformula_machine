@@ -15,6 +15,9 @@ HAS_NVIDIA := $(shell which nvidia-smi 2>/dev/null)
 COMPOSE_FILES := -f compose.yaml
 ENABLE_CUDA := 0
 
+# Host NVIDIA driver major version (e.g. "535.309.01" -> 535). Empty if no GPU.
+NVIDIA_DRIVER_MAJOR := $(shell nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 | cut -d. -f1)
+
 # If running on Linux and NVIDIA GPU is detected, add GPU compose override and enable CUDA
 ifeq ($(OS),Linux)
   ifneq ($(HAS_NVIDIA),)
@@ -22,6 +25,49 @@ ifeq ($(OS),Linux)
     ENABLE_CUDA := 1
   endif
 endif
+
+# Pick a PyTorch CUDA build the *host driver* can actually run.
+# A wheel newer than the driver loads but fails at runtime with
+# "The NVIDIA driver on your system is too old" -> torch.cuda.is_available() == False.
+#   driver >= 530 : CUDA 12.1 OK -> cu121
+#   driver >= 520 : CUDA 11.8 only -> cu118
+#   driver <  520 : too old, fall back to CPU build
+ifeq ($(ENABLE_CUDA),1)
+  DRIVER_OK_121 := $(shell [ "$(NVIDIA_DRIVER_MAJOR)" -ge 530 ] 2>/dev/null && echo 1)
+  DRIVER_OK_118 := $(shell [ "$(NVIDIA_DRIVER_MAJOR)" -ge 520 ] 2>/dev/null && echo 1)
+  ifeq ($(DRIVER_OK_121),1)
+    TORCH_CUDA_CHANNEL := cu121
+    TORCH_VERSION := 2.5.1
+    TORCHVISION_VERSION := 0.20.1
+    CUDA_APT_VERSION := 12-1
+    TENSORRT_CU := cu12
+  else ifeq ($(DRIVER_OK_118),1)
+    TORCH_CUDA_CHANNEL := cu118
+    TORCH_VERSION := 2.6.0
+    TORCHVISION_VERSION := 0.21.0
+    CUDA_APT_VERSION := 11-8
+    TENSORRT_CU := cu11
+  else
+    ENABLE_CUDA := 0
+  endif
+endif
+
+# CPU fallback pins (also used when the driver is too old for any CUDA wheel)
+TORCH_CUDA_CHANNEL ?= cpu
+TORCH_VERSION ?= 2.5.1
+TORCHVISION_VERSION ?= 0.20.1
+CUDA_APT_VERSION ?= 12-1
+TENSORRT_CU ?= cu12
+# TensorRT's own PyPI release cadence, not tied to the CUDA/torch channel above.
+TENSORRT_VERSION ?= 10.8.0.43
+
+BUILD_ARGS := --build-arg ENABLE_CUDA=$(ENABLE_CUDA) \
+              --build-arg TORCH_CUDA_CHANNEL=$(TORCH_CUDA_CHANNEL) \
+              --build-arg TORCH_VERSION=$(TORCH_VERSION) \
+              --build-arg TORCHVISION_VERSION=$(TORCHVISION_VERSION) \
+              --build-arg CUDA_APT_VERSION=$(CUDA_APT_VERSION) \
+              --build-arg TENSORRT_CU=$(TENSORRT_CU) \
+              --build-arg TENSORRT_VERSION=$(TENSORRT_VERSION)
 
 DOCKER_COMPOSE := docker compose $(COMPOSE_FILES)
 
@@ -41,6 +87,7 @@ help:
 	@echo "========================================================================"
 	@echo "  🏎️  AI Formula Machine - Docker & Development Commands"
 	@echo "  🖥️  Environment: OS=$(OS) ($(ARCH)) | GPU Mode=$(if $(filter 1,$(ENABLE_CUDA)),Enabled (NVIDIA GPU),Disabled (CPU/Mac))"
+	@echo "  🔥 PyTorch: $(TORCH_VERSION) / $(TORCH_CUDA_CHANNEL)$(if $(NVIDIA_DRIVER_MAJOR), (host driver $(NVIDIA_DRIVER_MAJOR)),)"
 	@echo "========================================================================"
 	@echo ""
 	@echo "📦 [Container Management]"
@@ -101,10 +148,10 @@ stop:
 restart: down up
 
 build:
-	$(DOCKER_COMPOSE) build --build-arg ENABLE_CUDA=$(ENABLE_CUDA)
+	$(DOCKER_COMPOSE) build $(BUILD_ARGS)
 
 rebuild:
-	$(DOCKER_COMPOSE) build --no-cache --build-arg ENABLE_CUDA=$(ENABLE_CUDA)
+	$(DOCKER_COMPOSE) build --no-cache $(BUILD_ARGS)
 
 ps:
 	$(DOCKER_COMPOSE) ps

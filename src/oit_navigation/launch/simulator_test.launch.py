@@ -67,6 +67,17 @@ def generate_launch_description():
             description="YOLOP 白線認識モデル (.pth) のパス",
         ),
         DeclareLaunchArgument(
+            "use_tensorrt",
+            default_value="false",
+            description="YOLOP を TensorRT エンジンで実行する（PyTorch の代わりに）。"
+                        "エンジン/TensorRT bindings が無ければ自動的に PyTorch へフォールバックする。",
+        ),
+        DeclareLaunchArgument(
+            "tensorrt_engine_path",
+            default_value="",
+            description=".engine ファイルのパス。空文字なら weight_path の拡張子を .engine に変えたパスを使う。",
+        ),
+        DeclareLaunchArgument(
             "input_image_topic",
             # web_simulator/js/simulator.js の IMAGE_TOPIC_NAME と同じ値
             # (rosbridge 経由でブラウザが配信する圧縮カメラ画像)。
@@ -128,6 +139,8 @@ def generate_launch_description():
             {
                 "use_device": LaunchConfiguration("use_device"),
                 "weight_path": LaunchConfiguration("weight_path"),
+                "use_tensorrt": LaunchConfiguration("use_tensorrt"),
+                "tensorrt_engine_path": LaunchConfiguration("tensorrt_engine_path"),
                 "input_image_topic": LaunchConfiguration("input_image_topic"),
             },
         ],

@@ -421,8 +421,13 @@ class BEVPurePursuitNode(Node):
                 stamp=self.get_clock().now().to_msg()
             )
             self.bev_img_pub.publish(img_msg)
-        except Exception:
-            pass
+        except Exception as e:
+            # Was a silent `except: pass` - a bad annotated_bev (wrong dtype/shape,
+            # e.g. from warp_to_bev/extract_lane_trajectories misbehaving on an
+            # unexpected mask) made bev_annotated_image simply stop updating with
+            # nothing in the log to explain why. Throttled since this can recur
+            # every incoming mask.
+            self.get_logger().warning(f"Failed to publish bev_annotated_image: {e}", throttle_duration_sec=5.0)
 
     def _publish_annotated_mask_image(self, annotated_bev: np.ndarray):
         try:
@@ -433,8 +438,8 @@ class BEVPurePursuitNode(Node):
                 stamp=self.get_clock().now().to_msg()
             )
             self.annotated_mask_pub.publish(img_msg)
-        except Exception:
-            pass
+        except Exception as e:
+            self.get_logger().warning(f"Failed to publish annotated_mask_image: {e}", throttle_duration_sec=5.0)
 
     def _publish_lane_line_path(self, publisher, points: Optional[np.ndarray]):
         path_msg = Path()

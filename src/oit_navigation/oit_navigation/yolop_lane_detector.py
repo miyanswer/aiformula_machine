@@ -372,6 +372,15 @@ class YOLOPLaneDetectorNode(Node):
             undistorted_image = imgmsg_to_cv2(msg, desired_encoding='bgr8')
 
         if undistorted_image is None:
+            # Silent before: a broken/incomplete frame (e.g. from a rosbridge/
+            # websocket relay) just made the mask never update, with nothing in
+            # the log to say why. Throttled since a bad frame here can recur
+            # every callback if the source keeps sending malformed data.
+            self.get_logger().warning(
+                "Failed to decode incoming camera frame (cv2.imdecode/imgmsg_to_cv2 "
+                "returned None) - dropping this frame.",
+                throttle_duration_sec=5.0,
+            )
             return
 
         # Queue for heavy inference on every `frame_skip` frames (or instantly when worker is idle if frame_skip=1)
@@ -472,9 +481,15 @@ class YOLOPLaneDetectorNode(Node):
         else:
             proc_image = undistorted_image
 
-        # Padded resize
+        # Padded resize. auto=False (pad to the full 640x640 square) rather than
+        # auto=True (minimal padding to a 32-px multiple, often a non-square
+        # rectangle like 640x384 for a 16:9 camera) - export_tensorrt.py's ONNX
+        # export always uses a fixed (1,3,640,640) dummy input, so a TensorRT
+        # engine only accepts that exact square shape. decode_lane_line_output
+        # already uses whatever ratio/padding letterbox_for_img actually
+        # returns, so this is safe for the PyTorch path too.
         padded_image, (ratio_to_padded, _), (pad_x_half, pad_y_half) = letterbox_for_img(
-            proc_image, new_shape=640, auto=True
+            proc_image, new_shape=640, auto=False
         )
         normalized_tensor = self.transform(padded_image).to(self.use_device)
         input_image = normalized_tensor.half() if self.use_half_precision else normalized_tensor.float()
@@ -484,6 +499,14 @@ class YOLOPLaneDetectorNode(Node):
         # Heavy YOLOP Inference (PyTorch or, on real hardware, a TensorRT engine)
         if self.trt_runner is not None:
             raw_detections, ll_seg_raw_outputs = self.trt_runner.infer(input_image)
+            # TensorRTYOLOPRunner.infer() hands back CPU tensors (its buffers are
+            # pagelocked host memory). decode_lane_line_output's interpolate and
+            # decode_object_output's NMS below are the same either way, but
+            # leaving these on CPU forces both onto the CPU too - measured
+            # ~10-20x slower than running them on the GPU like the PyTorch path
+            # already does, dwarfing the TensorRT forward pass's own speedup.
+            raw_detections = raw_detections.to(self.use_device)
+            ll_seg_raw_outputs = ll_seg_raw_outputs.to(self.use_device)
         else:
             with torch.no_grad():
                 det_out, _da_seg, ll_seg_raw_outputs = self.detector(input_image)

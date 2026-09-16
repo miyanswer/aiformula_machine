@@ -633,8 +633,6 @@ function publishMuxedCmdVel(v, omega) {
 }
 
 const IMAGE_PUBLISH_HZ = 15;
-const IMAGE_PUBLISH_INTERVAL = 1 / IMAGE_PUBLISH_HZ;
-let imagePublishAccumulator = 0;
 
 // Renders the onboard camera to an offscreen canvas and publishes it as a
 // sensor_msgs/msg/CompressedImage. rosbridge decodes a base64 *string* into
@@ -1176,6 +1174,25 @@ function publishVehicleInfoCan() {
 
 setInterval(publishVehicleInfoCan, 1000 / CAN_PUBLISH_HZ);
 
+// Also decoupled from the requestAnimationFrame render loop, but for a
+// different reason than the timers above: browsers throttle/suspend rAF
+// almost entirely in a backgrounded tab (unlike setInterval, which is only
+// clamped to a lower rate, not stopped), which used to be driven from inside
+// animate() via an accumulator. Backgrounding the simulator tab for even a
+// few seconds - switching to another tab/window, minimizing - froze this
+// camera feed for exactly that long, so oit_navigation's whole pipeline
+// (yolop_lane_detector, bev_pure_pursuit_node) received nothing and every
+// downstream visualization (mask, /aiformula_visualization/bev_annotated_image,
+// etc.) appeared to just stop updating. Running the capture+publish tick on
+// its own timer keeps frames flowing (against whatever scene state is
+// current - stale while backgrounded, since physics integration is still
+// tied to animate() - real work resumes once the tab regains focus).
+setInterval(() => {
+  renderOnboardCapture();
+  publishCompressedImage();
+  updateLanePipeline(); // async, single-slot-buffered; fire-and-forget
+}, 1000 / IMAGE_PUBLISH_HZ);
+
 // ---------------------------------------------------------------------------
 // Physics + render loop
 // ---------------------------------------------------------------------------
@@ -1340,15 +1357,9 @@ function animate() {
     publishMuxedCmdVel(physics.v, physics.omega);
   }
 
-  imagePublishAccumulator += dt;
-  if (imagePublishAccumulator >= IMAGE_PUBLISH_INTERVAL) {
-    imagePublishAccumulator = 0;
-    renderOnboardCapture();
-    publishCompressedImage();
-    updateLanePipeline(); // async, single-slot-buffered; fire-and-forget
-  }
-
-  // publishImu() itself runs on a separate setInterval (see below), not here.
+  // Camera capture/publish + the oit_navigation lane pipeline itself run on a
+  // separate setInterval below, not here (see the comment next to it) --
+  // publishImu() itself runs on a separate setInterval too (see below), not here.
 
   // Lateral (centripetal) acceleration component, still shown in the IMU HUD panel.
   const imuLateralAccel = physics.v * physics.omega;

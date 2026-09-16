@@ -36,18 +36,43 @@ export class ModelLaneDetector {
 
   async load(onnxUrl, wasmDir) {
     // eslint-disable-next-line no-undef -- `ort` is the global UMD export of
-    // vendor/onnxruntime-web/ort.wasm.min.js, loaded via a plain <script> tag
-    // in index.html before this module runs (same pattern as ROSLIB).
-    ort.env.wasm.wasmPaths = wasmDir;
-    // Force single-threaded WASM so the runtime picks the non-threaded
-    // ort-wasm-simd.wasm binary (the only one vendored here) instead of a
-    // pthread build, which needs SharedArrayBuffer / COOP+COEP headers that
-    // this project's plain `python3 -m http.server` dev workflow doesn't send.
-    ort.env.wasm.numThreads = 1;
-    this.session = await ort.InferenceSession.create(onnxUrl, {
-      executionProviders: ['wasm'],
-      graphOptimizationLevel: 'all',
-    });
+    // vendor/onnxruntime-web/ort.webgpu.min.js, loaded via a plain <script>
+    // tag in index.html before this module runs (same pattern as ROSLIB).
+    // This bundle (unlike the plain ort.wasm.min.js one previously vendored
+    // here) includes the 'webgpu' backend, so inference actually runs on the
+    // GPU instead of silently falling back to single-threaded CPU WASM --
+    // see the README's "実装上の注意" section for the jank this caused.
+    //
+    // Must be an absolute URL, not a bare relative path like "vendor/..." --
+    // onnxruntime-web resolves its wasm/mjs glue files via `import()` under
+    // the hood, and a specifier without a "./"/"../" prefix or scheme is an
+    // invalid *bare* module specifier, which throws
+    // "Failed to resolve module specifier" and takes down both the 'webgpu'
+    // and 'wasm' backends (session creation throws before either EP loads).
+    ort.env.wasm.wasmPaths = new URL(wasmDir, document.baseURI).href;
+    // onnxruntime-web >=1.19 only ships pthread (SharedArrayBuffer) wasm
+    // binaries -- the non-threaded build vendored here previously was
+    // dropped upstream -- so both the 'webgpu' and 'wasm' backends now
+    // require the page to be cross-origin isolated regardless of
+    // ort.env.wasm.numThreads. See web_simulator/serve.py, which sends the
+    // required COOP/COEP headers (plain `python3 -m http.server` does not).
+
+    try {
+      this.session = await ort.InferenceSession.create(onnxUrl, {
+        executionProviders: ['webgpu'],
+        graphOptimizationLevel: 'all',
+      });
+    } catch (err) {
+      // No navigator.gpu (older browser, a WebGPU-less Electron/Chromium
+      // build, or the page isn't cross-origin isolated) -- fall back to the
+      // CPU WASM path so the model mode still works, just without the GPU
+      // speedup.
+      console.warn('WebGPU EP unavailable, falling back to CPU WASM inference', err);
+      this.session = await ort.InferenceSession.create(onnxUrl, {
+        executionProviders: ['wasm'],
+        graphOptimizationLevel: 'all',
+      });
+    }
   }
 
   /**
