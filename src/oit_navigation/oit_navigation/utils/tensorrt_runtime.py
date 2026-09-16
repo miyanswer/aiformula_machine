@@ -13,11 +13,12 @@ unpacks from the model's forward() before running NMS/lane decoding. This
 wrapper's job is only to reproduce those same two tensors from an engine
 instead of a live nn.Module.
 
-Note: uses TensorRT's legacy binding API (num_bindings / get_binding_*),
-supported through TensorRT 8.x (most JetPack 5/6 releases). TensorRT >= 10
-renamed these to the tensor-name based API (num_io_tensors / get_tensor_*) -
-adjust _discover_bindings/_allocate_buffers/infer if deploying on such a
-version.
+Supports both of TensorRT's binding APIs, auto-detected from the installed
+`tensorrt` package version:
+- TensorRT < 10 (most JetPack 5/6 releases, i.e. real hardware): legacy
+  binding-index API (num_bindings / get_binding_* / execute_async_v2).
+- TensorRT >= 10 (e.g. a desktop dev GPU with a recent pip `tensorrt-cu12`):
+  tensor-name API (num_io_tensors / get_tensor_* / execute_async_v3).
 """
 
 import numpy as np
@@ -36,6 +37,16 @@ class TensorRTYOLOPRunner:
 
         self._trt = trt
         self._cuda = cuda
+        self._is_trt10 = int(trt.__version__.split(".")[0]) >= 10
+
+        # pycuda.autoinit's context is only "current" on the thread that created
+        # it (here: whatever thread constructs this runner, typically the ROS
+        # node's main thread during __init__). yolop_lane_detector.py actually
+        # calls infer() from a separate dedicated inference thread, so without
+        # explicitly pushing this context onto that thread too, every CUDA call
+        # below fails with "invalid resource handle" (looks fine at import/init
+        # time - it only breaks once a real inference is attempted).
+        self._cuda_context = cuda.Context.get_current()
 
         logger = trt.Logger(trt.Logger.WARNING)
         with open(engine_path, "rb") as f, trt.Runtime(logger) as runtime:
@@ -49,14 +60,23 @@ class TensorRTYOLOPRunner:
         self.stream = cuda.Stream()
 
     def _discover_bindings(self):
+        trt = self._trt
         input_name = None
         output_names = []
-        for i in range(self.engine.num_bindings):
-            name = self.engine.get_binding_name(i)
-            if self.engine.binding_is_input(i):
-                input_name = name
-            else:
-                output_names.append(name)
+        if self._is_trt10:
+            for i in range(self.engine.num_io_tensors):
+                name = self.engine.get_tensor_name(i)
+                if self.engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
+                    input_name = name
+                else:
+                    output_names.append(name)
+        else:
+            for i in range(self.engine.num_bindings):
+                name = self.engine.get_binding_name(i)
+                if self.engine.binding_is_input(i):
+                    input_name = name
+                else:
+                    output_names.append(name)
         if input_name is None or len(output_names) != 2:
             raise RuntimeError(
                 "Unexpected TensorRT engine bindings (expected 1 input + 2 outputs: "
@@ -69,35 +89,57 @@ class TensorRTYOLOPRunner:
     def _allocate_buffers(self):
         trt = self._trt
         self.buffers = {}
-        for i in range(self.engine.num_bindings):
-            name = self.engine.get_binding_name(i)
-            shape = tuple(self.engine.get_binding_shape(i))
-            dtype = trt.nptype(self.engine.get_binding_dtype(i))
-            host_mem = self._cuda.pagelocked_empty(int(np.prod(shape)), dtype)
-            device_mem = self._cuda.mem_alloc(host_mem.nbytes)
-            self.buffers[name] = {"host": host_mem, "device": device_mem, "shape": shape}
+        if self._is_trt10:
+            names = [self.engine.get_tensor_name(i) for i in range(self.engine.num_io_tensors)]
+            for name in names:
+                shape = tuple(self.engine.get_tensor_shape(name))
+                dtype = trt.nptype(self.engine.get_tensor_dtype(name))
+                host_mem = self._cuda.pagelocked_empty(int(np.prod(shape)), dtype)
+                device_mem = self._cuda.mem_alloc(host_mem.nbytes)
+                self.buffers[name] = {"host": host_mem, "device": device_mem, "shape": shape}
+                # Addresses are stable for the life of these buffers, so this only
+                # needs to be set once here rather than before every infer() call.
+                self.context.set_tensor_address(name, int(device_mem))
+        else:
+            for i in range(self.engine.num_bindings):
+                name = self.engine.get_binding_name(i)
+                shape = tuple(self.engine.get_binding_shape(i))
+                dtype = trt.nptype(self.engine.get_binding_dtype(i))
+                host_mem = self._cuda.pagelocked_empty(int(np.prod(shape)), dtype)
+                device_mem = self._cuda.mem_alloc(host_mem.nbytes)
+                self.buffers[name] = {"host": host_mem, "device": device_mem, "shape": shape}
 
     def infer(self, input_tensor: torch.Tensor):
         """`input_tensor`: (1,3,H,W) float32 torch tensor, already letterboxed+normalized.
         Returns (raw_detections, ll_seg) as torch tensors, matching the PyTorch path."""
-        input_np = np.ascontiguousarray(input_tensor.detach().cpu().numpy().astype(np.float32))
+        # Make this runner's CUDA context current on whichever thread calls infer()
+        # (see the note in __init__ - it's created on the constructing thread but
+        # actually used from yolop_lane_detector's dedicated inference thread).
+        self._cuda_context.push()
+        try:
+            input_np = np.ascontiguousarray(input_tensor.detach().cpu().numpy().astype(np.float32))
 
-        input_buf = self.buffers[self._input_name]
-        np.copyto(input_buf["host"], input_np.ravel())
-        self._cuda.memcpy_htod_async(input_buf["device"], input_buf["host"], self.stream)
+            input_buf = self.buffers[self._input_name]
+            np.copyto(input_buf["host"], input_np.ravel())
+            self._cuda.memcpy_htod_async(input_buf["device"], input_buf["host"], self.stream)
 
-        binding_order = [self._input_name] + self._output_names
-        bindings = [int(self.buffers[name]["device"]) for name in binding_order]
-        self.context.execute_async_v2(bindings=bindings, stream_handle=self.stream.handle)
+            if self._is_trt10:
+                self.context.execute_async_v3(stream_handle=self.stream.handle)
+            else:
+                binding_order = [self._input_name] + self._output_names
+                bindings = [int(self.buffers[name]["device"]) for name in binding_order]
+                self.context.execute_async_v2(bindings=bindings, stream_handle=self.stream.handle)
 
-        for name in self._output_names:
-            buf = self.buffers[name]
-            self._cuda.memcpy_dtoh_async(buf["host"], buf["device"], self.stream)
-        self.stream.synchronize()
+            for name in self._output_names:
+                buf = self.buffers[name]
+                self._cuda.memcpy_dtoh_async(buf["host"], buf["device"], self.stream)
+            self.stream.synchronize()
 
-        outputs = {}
-        for name in self._output_names:
-            buf = self.buffers[name]
-            outputs[name] = torch.from_numpy(buf["host"].reshape(buf["shape"]).copy())
+            outputs = {}
+            for name in self._output_names:
+                buf = self.buffers[name]
+                outputs[name] = torch.from_numpy(buf["host"].reshape(buf["shape"]).copy())
 
-        return outputs["raw_detections"], outputs["ll_seg"]
+            return outputs["raw_detections"], outputs["ll_seg"]
+        finally:
+            self._cuda_context.pop()

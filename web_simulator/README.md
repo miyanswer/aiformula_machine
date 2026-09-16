@@ -16,8 +16,12 @@ ROS 2 側に `cmd_vel` を流したい場合はステップ2〜4も行ってく�
 
 ```bash
 cd /Users/miyanswer/aiformula_machine
-python3 -m http.server 8000
+python3 web_simulator/serve.py 8000
 ```
+
+（プレーンな `python3 -m http.server` ではなく [`web_simulator/serve.py`](serve.py) を
+使う理由: 「モデル (ONNX)」検知モードの onnxruntime-web が要求する COOP/COEP
+ヘッダーを付与するためです。詳しくは後述の「実装上の注意」を参照してください。）
 
 ブラウザで `http://localhost:8000/web_simulator/` を開きます。車体モデルが表示され、
 WASD で動かせれば起動成功です（この時点では rosbridge 未接続でも問題ありません）。
@@ -251,10 +255,11 @@ rosbridge 接続中は、右上 PiP と同じ機体カメラ視点を `sensor_ms
   した毎フレームに対して同期的に実行されます。
 - **モデル (ONNX)**: 実際に学習済みの白線セグメンテーションモデル
   （`models/honda_shihou_finetuned_best.pth`）を ONNX エクスポートし、
-  [onnxruntime-web](vendor/onnxruntime-web) の WASM バックエンドでブラウザ内
-  推論します。初めてこのモードに切り替えた時に遅延読み込みされます（既定の
-  閾値処理モードでは読み込まれません）。読み込み・推論に失敗した場合は自動的に
-  閾値処理モードへフォールバックします。
+  [onnxruntime-web](vendor/onnxruntime-web) の **WebGPU バックエンド**でブラウザの
+  GPU上で推論します（`navigator.gpu` が無い環境では自動的に CPU の WASM
+  バックエンドへフォールバック）。初めてこのモードに切り替えた時に遅延読み込み
+  されます（既定の閾値処理モードでは読み込まれません）。読み込み・推論に失敗
+  した場合は自動的に閾値処理モードへフォールバックします。
   - 前処理は実車の `yolop_lane_detector.py` の `roi_mode: crop_bottom` と同じ
     考え方で、機体カメラ画像の上部（空など走路と無関係な領域、`top_cut_ratio`
     比率分）を切り捨て、残った下部を **そのまま 640×640 の正方形にリサイズ**
@@ -348,12 +353,29 @@ python3 src/oit_navigation/oit_navigation/export_onnx_web.py \
 
 ### 実装上の注意
 
-- onnxruntime-web は非スレッド版の WASM バイナリ（`ort-wasm-simd.wasm`）のみを
-  同梱しています。スレッド版は `SharedArrayBuffer` に COOP/COEP ヘッダーが必要で、
-  このプロジェクトの `python3 -m http.server` によるオフライン開発ワークフローと
-  相性が悪いため、[`js/lane_model_detector.js`](js/lane_model_detector.js) で
-  明示的に `ort.env.wasm.numThreads = 1` を設定しシングルスレッド動作に固定して
-  います。
+- 「モデル (ONNX)」モードは [`js/lane_model_detector.js`](js/lane_model_detector.js)
+  で `executionProviders: ['webgpu']` を指定し、onnxruntime-web の WebGPU
+  バックエンド（`vendor/onnxruntime-web/ort.webgpu.min.js`）でブラウザの GPU上
+  推論します。以前は WASM (CPU) バックエンドのみだったため、重いモデルだと
+  推論のたびにメインスレッド（描画スレッドと同じ）がブロックされ描画がカクつい
+  ていました。WebGPU が使えない環境（`navigator.gpu` が無い、または
+  `InferenceSession.create` が失敗する場合）は自動的に CPU の WASM バックエンド
+  へフォールバックします。
+- onnxruntime-web 1.19 以降、同梱する wasm バイナリはスレッド版
+  （`SharedArrayBuffer` 利用）のみで、非スレッド版は配布されなくなりました。
+  `SharedArrayBuffer` はページが cross-origin isolated（`COOP: same-origin` +
+  `COEP: require-corp`）である場合のみ有効になるため、`webgpu` バックエンドは
+  もちろん、CPU フォールバックの `wasm` バックエンドも含めてこのヘッダーが
+  必須です。これが起動手順で `python3 -m http.server` の代わりに
+  [`web_simulator/serve.py`](serve.py) を使う理由です。ヘッダーなしで配信すると
+  （例: 別の静的サーバーやファイル直開き）「モデル (ONNX)」モードの読み込みが
+  失敗し、自動的に閾値処理モードへフォールバックします。
+- [`js/lane_model_detector.js`](js/lane_model_detector.js) の
+  `ort.env.wasm.wasmPaths` には相対パスではなく絶対 URL
+  （`new URL(wasmDir, document.baseURI).href`）を渡しています。onnxruntime-web
+  は wasm/mjs グルーコードを `import()` で動的解決するため、`"vendor/..."` の
+  ようなスキームなし・`./`なしの相対パスは無効な bare module specifier と
+  みなされ、`webgpu`・`wasm` の両バックエンドともロードに失敗します。
 - `yolop_lane_detector.py` は cv2/BGR 画像を RGB 用の ImageNet mean/std へそのまま
   正規化しており（RGB 変換なし）、`honda_shihou_finetuned_best.pth` も同じ
   パイプラインでファインチューニングされています。ブラウザ側の Canvas は RGB で
@@ -367,9 +389,11 @@ python3 src/oit_navigation/oit_navigation/export_onnx_web.py \
 
 ### ROS 2連携モード（重いYOLOP/BEV/Pure Pursuit計算をROS 2側で実行）
 
-閾値処理・ブラウザ内ONNXモデルはどちらもブラウザの CPU (WASM) で推論するため、
-重いモデルだと描画がカクつくことがあります。「検知方式」に **ROS2連携** を
-選ぶと、YOLOP 推論と BEV変換・Pure Pursuit 制御を実車と同じ ROS 2 ノード
+ブラウザ内ONNXモデルは WebGPU が使える環境では GPU 上で推論しますが、閾値処理は
+常にメインスレッド上で同期実行ですし、WebGPU が使えない環境ではモデルも CPU
+(WASM) にフォールバックするため、それでも描画がカクつくことがあります。
+「検知方式」に **ROS2連携** を選ぶと、YOLOP 推論と BEV変換・Pure Pursuit 制御を
+実車と同じ ROS 2 ノード
 （GPU/Dockerコンテナ側）で実行し、rosbridge_server 経由でその結果をブラウザに
 表示・車両制御に反映します（ブラウザ側の計算は一切行いません）。
 

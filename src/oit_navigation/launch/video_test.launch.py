@@ -67,6 +67,17 @@ def generate_launch_description():
             description="Path to the YOLOP weight .pth file",
         ),
         DeclareLaunchArgument(
+            "use_tensorrt",
+            default_value="false",
+            description="Run YOLOP via a TensorRT engine instead of PyTorch (see export_tensorrt.py). "
+                        "Falls back to PyTorch automatically if the engine/TensorRT bindings are missing.",
+        ),
+        DeclareLaunchArgument(
+            "tensorrt_engine_path",
+            default_value="",
+            description="Path to the .engine file. Empty = weight_path with a .engine extension.",
+        ),
+        DeclareLaunchArgument(
             "input_image_topic",
             default_value=TOPIC_NAMES["sensing"]["zedx"]["left_image"]["undistorted"] + "/compressed",
             description="Input camera image topic (Raw or Compressed)",
@@ -140,6 +151,8 @@ def generate_launch_description():
             {
                 "use_device": LaunchConfiguration("use_device"),
                 "weight_path": LaunchConfiguration("weight_path"),
+                "use_tensorrt": LaunchConfiguration("use_tensorrt"),
+                "tensorrt_engine_path": LaunchConfiguration("tensorrt_engine_path"),
                 "input_image_topic": LaunchConfiguration("input_image_topic"),
             },
         ],
