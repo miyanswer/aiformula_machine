@@ -1,0 +1,5 @@
+services:
+  aiformula_machine:
+    build:
+      dockerfile: docker/Dockerfile.jetson
+    runtime: nvidia

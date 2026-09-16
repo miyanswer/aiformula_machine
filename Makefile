@@ -11,6 +11,10 @@ CONTAINER_NAME := aiformula_machine_humble
 OS := $(shell uname -s)
 ARCH := $(shell uname -m)
 HAS_NVIDIA := $(shell which nvidia-smi 2>/dev/null)
+# Jetson (L4T) has no nvidia-smi - /etc/nv_tegra_release exists on every
+# L4T/JetPack install instead, so that's the reliable Jetson signal.
+IS_JETSON := $(shell test -f /etc/nv_tegra_release && echo 1)
+JETSON_BASE_TAG ?= r35.3.1
 
 COMPOSE_FILES := -f compose.yaml
 ENABLE_CUDA := 0
@@ -18,9 +22,14 @@ ENABLE_CUDA := 0
 # Host NVIDIA driver major version (e.g. "535.309.01" -> 535). Empty if no GPU.
 NVIDIA_DRIVER_MAJOR := $(shell nvidia-smi --query-gpu=driver_version --format=csv,noheader 2>/dev/null | head -n1 | cut -d. -f1)
 
-# If running on Linux and NVIDIA GPU is detected, add GPU compose override and enable CUDA
+# If running on Linux and NVIDIA GPU is detected, add GPU compose override and enable CUDA.
+# Jetson is checked first since it never has nvidia-smi and needs a
+# completely different Dockerfile/base image (see docker/Dockerfile.jetson).
 ifeq ($(OS),Linux)
-  ifneq ($(HAS_NVIDIA),)
+  ifneq ($(IS_JETSON),)
+    COMPOSE_FILES += -f docker/compose.jetson.yaml
+    ENABLE_CUDA := 1
+  else ifneq ($(HAS_NVIDIA),)
     COMPOSE_FILES += -f docker/compose.gpu.yaml
     ENABLE_CUDA := 1
   endif
@@ -69,6 +78,17 @@ BUILD_ARGS := --build-arg ENABLE_CUDA=$(ENABLE_CUDA) \
               --build-arg TENSORRT_CU=$(TENSORRT_CU) \
               --build-arg TENSORRT_VERSION=$(TENSORRT_VERSION)
 
+JETSON_BUILD_ARGS := --build-arg JETSON_BASE_TAG=$(JETSON_BASE_TAG)
+
+# Jetson build args replace (not add to) the x86 CUDA/TensorRT build args
+# above - Dockerfile.jetson doesn't declare those ARGs at all (wrong
+# architecture packages), so passing them would just be dead/confusing.
+ifneq ($(IS_JETSON),)
+  FINAL_BUILD_ARGS := $(JETSON_BUILD_ARGS)
+else
+  FINAL_BUILD_ARGS := $(BUILD_ARGS)
+endif
+
 DOCKER_COMPOSE := docker compose $(COMPOSE_FILES)
 
 # Parameters with defaults
@@ -86,8 +106,8 @@ PKG ?=
 help:
 	@echo "========================================================================"
 	@echo "  🏎️  AI Formula Machine - Docker & Development Commands"
-	@echo "  🖥️  Environment: OS=$(OS) ($(ARCH)) | GPU Mode=$(if $(filter 1,$(ENABLE_CUDA)),Enabled (NVIDIA GPU),Disabled (CPU/Mac))"
-	@echo "  🔥 PyTorch: $(TORCH_VERSION) / $(TORCH_CUDA_CHANNEL)$(if $(NVIDIA_DRIVER_MAJOR), (host driver $(NVIDIA_DRIVER_MAJOR)),)"
+	@echo "  🖥️  Environment: OS=$(OS) ($(ARCH)) | GPU Mode=$(if $(filter 1,$(ENABLE_CUDA)),$(if $(IS_JETSON),Enabled (Jetson/L4T),Enabled (NVIDIA GPU)),Disabled (CPU/Mac))"
+	@echo "  🔥 PyTorch: $(if $(IS_JETSON),bundled in dustynv/ros:humble-pytorch-l4t-$(JETSON_BASE_TAG),$(TORCH_VERSION) / $(TORCH_CUDA_CHANNEL)$(if $(NVIDIA_DRIVER_MAJOR), (host driver $(NVIDIA_DRIVER_MAJOR)),))"
 	@echo "========================================================================"
 	@echo ""
 	@echo "📦 [Container Management]"
@@ -130,6 +150,11 @@ help:
 	@echo "  make bringup-hw       Launch hardware nodes only"
 	@echo "  make bringup-all      Launch hardware + full autonomous stack"
 	@echo "  make teleop           Run keyboard teleoperation"
+	@echo ""
+	@echo "🤖 [Jetson Troubleshooting]"
+	@echo "  cat /etc/nv_tegra_release                 Check installed L4T/JetPack version"
+	@echo "  docker info | grep -i runtime              Confirm 'nvidia' runtime is registered"
+	@echo "  make bash -> python3 -c \"import torch; print(torch.cuda.is_available())\"  Confirm GPU is visible inside the container (expect True)"
 	@echo "========================================================================"
 
 # ------------------------------------------------------------------------------
@@ -148,10 +173,10 @@ stop:
 restart: down up
 
 build:
-	$(DOCKER_COMPOSE) build $(BUILD_ARGS)
+	$(DOCKER_COMPOSE) build $(FINAL_BUILD_ARGS)
 
 rebuild:
-	$(DOCKER_COMPOSE) build --no-cache $(BUILD_ARGS)
+	$(DOCKER_COMPOSE) build --no-cache $(FINAL_BUILD_ARGS)
 
 ps:
 	$(DOCKER_COMPOSE) ps
