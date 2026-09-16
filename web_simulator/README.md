@@ -29,6 +29,12 @@ WASD で動かせれば起動成功です（この時点では rosbridge 未接�
 Three.js / roslib.js はオフライン環境でも動くよう `vendor/` 配下にローカル同梱済みです
 （追加のビルドや `npm install` は不要）。
 
+**対応ブラウザ**: Chrome/Edge に加えて **Firefox でも動作確認済み**です
+（WebGL描画、閾値処理モード、モデル(ONNX)モード、HUDのタブ切替・折りたたみ・ドラッグ移動、
+いずれもエラーなし）。「モデル (ONNX)」モードは WebGPU が使えない環境（`navigator.gpu` が
+ブロックリスト等で無効な場合を含む）では自動的に CPU の WASM 推論にフォールバックするため、
+WebGPU 非対応・無効なブラウザでも動作は継続します（推論速度は GPU 実行時より低下します）。
+
 ### 2. rosbridge_server を起動する
 
 `rosbridge_server` は Dockerfile に標準搭載されており、ホスト側のターミナルから `make rosbridge` を実行するだけで起動できます（未インストールの環境でも自動検知してインストール・起動されます）。
