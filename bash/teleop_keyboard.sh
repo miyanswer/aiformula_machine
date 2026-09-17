@@ -16,6 +16,15 @@ if [ -f "/opt/ros/humble/setup.bash" ]; then
     source /opt/ros/humble/setup.bash
 fi
 
+# Jetsonイメージ(docker/Dockerfile.jetson)では teleop_twist_keyboard 等の
+# apt未提供パッケージを /opt/extra_ros_ws にvcs-clone+colconビルドして別ワーク
+# スペースとして持たせている(x86版は全て /opt/ros/humble に直接apt導入され
+# るため、この行はJetson固有)。これを source しないと、下の
+# `ros2 run teleop_twist_keyboard ...` がパッケージを見つけられず失敗する。
+if [ -f "/opt/extra_ros_ws/install/setup.bash" ]; then
+    source /opt/extra_ros_ws/install/setup.bash
+fi
+
 if [ -f "${WS_DIR}/install/setup.bash" ]; then
     source "${WS_DIR}/install/setup.bash"
 fi

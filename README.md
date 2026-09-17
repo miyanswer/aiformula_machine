@@ -70,6 +70,14 @@ make bash
 > - **Ubuntu (NVIDIA GPU)**: `nvidia-smi` を自動検知し、GPU パススルー（`compose.gpu.yaml`）および CUDA 12.1 対応 PyTorch でビルド・起動。
 >   *(※ Ubuntu 側には `docker-ce` と `nvidia-container-toolkit` をインストールしておくだけでOKです)*
 
+> **🤖 Jetson AGX Orin (JetPack 5.1.x / L4T R35) での実行:**
+> - `make build` 実行前に `cat /etc/nv_tegra_release` で搭載中のL4Tバージョンを確認してください。`docker/Dockerfile.jetson` は既定で `r35.3.1`（JetPack 5.1.1相当）のベースイメージを使いますが、異なる場合は `make build JETSON_BASE_TAG=r35.2.1` のように上書きしてください（ズレると `torch.cuda.is_available()` が `False` になります）。
+> - `docker info | grep -i runtime` で `nvidia` ランタイムが登録されていることを事前に確認してください（JetPack標準セットアップ済みであれば通常は有効です）。
+> - `models/*_rtx_2070_..._sm75.engine` はRTX2070(sm75)向けのTensorRTエンジンで、Orin(sm87)では使われません。`yolop_lane_detector` は起動時に現在のGPU向けのエンジンが無ければ自動でコンパイルし直すため（`src/oit_navigation/oit_navigation/yolop_lane_detector.py` の `_init_tensorrt_detector` 参照）、追加の手動作業は不要ですが、初回起動時は数分ほど余分に時間がかかります。
+> - Jetsonでは `rviz_aiformula_plugins` パッケージ（RViz専用プラグイン、実車走行には不要）はビルド対象から外れます。`make build-ws` / `make build-pkg` が `IS_JETSON` を自動検知して `--packages-skip rviz_aiformula_plugins` を付与するため、いつも通り `make build-ws` を実行するだけで構いません（手動でフラグを付ける必要はありません）。
+> - Jetson上ではRViz2/rqt本体をインストールしていない（ヘッドレス構成の）ため、`make rqt` / `make rqt-graph` / `make open-rviz` は動作しません。可視化が必要な場合はMac側の Web シミュレータ（[http://localhost:8000/web_simulator/](http://localhost:8000/web_simulator/)）や、動画検証用の Web GUI（PC単体検証時）を利用してください。
+> - `sensing/zed-ros2-wrapper` ディレクトリには `COLCON_IGNORE` が置かれていないため、`colcon build` がこれもビルド対象に含めてしまい、ZED SDK が無い環境（Jetson/PC問わず）ではその分の失敗ログが出ることがあります（x86版でも既存の問題で、本ブランチが持ち込んだものではありません）。実車走行に `zed-ros2-wrapper` 自体は不要なので、失敗しても無視して構いません。
+
 > **🌐 ブラウザでアクセス可能な Web UI:**
 > - **3D 走行シミュレータ:** [http://localhost:8000/web_simulator/](http://localhost:8000/web_simulator/)
 > - **RViz2 / noVNC 画面:** [http://localhost:8080](http://localhost:8080)
@@ -123,6 +131,19 @@ bash bash/3_bringup_all_nodes.sh
 ```bash
 bash bash/teleop_keyboard.sh
 ```
+
+#### D. Mac から WASD で遠隔操作する
+実機（Jetson）で `bash/1_bringup_hardware.sh` か `bash/3_bringup_all_nodes.sh` を起動すると、rosbridge WebSocket サーバー（port 9090）が自動で立ち上がります。
+
+> ⚠️ **セキュリティ注意:** この rosbridge は認証なし・全インターフェース待ち受け（0.0.0.0:9090）で自動起動します。信頼できる/隔離されたネットワーク（大会LANなど）以外には機体を接続しないでください。
+
+1. Mac とJetsonを同じLANに接続する。
+2. Jetson側でLAN IPを確認する: `hostname -I` （例: `192.168.1.50`）
+3. Macのブラウザで `web_simulator/index.html` を開く（`python3 web_simulator/serve.py` などで配信するか、ファイルを直接開く）。
+4. 画面上部の「rosbridge URL」欄を `ws://<JetsonのLAN IP>:9090` に書き換えて接続する（デフォルトは `ws://localhost:9090` になっている）。
+5. 接続後、WASDキーで操作すると `/aiformula_control/gamepad/cmd_vel` トピック経由で実機の `twist_mux`（gamepad優先度150）に届き、実車が動く。
+
+> ⚠️ **接続断時の挙動:** Mac⇔Jetson間の無線接続が切れて `gamepad` トピックが 0.3 秒以上途絶えると、`twist_mux`（`launchers/sample_launchers/config/twist_mux.yaml`）は自動的に次に優先度の高い入力へフォールバックします。`bringup-all`（自律走行スタック起動）で使用している場合、これは無操作停止ではなく自動運転（`mpc`、優先度50）への切り替わりを意味するため、意図しない挙動に注意してください。
 
 ---
 
