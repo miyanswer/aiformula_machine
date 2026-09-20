@@ -86,6 +86,41 @@ function ribbonVertices(path, indices, width) {
   return out;
 }
 
+// centerPath is a closed ring (index 0 follows index length-1), so a run of
+// "active" points can wrap past that seam -- a solid stretch or a dash mark
+// straddling index 0 is one run, not two, and the ring's own last->first
+// segment must be drawn when both its endpoints are active. Groups a
+// per-point boolean into such circular runs; each returned array is the
+// index chain to hand to ribbonVertices, already in wrap-correct order.
+function circularRuns(active) {
+  const n = active.length;
+  if (active.every(Boolean)) {
+    // Nothing skipped anywhere: one run covering the whole ring, explicitly
+    // closed back to index 0 so the seam segment (length-1 -> 0) is drawn.
+    const full = active.map((_, i) => i);
+    full.push(0);
+    return [full];
+  }
+  // At least one inactive point exists, so it's safe to start the scan
+  // there: every run is then bounded by inactive points on both sides
+  // within this single pass, with no run left straddling the array's own
+  // start/end (that boundary is now inside an inactive stretch instead).
+  const start = active.findIndex((a) => !a);
+  const runs = [];
+  let current = [];
+  for (let k = 0; k < n; k++) {
+    const i = (start + k) % n;
+    if (active[i]) {
+      current.push(i);
+    } else {
+      if (current.length > 1) runs.push(current);
+      current = [];
+    }
+  }
+  if (current.length > 1) runs.push(current);
+  return runs;
+}
+
 // Index ranges to draw, given arc-length intervals to skip (junction
 // openings) or a dash pattern.
 function solidRanges(s, total, skip) {
@@ -94,34 +129,12 @@ function solidRanges(s, total, skip) {
     const v1 = value + total;
     return (v0 >= s0 && v0 < s1) || (v1 >= s0 && v1 < s1);
   });
-  const ranges = [];
-  let current = [];
-  for (let i = 0; i < s.length; i++) {
-    if (inSkip(s[i])) {
-      if (current.length > 1) ranges.push(current);
-      current = [];
-    } else {
-      current.push(i);
-    }
-  }
-  if (current.length > 1) ranges.push(current);
-  return ranges;
+  return circularRuns(s.map((value) => !inSkip(value)));
 }
 
 function dashRanges(s, total, markM, gapM) {
   const pitch = markM + gapM;
-  const ranges = [];
-  let current = [];
-  for (let i = 0; i < s.length; i++) {
-    if (s[i] % pitch < markM) {
-      current.push(i);
-    } else {
-      if (current.length > 1) ranges.push(current);
-      current = [];
-    }
-  }
-  if (current.length > 1) ranges.push(current);
-  return ranges;
+  return circularRuns(s.map((value) => value % pitch < markM));
 }
 
 function ribbonMesh(path, ranges, width, material) {
