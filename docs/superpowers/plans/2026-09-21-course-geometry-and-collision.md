@@ -756,7 +756,7 @@ if __name__ == "__main__":
 - [ ] **Step 6: ツールを実行して診断値を確認**
 
 Run: `python3 web_simulator/tools/build_course.py`
-Expected: `lane width` が outer / inner とも `3.5000 m (min 3.4995 / max 3.5005)` 相当、`min radius` が 10 m 前後、`smoothing RMS dev` が 0.03〜0.04 m。`js/course_geometry.js` と `js/course_lines.js` が書き換わる
+Expected: `lane width` が outer / inner とも `3.5000 m (min 3.4995 / max 3.5005)` 相当、`min radius` が 10 m 前後、`smoothing` の RMS 偏差が 0.05 m 前後（下表の平均偏差 0.034 m に対する RMS。裾が長いので RMS の方が大きい）。`js/course_geometry.js` と `js/course_lines.js` が書き換わる
 
 - [ ] **Step 7: 旧ツールを削除**
 
