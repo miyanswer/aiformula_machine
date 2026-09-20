@@ -267,7 +267,7 @@ rosbridge 接続中は、右上 PiP と同じ機体カメラ視点を `sensor_ms
   - **UFLD**: `models/ufld.onnx`（[`js/ufld_lane_detector.js`](js/ufld_lane_detector.js)）。245MB で git 管理外のため、
     `models/ufld_honda_finetuned_best.pth` を置いて `ros2 run oit_navigation export_ufld_onnx` で生成する
   - **理想検出**: コースの実際の 3 本線（[`js/course_lines.js`](js/course_lines.js)、
-    [`tools/extract_course_lines.py`](tools/extract_course_lines.py) でコース画像から抽出）を
+    [`tools/build_course.py`](tools/build_course.py) でコース画像から抽出）を
     ノイズ・欠落つきで観測する。認識精度と走行方式を切り分けて検証するためのモード
   - **ROS2連携**: 下記「ROS 2連携モード」
 - **スタート位置へ**: 車両を外周の中央白線の上 `(0, -1.6, 0)` に置き、記録を 1 周目からやり直す
@@ -387,13 +387,19 @@ web_simulator/
 │   ├── simulator.js         シーン構築・メッシュ読込・入力・rosbridge通信・描画ループ
 │   ├── vehicle_physics.js   差動2輪駆動の物理モデル（質量70kg）
 │   ├── course.js            コースレイアウトの地面テクスチャ生成
+│   ├── course_geometry.js          外周ループの基準パス・寸法定数（build_course.py が生成、手で編集しない）
+│   ├── collision.js                2D 当たり判定ヘルパー（円と障害物、押し戻し処理）
 │   ├── lane_model_detector.js      YOLOP (ONNX) による白線マスク検出（crop_bottom前処理）
 │   ├── ufld_lane_detector.js       UFLD (ONNX) による白線点列検出
 │   ├── ideal_lane_detector.js      理想検出（コースの実際の白線 + ノイズ）
-│   ├── course_lines.js             外周コースの 3 本線（tools/extract_course_lines.py で生成）
+│   ├── course_lines.js             外周コースの 3 本線（tools/build_course.py で生成）
 │   ├── lane_navigator.js           oit_navigation lane_nav の JS 移植（線追跡・境界記録・QP・追従）
 │   └── twist_mux.js         WASD/自動運転の優先度＋タイムアウト調停
-├── tools/extract_course_lines.py   コース画像から 3 本線を抽出
+├── tools/
+│   ├── build_course.py             コース画像から外周ループの実寸幾何・3本線・背景テクスチャを生成
+│   ├── test_build_course.py        build_course.py のユニットテスト
+│   └── verify_course.js            ブラウザ上でコース幾何・当たり判定を検証するスクリプト
+├── png/shihou_cource_base.png      外周3本線を消したコース背景テクスチャ（build_course.py が生成、手で編集しない）
 ├── models/                  honda_shihou_finetuned.onnx（export_onnx_web.py）/ ufld.onnx（export_ufld_onnx.py, git 管理外）
 └── vendor/                  three.js / roslib.js / onnxruntime-web のローカル同梱コピー
 ```
@@ -401,22 +407,113 @@ web_simulator/
 ## コースレイアウト
 
 ユーザー提供のコースレイアウト画像（[`png/shihou_cource_unity.png`](png/shihou_cource_unity.png)、
-Unity上のコース設計ツールのスクリーンショット）を、[`js/course.js`](js/course.js) で
-そのまま地面テクスチャとして読み込み、車体の初期位置を中心に敷いています。
+Unity上のコース設計ツールのスクリーンショット）を元に、[`tools/build_course.py`](tools/build_course.py)
+が外周ループの実寸幾何を抽出し、[`js/course.js`](js/course.js) で背景テクスチャ
+（[`png/shihou_cource_base.png`](png/shihou_cource_base.png)。外周3本線は消してあります）として
+車体の初期位置を中心に敷いています。外周ループの実寸値・当たり判定の詳細は、以降の
+「コースの実寸」「当たり判定」の各節を参照してください。
 
-- 実寸法（外形約98.9m×91.4m、道幅9.0mなど）は現時点では未反映です（指示によりいったん保留）。
-  地面の大きさは画像のアスペクト比（1024:819）だけを使い、幅100m相当で仮に配置しています
-- 画像をそのまま貼っているだけの **見た目のみ** の実装です。道路外への進入判定や
-  ゲート通過判定などのロジックは実装していません（車体はこれまで通り
-  どこでも自由に走行できます）。周回の判定は oit_navigation の自己位置ベースで行います
-- 実寸法を反映する場合は `js/course.js` の `COURSE_WIDTH_M`（現在100m固定）を
-  実際のコース幅に合わせて変更してください
+- 実寸法は反映済みです。コース板の大きさは 106.80 m × 85.42 m です
+- 外周ループの中央線・左右境界線の3本の白線は実寸のリボンメッシュとして描画されます。
+  内側の交差点・横断歩道・駐車枠・芝生島・外周の縁石線は引き続きテクスチャですが、同じ縮尺に載っています
+- 障害物（MyLaps ゲートの支柱とコーン）は物理的な当たり判定を持ちます。コース逸脱（境界線の外へ出ること）は
+  検知して HUD に表示しますが、走行そのものは止めません
 - 車体の初期位置は odom 原点 `(0,0,0)` のままです。コース画像は
   [`js/simulator.js`](js/simulator.js) の `COURSE_POSE` で現在
   `(x: 13.22, y: 35.41, yaw: +90°)` に配置しています
+
+## コースの実寸
+
+外周ループは実寸で作られています。
+
+| 項目 | 値 |
+|---|---|
+| 車線幅（中央線↔境界線） | 3.5 m |
+| 白線幅 | 15 cm |
+| 中央線の破線 | 実線 2.8 m / 間隔 2.6 m |
+| 外周ループ全長（中央線、0.10 m 間隔で 2470 点サンプリング） | 247.021 m |
+| 最小曲率半径 | 10.8 m |
+| コース板 | 106.80 m × 85.42 m |
+
+外周ループの3本の白線は、テクスチャではなく [`js/course_geometry.js`](js/course_geometry.js) の
+基準パスから生成したリボンメッシュです（[`png/shihou_cource_base.png`](png/shihou_cource_base.png)
+側は同じ線を消してあります）。内側の交差点・横断歩道・駐車枠・芝生島・外周の縁石線は
+従来どおりテクスチャで、同じ縮尺に載っています。
+
+### コース定義の再生成
+
+```bash
+python3 web_simulator/tools/build_course.py
+```
+
+`png/shihou_cource_unity.png` から以下を生成します。手で編集しないでください。再実行しても
+同じバイト列が出力されます（byte-reproducible）。
+
+- `js/course_geometry.js` — 基準パスと寸法定数
+- `js/course_lines.js` — 3 本線の点列（理想検出モードの入力）
+- `png/shihou_cource_base.png` — 外周 3 本線を消した背景テクスチャ
+
+ユニットテスト（34 件、すべて pass）:
+
+```bash
+cd web_simulator/tools && python3 -m unittest test_build_course
+```
+
+### ブラウザでの幾何検証
+
+ページを開いてコンソールで以下を実行すると、8 項目のチェックがすべて pass します
+（`requestAnimationFrame` を使うため、ブラウザペインが表示された状態で実行してください。
+タブが裏に回っていると止まります）。
+
+```js
+const m = await import('/web_simulator/tools/verify_course.js');
+await m.runChecks();
+```
+
+検証結果の要点:
+
+- 車線幅は外側境界で 3.4999〜3.5001 m、内側境界で 3.4998〜3.5001 m（基準の 3.5 m に対し
+  誤差 0.1 mm 未満）
+- 白線幅 `lineWidthM` は設定どおり 0.15 m
+- 車体の初期スポーンは中央線から 0.0047 m しかずれていない
+- 理想検出器（[`js/ideal_lane_detector.js`](js/ideal_lane_detector.js)）は 40 回の呼び出し中
+  33 回で中央線のフィットが得られ、平均横方向オフセットは -0.0195 m
+- MyLaps ゲートへの正対衝突は 0.2166 m 貫入した時点で `headOn: true` と判定される一方、
+  20 m 離れていれば接触なし
+- コース逸脱カウントの推移は `[0, 0, 0, 0, 1, 1, 1, 2]`（意図的にコース外へ出すテスト
+  シーケンスに対する結果）
+
+## 当たり判定
+
+- **障害物（MyLaps ゲートの支柱とコーン）**: 物理的に阻止します。車体は base_link 上の
+  2 円（半径 0.40 m、中心は x = +0.30 m と x = -0.50 m）で近似し、貫入した分だけ押し戻します。
+  正対して当たった場合は前進速度を 0 にします。実際に全開でゲートへ 3000 フレーム突っ込ませても
+  貫入は残らず（最大貫入量 0 m）、車体はゲート中心から 1.40 m の位置で速度 0 のまま止まります。
+- **コース逸脱**: 走行は止めず、HUD に「逸脱中」表示と累計回数を出すだけです。
+  車体の一部が境界線の外縁（基準パスから 3.175 m）を越えた時点で 1 回と数え、
+  3.0 m 以内に戻るまで次を数えません。ROS トピックは発行しません（実車に対応するノードが
+  存在しないため）。
+
+### 自動運転との組み合わせ（実走確認）
+
+理想検出モードでゲートを無効化して自動運転させると、マッピング周（1 周目）は中央線から
+-0.018 m 〜 +0.023 m の範囲に収まったまま 247 m の外周ループを完走し、逸脱は 0 回でした。
+続くレーシングライン走行（1.5 m/s）はコーナーを短絡するため中央線から 1.2〜2.7 m 外れますが、
+これも逸脱 0 回でした。**この検証で [`js/lane_navigator.js`](js/lane_navigator.js) に変更は
+不要でした**（実寸化の影響なし）。
+
+ゲートを有効に戻すと、マッピング周はゲート手前 1.40 m（速度 0）で止まります。一方
+**レーシングラインはゲートを避けて通過します**。ゲートの当たり判定は中心から ±0.46 m の
+範囲にしかなく、車体の半幅は 0.40 m であるのに対し、レーシングラインは中央線から
+1.2 m 以上外れて走るため、両者が物理的に重ならないからです。これはゲートの設置位置に
+由来する挙動であり不具合ではありませんが、**ゲートは中央線を走る周回だけを阻止し、
+ラインを外れた周回は素通りしてしまう**という点は、読み手が知っておくべき制約です。
 
 ## 既知の制約
 
 - 読み込むメッシュは車体 (`AIF_body.dae`) と車輪 (`tire.dae`) のみです。
   ZED カメラの `zedx.stl`（約13MB）は読み込み時間短縮のため対象外にしています。
-- 衝突判定・地形は未実装です（コースの路面はテクスチャのみで、道路外進入の制限はありません）。
+- 障害物（MyLaps ゲートの支柱とコーン）には当たり判定があり、コース逸脱は HUD で検知しますが、
+  それ以外の地形（内側の縁石・芝生島など）には当たり判定がありません。ゲートはレーシング
+  ラインのように中央線から離れた経路を物理的に阻止できない場合があります（詳細は
+  「当たり判定」の節を参照）。
