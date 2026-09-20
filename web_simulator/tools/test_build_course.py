@@ -183,10 +183,11 @@ class TestBuildGeometryOnTheRealCourse(unittest.TestCase):
     def test_total_length_matches_the_spec(self):
         self.assertAlmostEqual(self.geom["lengthM"], 246.9, delta=2.0)
 
-    def test_start_pose_sits_on_the_centre_line(self):
+    def test_start_pose_yaw_matches_the_path_tangent(self):
         path = np.array(self.geom["centerPath"])
-        start = np.array([[self.geom["startPose"]["x"], self.geom["startPose"]["y"]]])
-        self.assertLess(float(nearest_distance(start, path)[0]), 0.05)
+        tangent = path[1] - path[-1]
+        expected_yaw = math.atan2(tangent[1], tangent[0])
+        self.assertAlmostEqual(self.geom["startPose"]["yaw"], expected_yaw, delta=1e-3)
 
     def test_start_pose_is_the_world_origin_anchor(self):
         self.assertAlmostEqual(self.geom["startPose"]["x"], 0.0, delta=0.05)
