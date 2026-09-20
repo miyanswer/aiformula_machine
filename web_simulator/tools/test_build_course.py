@@ -5,14 +5,16 @@ import os
 import sys
 import unittest
 
+import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from build_course import (  # noqa: E402
-    DASH_GAP_M, DASH_MARK_M, build_geometry, curvature_closed, dashed_line, fill_closed,
-    gap_intervals, gapped_line, lowpass_closed, nearest_distance, normals_closed,
-    offset_closed, resample_closed,
+    ASPHALT_BGR, COURSE_WIDTH_M, DASH_GAP_M, DASH_MARK_M, ERASE_CORRIDOR_M, N_RAYS,
+    RAY_CENTER, SRC_IMG, WHITE_THRESHOLD, build_geometry, curvature_closed, dashed_line,
+    erase_lines, extract_ray_radii, fill_closed, gap_intervals, gapped_line,
+    lowpass_closed, nearest_distance, normals_closed, offset_closed, resample_closed,
 )
 
 
@@ -208,6 +210,68 @@ class TestBuildGeometryOnTheRealCourse(unittest.TestCase):
         d_correct = nearest_distance(traced_outer, offset_closed(path, sign * 3.5))
         d_flipped = nearest_distance(traced_outer, offset_closed(path, -sign * 3.5))
         self.assertLess(float(d_correct.mean()), float(d_flipped.mean()))
+
+
+class TestEraseLines(unittest.TestCase):
+    def test_replaces_white_pixels_inside_the_corridor(self):
+        image = np.full((200, 200, 3), (156, 150, 156), dtype=np.uint8)
+        image[100, 150] = (255, 255, 255)          # レイ 0 (右向き) 上, 半径 50
+        radii = {"outer": [50.0] + [None] * 7, "center": [None] * 8, "inner": [None] * 8}
+        out = erase_lines(image, radii, (100, 100), 8, 4.0, 195, (156, 150, 156))
+        np.testing.assert_array_equal(out[100, 150], (156, 150, 156))
+
+    def test_leaves_non_white_pixels_alone(self):
+        image = np.full((200, 200, 3), (156, 150, 156), dtype=np.uint8)
+        image[100, 150] = (127, 185, 165)          # 芝生色
+        radii = {"outer": [50.0] + [None] * 7, "center": [None] * 8, "inner": [None] * 8}
+        out = erase_lines(image, radii, (100, 100), 8, 4.0, 195, (156, 150, 156))
+        np.testing.assert_array_equal(out[100, 150], (127, 185, 165))
+
+    def test_leaves_white_pixels_outside_the_corridor_alone(self):
+        image = np.full((200, 200, 3), (156, 150, 156), dtype=np.uint8)
+        image[100, 180] = (255, 255, 255)          # 半径 80, 回廊 (50±4) の外
+        radii = {"outer": [50.0] + [None] * 7, "center": [None] * 8, "inner": [None] * 8}
+        out = erase_lines(image, radii, (100, 100), 8, 4.0, 195, (156, 150, 156))
+        np.testing.assert_array_equal(out[100, 180], (255, 255, 255))
+
+
+class TestErasedCourseImage(unittest.TestCase):
+    """実 PNG に対する結合テスト."""
+
+    def test_traced_line_positions_are_no_longer_white(self):
+        image = cv2.imread(SRC_IMG)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        radii = extract_ray_radii(gray > WHITE_THRESHOLD, RAY_CENTER, N_RAYS)
+        corridor_px = ERASE_CORRIDOR_M / (COURSE_WIDTH_M / image.shape[1])
+        out = erase_lines(image, radii, RAY_CENTER, N_RAYS, corridor_px,
+                          WHITE_THRESHOLD, ASPHALT_BGR)
+        out_gray = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY)
+        cx, cy = RAY_CENTER
+        remaining = 0
+        for name in ("outer", "center", "inner"):
+            for k, r in enumerate(radii[name]):
+                if r is None:
+                    continue
+                th = 2 * np.pi * k / N_RAYS
+                px = int(round(cx + r * np.cos(th)))
+                py = int(round(cy + r * np.sin(th)))
+                if out_gray[py, px] > WHITE_THRESHOLD:
+                    remaining += 1
+        self.assertEqual(remaining, 0)
+
+    def test_the_kerb_line_outside_the_loop_survives(self):
+        """外側の二重線 (縁石線) は残すこと. 消えた割合が 5% 未満であること."""
+        image = cv2.imread(SRC_IMG)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        white = gray > WHITE_THRESHOLD
+        before = int(white.sum())
+        radii = extract_ray_radii(white, RAY_CENTER, N_RAYS)
+        corridor_px = ERASE_CORRIDOR_M / (COURSE_WIDTH_M / image.shape[1])
+        out = erase_lines(image, radii, RAY_CENTER, N_RAYS, corridor_px,
+                          WHITE_THRESHOLD, ASPHALT_BGR)
+        after = int((cv2.cvtColor(out, cv2.COLOR_BGR2GRAY) > WHITE_THRESHOLD).sum())
+        # 外周 3 本線だけが消えるので, 画像全体の白画素が半分以上残るはず
+        self.assertGreater(after, before * 0.5)
 
 
 if __name__ == "__main__":

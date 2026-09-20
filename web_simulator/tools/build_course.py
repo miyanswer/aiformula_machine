@@ -48,6 +48,10 @@ DASH_MARK_M = 2.8
 DASH_GAP_M = 2.6
 INNER_GAP_MIN_M = 1.5
 
+# --- 背景テクスチャ (タスク 3) ---
+ERASE_CORRIDOR_M = 0.45           # 抽出線からの法線方向の消去範囲
+ASPHALT_BGR = (156, 150, 156)     # 元 PNG のアスファルト色
+
 
 def fill_closed(line, n_rays):
     # type: (List[Optional[Sequence[float]]], int) -> np.ndarray
@@ -392,6 +396,34 @@ def write_lines_js(geom, path=OUT_LINES):
         f.write(";\n")
 
 
+def erase_lines(image, radii, center, n_rays, corridor_px, threshold, fill_bgr):
+    # type: (np.ndarray, dict, Tuple[int, int], int, float, int, Tuple[int, int, int]) -> np.ndarray
+    """
+    抽出された各線の位置を中心に corridor_px の回廊をとり, その中の
+    「輝度 threshold 超」の画素だけを fill_bgr で塗り潰す.
+    回廊外と非白画素には触れないので, 回廊に入り込んだ芝生やアスファルトは残る.
+    """
+    out = image.copy()
+    h, w = out.shape[:2]
+    gray = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY)
+    mask = np.zeros((h, w), np.uint8)
+    cx, cy = center
+    span = np.arange(-corridor_px, corridor_px + 0.5, 0.5)
+    for name in ("outer", "center", "inner"):
+        for k, r in enumerate(radii[name]):
+            if r is None:
+                continue
+            theta = 2 * np.pi * k / n_rays
+            dx, dy = np.cos(theta), np.sin(theta)
+            xs = (cx + (r + span) * dx).round().astype(int)
+            ys = (cy + (r + span) * dy).round().astype(int)
+            ok = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
+            mask[ys[ok], xs[ok]] = 1
+    mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=2)
+    out[(mask == 1) & (gray > threshold)] = fill_bgr
+    return out
+
+
 def main():
     geom = build_geometry()
     path = np.array(geom["centerPath"])
@@ -414,6 +446,12 @@ def main():
     write_lines_js(geom)
     print("wrote", OUT_GEOM)
     print("wrote", OUT_LINES)
+    image = cv2.imread(SRC_IMG)
+    corridor_px = ERASE_CORRIDOR_M / (COURSE_WIDTH_M / image.shape[1])
+    base = erase_lines(image, geom["_radii"], RAY_CENTER, N_RAYS, corridor_px,
+                       WHITE_THRESHOLD, ASPHALT_BGR)
+    cv2.imwrite(OUT_IMG, base)
+    print("wrote", OUT_IMG, "(erase corridor %.2f m = %.1f px)" % (ERASE_CORRIDOR_M, corridor_px))
 
 
 if __name__ == "__main__":
