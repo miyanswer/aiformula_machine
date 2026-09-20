@@ -126,20 +126,53 @@ async function loadObj(objUrl, mtlUrl) {
 // at 1.13m tall with 0.46m between the post centres.
 const MYLAPS_SCALE = 0.01; // cm -> m
 
-// Placement: on the course centre line (js/course_lines.js "center"), 25m past
-// the exit of the second corner, measured along the centre line from the
-// vehicle's spawn point (SIM_START_POSE) in the driving direction.
+// Placement: on the course centre line (js/course_geometry.js centerPath),
+// 25m past the exit of the second corner, measured along the centre line in
+// the driving direction.
 //
-//   corner 2 (the long left-hander onto the top straight) exits at s=111.0m,
-//   world (27.66, 68.87); +25m along the centre line lands on s=136.0m.
+//   corner 2 (the long left-hander onto the top straight) exits at
+//   s=119.0m; +25m along the centre line lands on s=144.0m.
 //
 // yaw: the arch spans the track and its LED panel (model +y) faces oncoming
 // traffic. The top straight is driven in -x, so model +y must point to world
-// +x, i.e. yaw = track heading + 90deg = 180 + 90 = -90deg.
+// +x, i.e. yaw = track heading + 90deg. The track heading at s=144.0m is
+// 180.5°, so yaw = 180.5 + 90 = 270.5° ≈ -1.56229 rad. Square the gantry
+// to the track heading, not the world axes.
 //
 // z is lifted just clear of the course texture plane (COURSE_POSE.z = 0.01)
 // so the base bars don't z-fight with it.
-export const MYLAPS_POSE = { x: 2.928, y: 68.442, z: 0.02, roll: 0, pitch: 0, yaw: -Math.PI / 2 };
+export const MYLAPS_POSE = { x: -1.011, y: 73.225, z: 0.02, roll: 0, pitch: 0, yaw: -1.56229 };
+
+// Collision footprint, as circles in the model's own XY plane (metres,
+// relative to MYLAPS_POSE). Listed explicitly rather than derived from the
+// .obj's group bounding boxes, so swapping the model out cannot silently
+// change what the vehicle can hit. Values are the group extents of
+// MyLaps.obj scaled by MYLAPS_SCALE:
+//   Post_L/R   x = -/+23cm, y = -3.2cm, radius 1.9cm
+//   Cone1/2/3  x = -31 / 0 / +31cm, y = 55cm, base radius 15cm
+export const MYLAPS_COLLIDERS = [
+  { x: -0.23, y: -0.032, r: 0.019 },
+  { x: 0.23, y: -0.032, r: 0.019 },
+  { x: -0.31, y: 0.55, r: 0.15 },
+  { x: 0.0, y: 0.55, r: 0.15 },
+  { x: 0.31, y: 0.55, r: 0.15 },
+];
+
+/**
+ * Model-local collider circles placed into the world by a ROS pose.
+ * @param {{x:number, y:number, yaw:number}} pose
+ * @param {Array<{x:number, y:number, r:number}>} colliders
+ * @returns {Array<{x:number, y:number, r:number}>}
+ */
+export function worldColliders(pose, colliders) {
+  const c = Math.cos(pose.yaw);
+  const s = Math.sin(pose.yaw);
+  return colliders.map((o) => ({
+    x: pose.x + c * o.x - s * o.y,
+    y: pose.y + s * o.x + c * o.y,
+    r: o.r,
+  }));
+}
 
 /**
  * Loads models/MyLaps.obj and adds it to `parent` (expected to be rosRoot, so
@@ -147,15 +180,17 @@ export const MYLAPS_POSE = { x: 2.928, y: 68.442, z: 0.02, roll: 0, pitch: 0, ya
  *
  * @param {THREE.Object3D} parent
  * @param {(object3d: THREE.Object3D, pose: object) => void} setPose simulator.js's URDF-convention pose helper
+ * @returns {THREE.Group} the root group, positioned with the given pose
  */
 export function addMyLapsGantry(parent, setPose) {
+  const root = new THREE.Group();
+  setPose(root, MYLAPS_POSE);
+  parent.add(root);
   loadObj(MODEL_DIR + 'MyLaps.obj', MODEL_DIR + 'MyLaps.mtl')
     .then((gantry) => {
       gantry.scale.setScalar(MYLAPS_SCALE);
-      const root = new THREE.Group();
-      setPose(root, MYLAPS_POSE);
       root.add(gantry);
-      parent.add(root);
     })
     .catch((err) => console.error('Failed to load models/MyLaps.obj', err));
+  return root;
 }
