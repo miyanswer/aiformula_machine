@@ -47,6 +47,12 @@ START_WORLD = (0.0, -1.6)         # スポーン地点. 実寸化しても動か
 DASH_MARK_M = 2.8
 DASH_GAP_M = 2.6
 INNER_GAP_MIN_M = 1.5
+# 内側境界線の「線が存在する」判定のしきい値. 抽出サンプル (レイ) は弧長で
+# およそ 1440 本 / 内側境界全長 ~225m = ~0.16m 間隔で並び, 生成した内側線
+# (基準パスを LANE_WIDTH_M だけオフセットしたもの) は実サンプルから概ね
+# 0.3m 以内に収まる. どちらよりも十分大きく, かつ接続口の最小長 1.5m
+# (INNER_GAP_MIN_M) よりは十分小さい 1.0m を「線あり」しきい値にする.
+INNER_PRESENCE_TOL_M = 1.0
 
 START_YAW = 0.0   # js/simulator.js SIM_START_POSE: travel heading at the start line
                   # (counter-clockwise around the loop). The reference path is
@@ -293,48 +299,33 @@ def build_geometry():
         "inner": offset_closed(path, -sign_outer * LANE_WIDTH_M),
     }
 
-    # 4. 内側境界線の接続口 (抽出データ上の長い欠損) を弧長区間で持ち越す.
+    # 4. 内側境界線の接続口 (実際に線が途切れている区間) を判定する.
     #
-    #    ブリーフ原文の inner_gaps ブロックは `traced["inner"][anchor_idx * 0:]`
-    #    (無意味な全体スライス) と自己参照的な ray_seg 式で書かれており実行
-    #    できないので, ここでは作り直す:
-    #    抽出線 traced["inner"] は N_RAYS 本のレイ上のサンプルで, 基準パス
-    #    path の弧長インデックスとは直接対応しない. そこで欠損していない
-    #    サンプルだけを使い, それぞれを path 上の最近傍点 (=弧長 s) に対応
-    #    づける。その (レイ index, 弧長 s) の対応を周期的に線形補間して
-    #    全 N_RAYS 点ぶんの「弧長系列」を作り (fill_closed が座標を補間する
-    #    のと同じ考え方で, 対象を弧長にしたもの), その隣接差を seg_lengths
-    #    として元の traced["inner"] (None を保持) と一緒に gap_intervals に
-    #    渡す. こうすると None のレイは対応点が無いのでそのまま欠損として
-    #    引き継がれ, gap_intervals が弧長ベースで欠損区間を判定できる.
-    path_s = np.concatenate([[0.0], np.cumsum(seg)])[:-1]  # path[i] の弧長 s
-    idx_valid = np.array([k for k, p in enumerate(traced["inner"]) if p is not None])
-    s_valid = np.array([
-        path_s[int(np.argmin(np.hypot(path[:, 0] - traced["inner"][k][0],
-                                       path[:, 1] - traced["inner"][k][1])))]
-        for k in idx_valid
+    #    round 1/2 は N_RAYS 本のレイ空間に弧長を投影し直してから
+    #    gap_intervals に渡していたが, gap_intervals は受け取った列の
+    #    index 0 を弧長 0 として自前に s = cumsum(seg_lengths) を組み立てる
+    #    ため, 投影後の列の先頭 (最初に有効なレイ) の弧長が path 自身の
+    #    弧長軸の原点と一致しないと, 返ってくる区間が全体が一定量シフトして
+    #    しまう. round 1 はこれでズレたまま 0 区間を返し, round 2 の反転
+    #    修正は「反転すれば正しい座標系になる」と書いたが, それも誤りで,
+    #    ズレの原因そのものには手を付けていなかった (実際, round 2 の
+    #    innerGaps は世界座標で 1 か所に固まっており, その中点では抽出
+    #    サンプルが 0.04-0.35m しか離れておらず, 実際には線がある区間を
+    #    「欠損」と誤判定していた).
+    #
+    #    そこで, レイ空間への弧長投影を完全にやめ, path のインデックス
+    #    空間で直接「生成した内側境界線の各点の近くに, 抽出できた内側
+    #    サンプルが実在するか」を判定する presence test に切り替える.
+    #    line / seg_lengths の両方を path のインデックスでそろえて渡すので,
+    #    gap_intervals が組み立てる弧長軸は path 自身の s = cumsum(seg) と
+    #    常に一致し, 原点のズレが原理的に起こらない.
+    inner_line_pts = np.array(lines["inner"])
+    traced_inner_pts = np.array([p for p in traced["inner"] if p is not None])
+    d_to_traced = np.array([
+        np.hypot(*(traced_inner_pts - p).T).min() for p in inner_line_pts
     ])
-    # 弧長 total を周期とみなしてアンラップし, total/0 の境目での
-    # 補間破綻 (逆走に見える) を防ぐ.
-    unwrapped = np.unwrap(s_valid / total * 2 * np.pi) * total / (2 * np.pi)
-    idx_ext = np.concatenate([idx_valid - N_RAYS, idx_valid, idx_valid + N_RAYS])
-    s_ext = np.concatenate([unwrapped - total, unwrapped, unwrapped + total])
-    ray_s = np.interp(np.arange(N_RAYS), idx_ext, s_ext)
-    # レイ index k の昇順は, ray_s (path 上の実弧長) の昇順と同じ向きとは
-    # 限らない -- path は 2b で走行方向に反転済みなので, レイの角度が増える
-    # 向きと走行方向が逆であれば ray_s は k に対して単調減少する. gap_intervals
-    # は「隣接差がすべて正で, 総和が total になる」forward な弧長列を前提に
-    # しているので, ray_s が減少列なら line/ray_s を丸ごと逆順にしてから渡す
-    # (順序を反転するだけで, 個々の値=実弧長そのものは変わらないので,
-    # 返ってくる (s0, s1) はそのまま正しい path 弧長系での区間になる).
-    if unwrapped[-1] - unwrapped[0] >= 0:
-        gap_line, gap_ray_s = traced["inner"], ray_s
-    else:
-        gap_line, gap_ray_s = traced["inner"][::-1], ray_s[::-1]
-    inner_seg = np.empty(N_RAYS)
-    inner_seg[:-1] = gap_ray_s[1:] - gap_ray_s[:-1]
-    inner_seg[-1] = (gap_ray_s[0] + total) - gap_ray_s[-1]
-    inner_gaps = gap_intervals(gap_line, inner_seg, INNER_GAP_MIN_M)
+    present_line = [True if d < INNER_PRESENCE_TOL_M else None for d in d_to_traced]
+    inner_gaps = gap_intervals(present_line, seg, INNER_GAP_MIN_M)
 
     tangent = path[1] - path[-1]
     start_yaw = float(np.arctan2(tangent[1], tangent[0]))

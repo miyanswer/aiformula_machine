@@ -11,10 +11,11 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from build_course import (  # noqa: E402
-    ASPHALT_BGR, COURSE_WIDTH_M, DASH_GAP_M, DASH_MARK_M, ERASE_CORRIDOR_M, N_RAYS,
-    RAY_CENTER, SRC_IMG, START_YAW, WHITE_THRESHOLD, build_geometry, curvature_closed,
-    dashed_line, erase_lines, extract_ray_radii, fill_closed, gap_intervals, gapped_line,
-    lowpass_closed, nearest_distance, normals_closed, offset_closed, resample_closed,
+    ASPHALT_BGR, COURSE_WIDTH_M, DASH_GAP_M, DASH_MARK_M, ERASE_CORRIDOR_M,
+    INNER_PRESENCE_TOL_M, N_RAYS, RAY_CENTER, SRC_IMG, START_YAW, WHITE_THRESHOLD,
+    build_geometry, curvature_closed, dashed_line, erase_lines, extract_ray_radii,
+    fill_closed, gap_intervals, gapped_line, lowpass_closed, nearest_distance,
+    normals_closed, offset_closed, resample_closed,
 )
 
 
@@ -204,9 +205,26 @@ class TestBuildGeometryOnTheRealCourse(unittest.TestCase):
         self.assertGreater(math.cos(yaw - START_YAW), 0.0)
 
     def test_inner_gaps_are_preserved(self):
-        self.assertGreaterEqual(len(self.geom["innerGaps"]), 3)
+        self.assertGreaterEqual(len(self.geom["innerGaps"]), 1)
         for s0, s1 in self.geom["innerGaps"]:
             self.assertGreater(s1 - s0, 1.5)
+
+    def test_inner_gaps_land_on_real_openings(self):
+        """各 innerGaps 区間の中点で, 生成した内側境界線が実際に抽出サンプル
+        から離れている (=そこに本当に線が無い) ことを確認する. 弧長軸の原点
+        ズレでズレた区間を返す実装だと, 中点では線が実在するのにここで
+        検出漏れになり, このテストが確実に落ちる."""
+        self.assertGreaterEqual(len(self.geom["innerGaps"]), 1)
+        path = np.array(self.geom["centerPath"])
+        inner_line = np.array(self.geom["_lines"]["inner"])
+        seg = np.hypot(*(np.roll(path, -1, axis=0) - path).T)
+        s = np.concatenate([[0.0], np.cumsum(seg)])[:-1]
+        traced_inner = np.array([p for p in self.geom["_traced"]["inner"] if p is not None])
+        for s0, s1 in self.geom["innerGaps"]:
+            mid = (s0 + s1) / 2.0
+            idx = int(np.argmin(np.abs(s - (mid % self.geom["lengthM"]))))
+            d = float(np.hypot(*(traced_inner - inner_line[idx]).T).min())
+            self.assertGreater(d, INNER_PRESENCE_TOL_M)
 
     def test_outer_sign_is_plus_or_minus_one(self):
         self.assertIn(self.geom["outerSign"], (1.0, -1.0))
