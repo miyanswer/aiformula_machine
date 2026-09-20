@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { VehiclePhysics, VEHICLE, MAX_SPEED, MAX_ANGULAR } from './vehicle_physics.js';
-import { createCourseTexture, COURSE_WIDTH_M, COURSE_DEPTH_M } from './course.js';
+import { createCourseTexture, createCourseLines, COURSE_WIDTH_M, COURSE_DEPTH_M } from './course.js';
 import { addMyLapsGantry } from './course_props.js';
 import { TwistMux } from './twist_mux.js';
 import { UfldLaneDetector } from './ufld_lane_detector.js';
@@ -143,6 +143,11 @@ const course = new THREE.Mesh(
 );
 setPose(course, COURSE_POSE); // setPose is defined just below; hoisted, so usable here
 rosRoot.add(course);
+
+// The outer loop's three white lines, drawn as geometry at the exact
+// 15cm width / 3.5m lane spacing (js/course.js). The texture underneath
+// has those three lines erased, so these are the only ones on the loop.
+rosRoot.add(createCourseLines());
 
 // MyLaps timing gantry on the centre line, 20m past the second corner
 // (js/course_props.js). Scenery only, like the course plane above.
