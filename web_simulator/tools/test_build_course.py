@@ -296,12 +296,12 @@ class TestErasedCourseImage(unittest.TestCase):
         dist = cv2.distanceTransform(1 - seeds, cv2.DIST_L2, 5)
 
         # Maximum distance of changed pixels from traced line positions.
-        # Margin of 4.0 px covers cv2.dilate with 3x3 kernel at 2 iterations:
-        # ~2.0 px orthogonally + ~2.9 px diagonal, plus rounding/interpolation tolerance.
+        # Margin of 2.1 px covers integer rounding of ray endpoint coordinates,
+        # cv2.line's rasterisation with thickness=1.5*corridor_px, and floating-point precision.
         max_dist = float(dist[changed].max())
-        bound = corridor_px + 4.0
+        bound = corridor_px + 2.1
         self.assertLessEqual(max_dist, bound,
-                           msg="erasure at %.1f px from line exceeds corridor %.1f + margin 4.0" % (max_dist, corridor_px))
+                           msg="erasure at %.1f px from line exceeds corridor %.1f + margin 2.1" % (max_dist, corridor_px))
 
 
 if __name__ == "__main__":

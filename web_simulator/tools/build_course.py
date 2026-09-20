@@ -402,24 +402,52 @@ def erase_lines(image, radii, center, n_rays, corridor_px, threshold, fill_bgr):
     抽出された各線の位置を中心に corridor_px の回廊をとり, その中の
     「輝度 threshold 超」の画素だけを fill_bgr で塗り潰す.
     回廊外と非白画素には触れないので, 回廊に入り込んだ芝生やアスファルトは残る.
+
+    隣り合うレイ間の接線方向の隙間を閉じるために, 各線について隣接する
+    レイペア間で cv2.line で描画する. これにより, 法線方向の回廊幅は
+    corridor_px に保ったまま, 接線方向は連続した帯状になる.
     """
     out = image.copy()
     h, w = out.shape[:2]
     gray = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY)
     mask = np.zeros((h, w), np.uint8)
     cx, cy = center
-    span = np.arange(-corridor_px, corridor_px + 0.5, 0.5)
+    # Thickness for cv2.line to connect adjacent rays
+    # This must be large enough to close the tangential gaps between rays (~2.4 px at outer radius)
+    # but small enough to not exceed corridor_px radially. Use 1.5*corridor_px.
+    thickness_px = max(1, int(round(1.5 * corridor_px)))
+
+    # First, mark each traced ray position to ensure all traced points are erased
     for name in ("outer", "center", "inner"):
         for k, r in enumerate(radii[name]):
             if r is None:
                 continue
             theta = 2 * np.pi * k / n_rays
             dx, dy = np.cos(theta), np.sin(theta)
-            xs = (cx + (r + span) * dx).round().astype(int)
-            ys = (cy + (r + span) * dy).round().astype(int)
-            ok = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
-            mask[ys[ok], xs[ok]] = 1
-    mask = cv2.dilate(mask, np.ones((3, 3), np.uint8), iterations=2)
+            x = int(round(cx + r * dx))
+            y = int(round(cy + r * dy))
+            if 0 <= x < w and 0 <= y < h:
+                mask[y, x] = 1
+
+    # Then, draw lines between adjacent traced positions to close tangential gaps
+    for name in ("outer", "center", "inner"):
+        for k in range(n_rays):
+            r_k = radii[name][k]
+            r_next = radii[name][(k + 1) % n_rays]
+            # Both radii must be non-None to draw a connecting segment
+            if r_k is None or r_next is None:
+                continue
+            # Current ray endpoint
+            theta_k = 2 * np.pi * k / n_rays
+            dx_k, dy_k = np.cos(theta_k), np.sin(theta_k)
+            pt_k = (int(round(cx + r_k * dx_k)), int(round(cy + r_k * dy_k)))
+            # Next ray endpoint
+            theta_next = 2 * np.pi * (k + 1) / n_rays
+            dx_next, dy_next = np.cos(theta_next), np.sin(theta_next)
+            pt_next = (int(round(cx + r_next * dx_next)), int(round(cy + r_next * dy_next)))
+            # Draw line segment with thickness to close the gap
+            cv2.line(mask, pt_k, pt_next, 1, thickness=thickness_px)
+
     out[(mask == 1) & (gray > threshold)] = fill_bgr
     return out
 
