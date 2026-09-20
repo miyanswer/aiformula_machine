@@ -1,54 +1,121 @@
-/**:
-  ros__parameters:
-    # 1. Perception Topic Inputs & Outputs
-    input_image_topic: "/aiformula_sensing/zed_node/left_image/undistorted/compressed"
-    mask_image_topic: "/aiformula_perception/object_road_detector/mask_image"
-    annotated_image_topic: "/aiformula_visualization/object_road_detector/annotated_image"
+# oit_navigation: 白線検出 (YOLOP / UFLD) + 周回マップ作成 + QP レーシングライン走行
+#
+#   lane_detector      カメラ画像 -> 左境界/中央線/右境界 (aiformula_interfaces/LaneLines)
+#   odom_imu_localizer CAN 車輪速 + IMU ヨーレート -> 自己位置 (nav_msgs/Odometry)
+#   lane_navigator     1 周目: 中央線トラッキング + 境界記録 / 2 周目以降: QP ライン追従 -> cmd_vel
+#
+# web_simulator/js/lane_navigator.js の *_PARAMS は同じ値を持つ (変更したらそちらも合わせる).
 
-    # 2. Control Topic Outputs (ai_formula topic_list standard)
-    # "mpc" input of twist_mux - see sample_launchers/launch/twist_mux.launch.py
+lane_detector:
+  ros__parameters:
+    # yolop: models/honda_shihou_finetuned_best.pth (git 管理, 実機の既定)
+    # ufld : models/ufld_honda_finetuned_best.pth (245MB, git 管理外. 使う場合は models/ に置く)
+    backend: "yolop"
+    input_image_topic: "/aiformula_sensing/zed_node/left_image/undistorted"
+    use_device: "cpu"                # "cpu" / "0" (CUDA) / "mps"
+    max_inference_hz: 15.0
+    # YOLOP
+    roi_mode: "mask_top"             # "none" / "mask_top" / "crop_bottom"
+    top_cut_ratio: 0.45
+    use_tensorrt: false              # Jetson: true (エンジンが無ければ初回起動時にビルド)
+    tensorrt_engine_path: ""
+    # 出力
+    robot_frame_id: "base_link"
+    lane_lines_topic: "/aiformula_perception/lane_detector/lane_lines"
+    lane_line_left_topic: "/aiformula_perception/lane_line_publisher/lane_lines/left"
+    lane_line_center_topic: "/aiformula_perception/lane_line_publisher/lane_lines/center"
+    lane_line_right_topic: "/aiformula_perception/lane_line_publisher/lane_lines/right"
+    annotated_image_topic: "/aiformula_visualization/lane_detector/annotated_image"
+    fit_x_max: 12.0                  # これより遠い点はフィットに使わない [m]
+    # カメラ (ZED X HD1080 intrinsic SN48442725 / extrinsic.yaml)
+    camera_fx: 763.17
+    camera_fy: 763.17
+    camera_cx: 990.04
+    camera_cy: 543.45
+    camera_ref_width: 1920
+    camera_ref_height: 1080
+    camera_height: 0.56              # 地面からの高さ [m] (base_link 0.12 + 0.44)
+    camera_x: 0.055                  # base_link からの前方オフセット [m]
+    camera_pitch_down_deg: 1.8
+    # 線の役割割り当て (lane_nav/line_tracker.py)
+    lane_width: 3.5                  # 中央線 <-> 境界線の距離の初期値 [m] (走行中に推定更新)
+    tracker_x_ref: 2.0
+    tracker_gate_ratio: 0.4
+    tracker_width_tolerance: 0.3
+    tracker_max_heading_diff: 0.3
+
+odom_imu_localizer:
+  ros__parameters:
+    can_topic: "/aiformula_sensing/vehicle_info"
+    imu_topic: "/aiformula_sensing/vectornav/imu"
+    odom_topic: "/aiformula_sensing/odom_imu_localizer/odom"
+    odom_frame_id: "odom"
+    child_frame_id: "base_footprint"
+    publish_tf: false                # gyro_odometry_publisher と odom TF が重複しないよう既定 false
+    publish_rate: 50.0
+    estimate_gyro_bias: true         # 停止中にジャイロバイアスを推定 (走り出す前に数秒停止)
+    stationary_time: 1.0
+    gyro_bias_alpha: 0.01
+
+lane_navigator:
+  ros__parameters:
+    lane_lines_topic: "/aiformula_perception/lane_detector/lane_lines"
+    odom_topic: "/aiformula_sensing/odom_imu_localizer/odom"
+    # twist_mux の "mpc" 入力 (priority 50, launchers/sample_launchers/config/twist_mux.yaml)
     cmd_vel_topic: "/aiformula_control/extremum_seeking_mpc/cmd_vel"
     status_topic: "/aiformula_control/lane_tracker/status"
+    left_boundary_topic: "/aiformula_visualization/lane_navigator/left_boundary"
+    right_boundary_topic: "/aiformula_visualization/lane_navigator/right_boundary"
+    raceline_topic: "/aiformula_visualization/target_trajectory"
+    map_frame_id: "odom"
+    control_rate: 20.0
+    map_save_path: ""                # 例: "~/aiformula_maps/course_map.json" (1 周目完了時に保存)
+    map_load_path: ""                # 指定すると保存済みマップで 2 周目 (RACING) から開始
 
-    # 3. Visualization Outputs (ai_formula standard)
-    marker_topic: "/aiformula_visualization/lane_target_marker"
-    path_topic: "/aiformula_visualization/target_trajectory"
+    lines_timeout: 0.8               # 1 周目: 中央線がこれ以上見えなければ減速停止 [s]
+    stop_decel: 1.5
+    heading_window: 15               # 方位ドリフト推定に使うフレーム数
+    map_matching_gain: 0.1           # 2 周目以降: 白線観測による自己位置補正 (0 で無効)
+    map_matching_max_error: 0.8
+    match_max_step_xy: 0.03          # 1 更新で動かす補正の上限 [m] (誤対応で暴走させない)
+    match_max_step_yaw: 0.005        # [rad]
+    match_min_lines: 2               # 対応が取れた線がこれ未満なら補正しない
 
-    # 3b. Lane-line publisher outputs (ai_formula topic_list standard)
-    annotated_mask_image_topic: "/aiformula_perception/lane_line_publisher/annotated_mask_image"
-    lane_line_left_topic: "/aiformula_perception/lane_line_publisher/lane_lines/left"
-    lane_line_right_topic: "/aiformula_perception/lane_line_publisher/lane_lines/right"
-    lane_line_center_topic: "/aiformula_perception/lane_line_publisher/lane_lines/center"
+    # 1 周目の境界記録 (直線は疎, カーブは密)
+    recorder.x_rec: 2.0              # 記録する前方距離 [m]
+    recorder.ds_straight: 3.0        # 直線での記録間隔 [m]
+    recorder.ds_curve: 0.6           # カーブでの記録間隔 [m]
+    recorder.kappa_straight: 0.03    # これ以下の曲率 [1/m] は直線
+    recorder.kappa_curve: 0.20       # これ以上の曲率 [1/m] はカーブ
+    recorder.max_heading_step: 0.2094  # 方位がこれ以上変わったら間隔に関係なく記録 [rad]
+    recorder.median_window: 5
 
-    # Frame IDs (sample_vehicle standard)
-    robot_frame_id: "base_link"
+    # 周回検出・ループ補正
+    lap.min_lap_length: 30.0         # これ以上走ってから周回判定 [m]
+    lap.close_radius: 2.5            # スタート地点からこの距離以内で 1 周完了 [m]
+    lap.close_heading: 0.785
+    lap.loop_closure: true
+    lap.max_closure_correction: 1.5
+    lap.yaw_drift_correction: false  # 白線の向きから推定した方位ドリフトで地図を補正 (推定が不安定なので既定 off)
+    lap.max_yaw_drift_correction: 0.349
 
-    # 4. YOLOP Lane Detection Parameters
-    weight_path: "/aiformula_machine/models/honda_shihou_finetuned_best.pth"
-    use_device: "cpu"            # "cpu" or "0" (CUDA GPU)
-    roi_mode: "mask_top"         # "none", "mask_top" (Method A), "crop_bottom" (Method B)
-    top_cut_ratio: 0.45
-    conf_thresh: 0.30
-    frame_skip: 1                # 1 = Instant Asynchronous Free-run (Infers immediately when worker is ready)
-    max_inference_hz: 15.0       # Max inference frequency in Hz
+    # QP レーシングライン + 速度プロファイル
+    raceline.vehicle_half_width: 0.40
+    raceline.safety_margin: 0.35
+    raceline.lambda_center: 0.0001
+    raceline.lambda_smooth: 0.001
+    raceline.v_max: 3.0
+    raceline.v_min: 0.8
+    raceline.a_lat_max: 1.5
+    raceline.a_accel: 1.0
+    raceline.a_decel: 1.5
 
-    # 5. Camera & BEV Physical Projection Geometry (ZED X sample_vehicle calibrated)
-    camera_height: 0.56          # Ground clearance [m]
-    dist_min: 1.15               # Forward minimum distance [m]
-    dist_max: 10.0               # Forward maximum distance [m]
-    lateral_max: 5.0             # Lateral half-width (+-5.0m) [m]
-    lane_width: 3.5              # Road / Lane width [m]
-
-    # 6. 2-Point Anchor Control (Origin Anchor + 5.0m Preview Anchor)
-    lookahead_distance: 5.0      # Forward preview distance [m]
-    target_linear_speed: 1.0     # Default forward velocity [m/s]
-    angular_gain: 0.85           # Curvature steering gain
-    cross_track_gain: 0.95       # Origin cross-track error correction gain
-    max_angular_speed: 1.5       # Max angular velocity [rad/s]
-    max_angular_accel: 4.0       # Acceleration slew rate limit [rad/s^2]
-
-    # 7. Fallback
-    # Control now runs directly off each incoming mask (see bev_pure_pursuit_node's
-    # _mask_cb), not a fixed-rate timer. data_timeout only gates the watchdog that
-    # decelerates the vehicle if the mask stream itself stalls.
-    data_timeout: 0.8            # Fallback timeout if no mask received [sec]
+    # 追従制御
+    tracker.mapping_speed: 1.0       # 1 周目の速度 [m/s]
+    tracker.curve_slowdown: 0.5
+    tracker.lookahead_min: 1.2
+    tracker.lookahead_max: 2.5
+    tracker.lookahead_time: 0.6
+    tracker.cross_track_lookahead_gain: 2.0
+    tracker.max_angular_speed: 1.5
+    tracker.max_angular_accel: 4.0

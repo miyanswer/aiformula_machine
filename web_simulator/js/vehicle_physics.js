@@ -17,10 +17,10 @@ const REVERSE_FORCE_N = 98; // S held while stopped/reversing -> ~1.4 m/s^2
 const BRAKE_FORCE_N = 231; // S held while still moving forward -> ~3.3 m/s^2
 const COAST_RESISTANCE_N = 35; // rolling resistance + drag while coasting -> ~0.5 m/s^2
 
-// Exported so js/simulator.js can pass them to the autonomous-driving Pure
-// Pursuit control law (oit_lane_pipeline.js) as its target speed / angular
-// clamp -- per instruction, autonomous driving keeps these same limits
-// rather than oit_navigation's own real-vehicle defaults.
+// Exported so js/simulator.js can pass them to the autonomous-driving
+// lane navigator (lane_navigator.js) as its max speed / angular clamp --
+// per instruction, autonomous driving keeps these same limits rather than
+// oit_navigation's own real-vehicle defaults.
 export const MAX_SPEED = 1.5; // [m/s]
 const MAX_REVERSE_SPEED = -0.75; // [m/s]
 
@@ -101,8 +101,8 @@ export class VehiclePhysics {
 
   // Drives the vehicle from a commanded (v, omega) instead of WASD key
   // state -- used by the autonomous-driving toggle (js/simulator.js), fed
-  // from the ported oit_navigation Pure Pursuit control law
-  // (js/oit_lane_pipeline.js's stepPurePursuitControl). Ramps toward the
+  // from the ported oit_navigation lane navigator (js/lane_navigator.js's
+  // LaneNavigator.step). Ramps toward the
   // command using the same force/accel budget as manual driving (so
   // autonomous driving has the same inertia "feel"), then clamps to the
   // same MAX_SPEED/MAX_REVERSE_SPEED/MAX_ANGULAR limits WASD is bound by --

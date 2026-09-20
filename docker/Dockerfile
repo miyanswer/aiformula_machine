@@ -108,7 +108,7 @@ RUN pip3 install --no-cache-dir \
     "tensorrt-${TENSORRT_CU}==${TENSORRT_VERSION}" \
     "tensorrt-${TENSORRT_CU}-libs==${TENSORRT_VERSION}" \
     "tensorrt-${TENSORRT_CU}-bindings==${TENSORRT_VERSION}" \
-    ) || echo "[WARN] TensorRT/PyCUDA installation failed - yolop_lane_detector will fall back to plain PyTorch inference at runtime (use_tensorrt has no effect)."; \
+    ) || echo "[WARN] TensorRT/PyCUDA installation failed - lane_detector (backend=yolop) will fall back to plain PyTorch inference at runtime (use_tensorrt has no effect)."; \
     else \
     echo "[INFO] Installing PyTorch with CPU support..." && \
     pip3 install --no-cache-dir \

@@ -64,4 +64,4 @@ start_rosbridge
 # 実機全ノード一括起動Launchの実行
 ros2 launch sample_launchers all_system_2027.launch.py \
     use_device:=cuda \
-    rviz:=false
+    use_rviz:=false

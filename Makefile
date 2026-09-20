@@ -103,12 +103,13 @@ DOCKER_COMPOSE := docker compose $(COMPOSE_FILES)
 # Parameters with defaults
 DEVICE ?= $(if $(filter 1,$(ENABLE_CUDA)),cuda,cpu)
 VIDEO ?=
+BACKEND ?= yolop
 PKG ?=
 
 .PHONY: help up down stop restart build rebuild ps logs bash shell root-bash root \
-        build-ws colcon clean test-pc test test-tl test-yolop test-control \
+        build-ws colcon clean test-pc test test-tl test-lane test-yolop test-ufld \
         verification-gui vgui open-rviz gui open-vgui stop-nodes kill \
-        rosbridge sim open-sim rqt rqt-graph \
+        rosbridge sim open-sim sim-nav rqt rqt-graph \
         bringup-hw bringup-all teleop
 
 # Default: Show help message
@@ -139,17 +140,20 @@ help:
 	@echo "  make clean            Remove build/, install/, and log/ directories"
 	@echo ""
 	@echo "🧪 [PC Standalone Video Test]"
-	@echo "  make test-pc          Run full pipeline test (YOLOP + Control + Traffic Light + RViz)"
-	@echo "                        Options: DEVICE=cpu|cuda|mps  VIDEO=/path/to/video.mp4"
+	@echo "  make test-pc          Run video test (lane detection + Traffic Light + RViz)"
+	@echo "                        Options: DEVICE=cpu|cuda|mps  VIDEO=/path/to/video.mp4  BACKEND=yolop|ufld"
 	@echo "  make test-tl          Test traffic light detection & distance estimation"
-	@echo "  make test-yolop       Test YOLOP lane segmentation only"
-	@echo "  make test-control     Test lane detection + Pure Pursuit control"
+	@echo "  make test-lane        Test lane detection only (left/center/right, BACKEND=yolop|ufld)"
+	@echo "  make test-yolop       = make test-lane BACKEND=yolop"
+	@echo "  make test-ufld        = make test-lane BACKEND=ufld (needs models/ufld_honda_finetuned_best.pth)"
 	@echo "  make vgui             Run Web Verification GUI (open http://localhost:8090)"
 	@echo "  make stop-nodes       Kill all running ROS 2 nodes inside container"
 	@echo ""
 	@echo "🌐 [Web Simulator & UIs]"
 	@echo "  make rosbridge        Start rosbridge WebSocket server on port 9090"
 	@echo "  make open-sim (sim)   Open 3D Web Simulator in browser (http://localhost:8000)"
+	@echo "  make sim-nav          Run lane_detector + odom_imu_localizer + lane_navigator against the"
+	@echo "                        Web Simulator (its 'ROS2連携' mode, needs 'make rosbridge')  BACKEND=yolop|ufld"
 	@echo "  make open-rviz (gui)  Open RViz2 Web Display in browser (http://localhost:8080)"
 	@echo "  make rqt-graph        Open rqt_graph in browser GUI (http://localhost:8080)"
 	@echo "  make rqt              Open full rqt dashboard in browser GUI (http://localhost:8080)"
@@ -247,6 +251,7 @@ test-pc test:
 		 ros2 launch oit_navigation video_test.launch.py \
 		 $(if $(VIDEO),video_path:=$(VIDEO),) \
 		 use_device:=$(DEVICE) \
+		 backend:=$(BACKEND) \
 		 rviz:=true"
 
 test-tl:
@@ -259,17 +264,7 @@ test-tl:
 		 $(if $(VIDEO),video_path:=$(VIDEO),) \
 		 device:=$(DEVICE)"
 
-test-yolop:
-	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
-		$(DOCKER_COMPOSE) up -d; \
-	fi
-	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
-		"source /opt/ros/humble/setup.bash && source install/setup.bash && \
-		 ros2 launch oit_navigation yolop_video_test.launch.py \
-		 $(if $(VIDEO),video_path:=$(VIDEO),) \
-		 use_device:=$(DEVICE)"
-
-test-control:
+test-lane:
 	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
 		$(DOCKER_COMPOSE) up -d; \
 	fi
@@ -278,8 +273,15 @@ test-control:
 		 ros2 launch oit_navigation video_test.launch.py \
 		 $(if $(VIDEO),video_path:=$(VIDEO),) \
 		 use_device:=$(DEVICE) \
+		 backend:=$(BACKEND) \
 		 traffic_light:=false \
 		 rviz:=true"
+
+test-yolop:
+	$(MAKE) test-lane BACKEND=yolop
+
+test-ufld:
+	$(MAKE) test-lane BACKEND=ufld
 
 vgui verification-gui:
 	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
@@ -290,7 +292,7 @@ vgui verification-gui:
 
 stop-nodes kill:
 	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
-		"pkill -9 -f 'ros2|rviz2|video_publisher|yolop_lane_detector|bev_pure_pursuit_node|traffic_light|robot_state_publisher|joint_state_publisher' || true"
+		"pkill -9 -f 'ros2|rviz2|video_publisher|lane_detector|lane_navigator|odom_imu_localizer|traffic_light|robot_state_publisher|joint_state_publisher' || true"
 
 # ------------------------------------------------------------------------------
 # Web GUI Launchers (Host browser)
@@ -330,6 +332,16 @@ rosbridge:
 		   sudo apt-get update && sudo apt-get install -y ros-humble-rosbridge-server; \
 		 fi && \
 		 ros2 launch rosbridge_server rosbridge_websocket_launch.xml"
+
+sim-nav:
+	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		$(DOCKER_COMPOSE) up -d; \
+	fi
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
+		"source /opt/ros/humble/setup.bash && source install/setup.bash && \
+		 ros2 launch oit_navigation simulator_test.launch.py \
+		 use_device:=$(DEVICE) \
+		 backend:=$(BACKEND)"
 
 # ------------------------------------------------------------------------------
 # Real Vehicle Operations

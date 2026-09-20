@@ -20,7 +20,7 @@ python3 web_simulator/serve.py 8000
 ```
 
 （プレーンな `python3 -m http.server` ではなく [`web_simulator/serve.py`](serve.py) を
-使う理由: 「モデル (ONNX)」検知モードの onnxruntime-web が要求する COOP/COEP
+使う理由: YOLOP / UFLD 検出モードの onnxruntime-web が要求する COOP/COEP
 ヘッダーを付与するためです。詳しくは後述の「実装上の注意」を参照してください。）
 
 ブラウザで `http://localhost:8000/web_simulator/` を開きます。車体モデルが表示され、
@@ -30,8 +30,8 @@ Three.js / roslib.js はオフライン環境でも動くよう `vendor/` 配下
 （追加のビルドや `npm install` は不要）。
 
 **対応ブラウザ**: Chrome/Edge に加えて **Firefox でも動作確認済み**です
-（WebGL描画、閾値処理モード、モデル(ONNX)モード、HUDのタブ切替・折りたたみ・ドラッグ移動、
-いずれもエラーなし）。「モデル (ONNX)」モードは WebGPU が使えない環境（`navigator.gpu` が
+（WebGL描画、ONNXモデルによる白線検出、HUDのタブ切替・折りたたみ・ドラッグ移動、
+いずれもエラーなし）。ONNX モデルの検出モードは WebGPU が使えない環境（`navigator.gpu` が
 ブロックリスト等で無効な場合を含む）では自動的に CPU の WASM 推論にフォールバックするため、
 WebGPU 非対応・無効なブラウザでも動作は継続します（推論速度は GPU 実行時より低下します）。
 
@@ -245,50 +245,53 @@ rosbridge 接続中は、右上 PiP と同じ機体カメラ視点を `sensor_ms
 とは独立した別トピック(`sub_can`)からの入力であり、両者は連動していません
 （本シミュレータのオドメトリは IMU + 車体速度から直接計算しています）。
 
-## oit_navigation 白線検知・BEV変換・Pure Pursuit
+## oit_navigation: 白線検出 → 周回マップ作成 → QP レーシングライン走行
 
-`src/oit_navigation` パッケージが実車で行っている **白線検知 → 2D BEV（鳥瞰図）
-変換 → スライディングウィンドウ白線追跡 → Pure Pursuit 操舵制御** を、そのまま
-ブラウザ内（[`js/lane_threshold_detector.js`](js/lane_threshold_detector.js) /
-[`js/lane_model_detector.js`](js/lane_model_detector.js) /
-[`js/oit_lane_pipeline.js`](js/oit_lane_pipeline.js)）に移植しています。
+`src/oit_navigation` が実車で行う走行方式を、そのままブラウザ内で動かせます
+（アルゴリズム本体 [`js/lane_navigator.js`](js/lane_navigator.js) は
+`src/oit_navigation/oit_navigation/lane_nav/` の JS 移植で、同じ入力で Python 版と結果が一致することを確認済み）。
+シミュレータは **システム構成・技術の組み合わせがうまく動くかの検証** 用です（車両特性は今後追加予定）。
 
-白線検知は HUD の「検知方式」ボタンで以下の2方式をいつでも切り替えられます
-（切り替えてもBEV変換・Pure Pursuit以降のロジックは共通です）。
+1. **白線検出**: カメラ画像から白線を検出し、地面 (base_link) に投影して **左境界 / 中央線 / 右境界** に割り当てる
+   （線の並び順ではなく横位置で追跡。見えない線は道幅から補完 = 破線表示）
+2. **1周目**: 中央白線の上を走りながら、前方 2m の左右境界点を odom 座標に記録
+   （直線は 3m 間隔、カーブは 0.6m 間隔まで詰める）。スタート地点に戻ったら 1 周完了
+3. **2周目以降**: 各断面の道幅の中にウェイポイントを置き、QP（曲率最小）で
+   アウト・イン・アウトのラインを作って追従
 
-- **閾値処理**（既定）: 輝度＋彩度の閾値（明るくかつグレー/白に近い＝彩度が低い
-  ピクセルを白線とみなす）で判定。モデルの読み込みや推論待ちが不要で、キャプチャ
-  した毎フレームに対して同期的に実行されます。
-- **モデル (ONNX)**: 実際に学習済みの白線セグメンテーションモデル
-  （`models/honda_shihou_finetuned_best.pth`）を ONNX エクスポートし、
-  [onnxruntime-web](vendor/onnxruntime-web) の **WebGPU バックエンド**でブラウザの
-  GPU上で推論します（`navigator.gpu` が無い環境では自動的に CPU の WASM
-  バックエンドへフォールバック）。初めてこのモードに切り替えた時に遅延読み込み
-  されます（既定の閾値処理モードでは読み込まれません）。読み込み・推論に失敗
-  した場合は自動的に閾値処理モードへフォールバックします。
-  - 前処理は実車の `yolop_lane_detector.py` の `roi_mode: crop_bottom` と同じ
-    考え方で、機体カメラ画像の上部（空など走路と無関係な領域、`top_cut_ratio`
-    比率分）を切り捨て、残った下部を **そのまま 640×640 の正方形にリサイズ**
-    してモデルに入力します（レターボックスの余白なし）。
+### 使い方（「自動運転」タブ）
 
-画面右上の機体カメラ視点の下に、2枚のパネルが並びます。
+- **検出器**
+  - **YOLOP**（既定）: 実車と同じ `models/honda_shihou_finetuned_best.pth`（[`js/lane_model_detector.js`](js/lane_model_detector.js)、
+    `models/honda_shihou_finetuned.onnx`）の白線マスクを、`extractMaskLines()` で線ごとの点列にする
+  - **UFLD**: `models/ufld.onnx`（[`js/ufld_lane_detector.js`](js/ufld_lane_detector.js)）。245MB で git 管理外のため、
+    `models/ufld_honda_finetuned_best.pth` を置いて `ros2 run oit_navigation export_ufld_onnx` で生成する
+  - **理想検出**: コースの実際の 3 本線（[`js/course_lines.js`](js/course_lines.js)、
+    [`tools/extract_course_lines.py`](tools/extract_course_lines.py) でコース画像から抽出）を
+    ノイズ・欠落つきで観測する。認識精度と走行方式を切り分けて検証するためのモード
+  - **ROS2連携**: 下記「ROS 2連携モード」
+- **スタート位置へ**: 車両を外周の中央白線の上 `(0, -1.6, 0)` に置き、記録を 1 周目からやり直す
+- **1周目終了**: 周回検出を待たずに記録を確定し QP ラインを作る（実機の `/lane_navigator/finish_mapping` と同じ）
+- **リセット**: 記録を消して 1 周目から
+- **自動運転: ON/OFF**: twist_mux の `mpc` 入力の有効/無効
 
-- **白線検知**: 機体カメラ画像に、検出した白線マスクを緑半透明でオーバーレイ
-  （`yolop_lane_detector.py` の `draw_lane_lines` と同じ 50% アルファブレンド。
-  検知方式を切り替えてもこのオーバーレイ自体の描き方は変えていません）
-- **BEV / Pure Pursuit**: 白線マスクを 2D 俯瞰座標系に変換し、スライディング
-  ウィンドウで左（水色）／右（黄色）白線を追跡。緑の目標ラインは Pure Pursuit が
-  実際に追従する **原点アンカー付き軌道**（`bev_pure_pursuit_node.py` の
-  `_run_control_step` が計算する Hermite スプライン）で、自車位置（EGO マーカー）
-  から必ず接続した状態で描画されます。緑の丸は実際に操舵計算で使っている
-  lookahead 点（5m 先）です。
+右のパネル: 上 = 白線検知（白点 = 検出点、水色/黄/桃 = 左/中央/右、破線 = 補完）、
+下 = 周回マップ（水色/桃の点 = 記録した左右境界、橙の○ = QP ウェイポイント、青 = 自己位置の軌跡）。
 
-HUD の「自動運転」ボタンを ON にすると、この Pure Pursuit の操舵計算（実車の
-`bev_pure_pursuit_node.py` の `_run_control_step` と同じ式）で実際に車両が走行します。
-最高速度・最大旋回角速度は、実車の `navigation_params.yaml` の値
-（`target_linear_speed=1.0`, `max_angular_speed=1.5`）ではなく、**本シミュレータの
-WASD 走行と同じ上限**（1.5 m/s / 1.2 rad/s、下記「車体モデル・物理パラメータ」参照）
-を使うよう指示により固定しています。
+自己位置は実車の `odom_imu_localizer` と同じく車輪速 + ヨーレートの積算（真値ではない）です。
+コースの中央線 <-> 境界線は約 3.1m（`SIM_LANE_WIDTH`）、速度上限はシミュレータの WASD と同じ 1.5 m/s。
+
+### 自動検証用の早送り（ブラウザのコンソール）
+
+タブが裏に回ると描画ループが止まるため、検証は描画に依存しない早送りで行えます。
+
+```js
+window.__sim.setDetectorMode('ideal');          // 'yolop' | 'ufld' | 'ideal'
+document.getElementById('start-pose-btn').click();
+document.getElementById('autonomous-btn').click();
+await window.__sim.fastForward(300);             // シミュレーション時間で 300 秒
+window.__sim.laneNavigator.status();             // {state, lap, samples, ...}
+```
 
 ### twist_mux（WASD と自動運転の調停）
 
@@ -317,165 +320,49 @@ gamepad がタイムアウトし、自動運転（有効になっていれば）
 
 ### トピック名の統一
 
-実車の `oit_navigation` と同じトピック名・型で配信します（rosbridge 接続中のみ）。
-`config/navigation_params.yaml` / 各ノードのパラメータデフォルト値と完全に一致させて
-あるので、RViz2 など既存の可視化・購読側の設定をそのまま流用できます。
+ブラウザ内モード (YOLOP/UFLD/理想検出) でも、実車の `lane_detector` / `lane_navigator` と同じトピック名で配信します（rosbridge 接続時）。
 
-| トピック名 | メッセージ型 | 内容 |
+| トピック | 型 | 内容 |
 | :--- | :--- | :--- |
-| `/aiformula_perception/object_road_detector/mask_image` | `sensor_msgs/msg/Image` (mono8) | 白線マスク（検知方式に応じて閾値処理/モデル） |
-| `/aiformula_visualization/object_road_detector/annotated_image` | `sensor_msgs/msg/Image` (rgb8) | カメラ+緑オーバーレイ |
-| `/aiformula_visualization/bev_annotated_image` | `sensor_msgs/msg/Image` (rgb8) | BEV 可視化画像 |
-| `/aiformula_perception/lane_line_publisher/annotated_mask_image` | `sensor_msgs/msg/Image` (rgb8) | BEV 可視化画像（複製） |
-| `/aiformula_perception/lane_line_publisher/lane_lines/{left,right,center}` | `nav_msgs/msg/Path` | 検出白線・目標ラインの点列 |
-| `/aiformula_visualization/target_trajectory` | `nav_msgs/msg/Path` | 原点アンカー付き目標軌道 |
-| `/aiformula_control/extremum_seeking_mpc/cmd_vel` | `geometry_msgs/msg/Twist` | 自動運転の操舵・速度指令（twist_mux の "mpc" 入力） |
-| `/aiformula_control/lane_tracker/status` | `std_msgs/msg/String` | モード・速度・曲率ステータス |
-| `/aiformula_control/twist_mux/cmd_vel` | `geometry_msgs/msg/Twist` | twist_mux 調停後の指令値（"自動運転" ON時のみ mpc が混ざる） |
+| `/aiformula_visualization/lane_detector/annotated_image` | `Image` (rgb8) | 白線検知パネルの画像 |
+| `/aiformula_perception/lane_line_publisher/lane_lines/{left,center,right}` | `nav_msgs/Path` (base_link) | 左/中央/右の白線 |
+| `/aiformula_visualization/lane_navigator/{left,right}_boundary` | `nav_msgs/Path` (odom) | 記録した左右境界 |
+| `/aiformula_visualization/target_trajectory` | `nav_msgs/Path` (odom) | QP レーシングライン |
+| `/aiformula_control/extremum_seeking_mpc/cmd_vel` | `Twist` | 自動運転指令（twist_mux の mpc） |
+| `/aiformula_control/lane_tracker/status` | `String` (JSON) | 走行状態 |
 
-### 白線検知の閾値パラメータ（閾値処理モード）
+### ROS 2連携モード（実機と同じ ROS 2 ノードで走らせる）
 
-[`js/lane_threshold_detector.js`](js/lane_threshold_detector.js) の
-`LUMA_THRESHOLD`（輝度、既定 175/255）・`MAX_CHROMA`（彩度、既定 40）・
-`TOP_CUT_RATIO`（画面上部の除外比率、既定 0.45）で調整できます。コースの照明や
-路面色を変えた場合はここを調整してください。
-
-### ONNX モデルの再エクスポート（モデルモード）
-
-重み (`models/honda_shihou_finetuned_best.pth`) を更新した場合は、以下で
-`web_simulator/models/honda_shihou_finetuned.onnx` を再生成してください
-（object-detection ヘッドはブラウザ側で使わないため、白線セグメンテーション
-ヘッドのみエクスポートします）。
+「ROS2連携」を選ぶと、ブラウザは検出・計算をせず、ROS 2 側の
+`lane_detector` → `lane_navigator`（+ `odom_imu_localizer`）の出力で走ります。
 
 ```bash
-python3 src/oit_navigation/oit_navigation/export_onnx_web.py \
-  --weights models/honda_shihou_finetuned_best.pth \
-  --output web_simulator/models/honda_shihou_finetuned.onnx
+make rosbridge                 # 1. rosbridge_server
+# 2. ブラウザで http://localhost:8000/web_simulator/ を開いて「接続」
+make sim-nav                   # 3. simulator_test.launch.py (BACKEND=yolop|ufld)
+# 4. 「自動運転」タブで「ROS2連携」→「スタート位置へ」→「自動運転: ON」
 ```
 
-入力サイズは 640×640 の正方形で固定エクスポートしています（`js/lane_model_detector.js`
-の crop_bottom 前処理が常にこのサイズへリサイズするため）。別サイズにする場合は
-`--size` と `js/lane_model_detector.js` の `MODEL_INPUT_SIZE` を合わせて変更してください。
+| 方向 | トピック | 型 | 内容 |
+| :--- | :--- | :--- | :--- |
+| Sim→ROS | `/aiformula_sensing/zed_node/left_image/undistorted/compressed` | `CompressedImage` | 機体カメラ映像 → `lane_detector` |
+| Sim→ROS | `/aiformula_sensing/vehicle_info` | `can_msgs/Frame` | 車輪速 CAN → `odom_imu_localizer` |
+| Sim→ROS | `/aiformula_sensing/vectornav/imu` | `Imu` | ヨーレート → `odom_imu_localizer` |
+| ROS→Sim | `/aiformula_control/extremum_seeking_mpc/cmd_vel` | `Twist` | `lane_navigator` の指令 → `twistMux.update('mpc', ...)` |
+| ROS→Sim | `/aiformula_visualization/lane_detector/annotated_image` | `Image` (bgr8) | 白線検知パネル |
+| ROS→Sim | `/aiformula_control/lane_tracker/status` | `String` (JSON) | HUD の走行状態 |
+| ROS→Sim | `/aiformula_visualization/lane_navigator/{left,right}_boundary`, `/aiformula_visualization/target_trajectory` | `Path` | 周回マップパネル |
+| Sim→ROS | サービス `/lane_navigator/finish_mapping`, `/lane_navigator/reset` | `std_srvs/Trigger` | 「1周目終了」「リセット」ボタン |
+
+シミュレータのカメラは光軸中心の理想ピンホールのため、`simulator_test.launch.py` は
+`camera_cx/cy` を画像中心、`lane_width` を 3.1m、速度上限をシミュレータに合わせて起動します。
 
 ### 実装上の注意
 
-- 「モデル (ONNX)」モードは [`js/lane_model_detector.js`](js/lane_model_detector.js)
-  で `executionProviders: ['webgpu']` を指定し、onnxruntime-web の WebGPU
-  バックエンド（`vendor/onnxruntime-web/ort.webgpu.min.js`）でブラウザの GPU上
-  推論します。以前は WASM (CPU) バックエンドのみだったため、重いモデルだと
-  推論のたびにメインスレッド（描画スレッドと同じ）がブロックされ描画がカクつい
-  ていました。WebGPU が使えない環境（`navigator.gpu` が無い、または
-  `InferenceSession.create` が失敗する場合）は自動的に CPU の WASM バックエンド
-  へフォールバックします。
-- onnxruntime-web 1.19 以降、同梱する wasm バイナリはスレッド版
-  （`SharedArrayBuffer` 利用）のみで、非スレッド版は配布されなくなりました。
-  `SharedArrayBuffer` はページが cross-origin isolated（`COOP: same-origin` +
-  `COEP: require-corp`）である場合のみ有効になるため、`webgpu` バックエンドは
-  もちろん、CPU フォールバックの `wasm` バックエンドも含めてこのヘッダーが
-  必須です。これが起動手順で `python3 -m http.server` の代わりに
-  [`web_simulator/serve.py`](serve.py) を使う理由です。ヘッダーなしで配信すると
-  （例: 別の静的サーバーやファイル直開き）「モデル (ONNX)」モードの読み込みが
-  失敗し、自動的に閾値処理モードへフォールバックします。
-- [`js/lane_model_detector.js`](js/lane_model_detector.js) の
-  `ort.env.wasm.wasmPaths` には相対パスではなく絶対 URL
-  （`new URL(wasmDir, document.baseURI).href`）を渡しています。onnxruntime-web
-  は wasm/mjs グルーコードを `import()` で動的解決するため、`"vendor/..."` の
-  ようなスキームなし・`./`なしの相対パスは無効な bare module specifier と
-  みなされ、`webgpu`・`wasm` の両バックエンドともロードに失敗します。
-- `yolop_lane_detector.py` は cv2/BGR 画像を RGB 用の ImageNet mean/std へそのまま
-  正規化しており（RGB 変換なし）、`honda_shihou_finetuned_best.pth` も同じ
-  パイプラインでファインチューニングされています。ブラウザ側の Canvas は RGB で
-  取得されるため、[`js/lane_model_detector.js`](js/lane_model_detector.js) は
-  意図的にチャンネル順を B/G/R に入れ替えてから正規化し、実車と同じ数値を再現して
-  います。
-- コース地面（[`png/shihou_cource_unity.png`](png/shihou_cource_unity.png)）は
-  実写ではなく Unity 上のコース設計ツールのスクリーンショットですが、白線が
-  グレー路面に対しはっきりした白色で描かれているため、どちらの検知方式でも
-  問題なく白線として検出できています。
-
-### ROS 2連携モード（重いYOLOP/BEV/Pure Pursuit計算をROS 2側で実行）
-
-ブラウザ内ONNXモデルは WebGPU が使える環境では GPU 上で推論しますが、閾値処理は
-常にメインスレッド上で同期実行ですし、WebGPU が使えない環境ではモデルも CPU
-(WASM) にフォールバックするため、それでも描画がカクつくことがあります。
-「検知方式」に **ROS2連携** を選ぶと、YOLOP 推論と BEV変換・Pure Pursuit 制御を
-実車と同じ ROS 2 ノード
-（GPU/Dockerコンテナ側）で実行し、rosbridge_server 経由でその結果をブラウザに
-表示・車両制御に反映します（ブラウザ側の計算は一切行いません）。
-
-#### 使い方
-
-```bash
-# 1. rosbridge_server を起動（ホスト側）
-make rosbridge
-
-# 2. 認識・制御パイプラインを起動（別ターミナル、初回のみビルドが必要）
-make bash
-# コンテナ内で:
-colcon build --packages-select oit_navigation --symlink-install
-source install/setup.bash
-ros2 launch oit_navigation simulator_test.launch.py
-# GPUがあれば use_device:=0 を付けるとYOLOP推論が高速化されます
-```
-
-3. ブラウザで `http://localhost:8000/web_simulator/` を開き「接続」→
-   「検知方式」で **ROS2連携** を選択 → 「自動運転」を ON にすると、
-   ROS 2 側が計算した経路でコースを自律走行します。
-
-`simulator_test.launch.py`（[`src/oit_navigation/launch/simulator_test.launch.py`](../src/oit_navigation/launch/simulator_test.launch.py)）
-は `video_test.launch.py` から動画再生ノード (`video_publisher`) を除いたもので、
-カメラ画像の入力は Web シミュレータが rosbridge 経由で配信する圧縮画像
-（下記トピック表参照）です。`yolop_lane_detector` / `bev_pure_pursuit_node` の
-パラメータは実車と同じ `config/navigation_params.yaml` をそのまま使います。
-
-#### 双方向トピック一覧
-
-| 方向 | トピック名 | メッセージ型 | 内容 |
-| :--- | :--- | :--- | :--- |
-| Sim→ROS | `/aiformula_sensing/zed_node/left_image/undistorted/compressed` | `CompressedImage` | 機体カメラ映像（yolop_lane_detectorの入力） |
-| Sim→ROS | `/aiformula_sensing/vectornav/imu` | `Imu` | IMU |
-| Sim→ROS | `/aiformula_sensing/gyro_odometry_publisher/odom` | `Odometry` | オドメトリ |
-| ROS→Sim | `/aiformula_perception/object_road_detector/mask_image` | `Image` (mono8) | YOLOP 白線マスク → 白線検知パネルへ |
-| ROS→Sim | `/aiformula_visualization/bev_annotated_image` | `Image` (bgr8) | BEV可視化画像（そのままBEVパネルへ表示） |
-| ROS→Sim | `/aiformula_control/extremum_seeking_mpc/cmd_vel` | `Twist` | Pure Pursuit 制御指令 → `twistMux.update('mpc', ...)` |
-| ROS→Sim | `/aiformula_control/lane_tracker/status` | `String` | モード文字列 → 「モード」HUD表示 |
-
-> **トピック名について**: 上記はすべて実車の `topic_list.yaml` /
-> `navigation_params.yaml` にある名前をそのまま使っています（Webシミュレータの
-> 他の機能もすべて同じ名前で配信・購読済みです）。制御指令は
-> `/cmd_vel` や独自の `target_twist` ではなく、実車の twist_mux が
-> "mpc" 入力として扱う `/aiformula_control/extremum_seeking_mpc/cmd_vel` を
-> そのまま使うことで、[twist_mux（WASD と自動運転の調停）](#twist_muxwasd-と自動運転の調停)
-> の "mpc" ソースにも変更なくそのまま流し込めます。
-
-#### 実装
-
-- [`js/simulator.js`](js/simulator.js) の `onRosMaskImage` / `onRosBevAnnotatedImage` /
-  `onRosAutonomousCmdVel` / `onRosLaneTrackerStatus` が上記トピックの購読処理です。
-  `detectorMode === 'ros2'` の間だけ動作し、ブラウザ内 `updateLanePipeline()`
-  （閾値処理/ONNXモデル）は完全に停止します。
-- `mask_image` はブラウザ側の検出結果と同じ形式（mono8 の 0/255 マスク）なので、
-  既存の `applyLaneOverlay()`（緑オーバーレイ描画）をそのまま再利用しています。
-- `bev_annotated_image` は `bev_pure_pursuit_node` が描画済みの画像
-  （スライディングウィンドウ・左右白線・目標ライン・EGOマーカー入り）を
-  そのまま Canvas に表示するだけで、ブラウザ側での再計算はしていません。
-- `extremum_seeking_mpc/cmd_vel` は受信したら即座に `twistMux.update('mpc', v, omega, now)`
-  へ渡すだけで、ブラウザ側で再計算はしません。ROS 2 側が 0.3 秒（twist_mux の
-  mpc タイムアウト）以上メッセージを止めれば、`js/twist_mux.js` が自動的に
-  タイムアウトと判断し、WASD操作や停止に切り替わります（実車と同じ挙動）。
-
-#### 既知の制約
-
-- `use_device:=cpu` では YOLOP 推論に数百ms かかることがあり、twist_mux の
-  mpc タイムアウト（0.3秒）より遅くなると、指令が瞬間的に途切れて速度が
-  一瞬コースト（惰性減速）することがあります。滑らかに走らせたい場合は GPU
-  環境で `use_device:=0` を指定してください。
-- `sensor_msgs/msg/Image` の `data` フィールドは rosbridge が自動で
-  base64文字列に変換して送受信するため、型不一致やデコードエラーは
-  発生しません（[`js/simulator.js`](js/simulator.js) の `base64ToUint8Array`
-  が既存の `uint8ArrayToBase64` と対になっています）。
-- 閾値処理モード・ブラウザ内モデルモードでの手動WASD走行はこれまで通り
-  ブラウザ単体で動作し、rosbridge/ROS 2側が起動していなくても壊れません。
+- ONNX モデル（YOLOP / UFLD）は onnxruntime-web で推論します。WebGPU が使えなければ CPU の WASM にフォールバックします。
+  スレッド版 WASM は SharedArrayBuffer（= COOP/COEP ヘッダー）が必要なため、必ず [`serve.py`](serve.py) で配信してください。
+- YOLOP の前処理はブラウザ側では `crop_bottom`（上部を切り落として 640x640 に引き伸ばし）、
+  チャンネル順は学習時と同じ BGR のまま ImageNet mean/std で正規化します。
 
 ## 車体モデル・物理パラメータ
 
@@ -500,11 +387,14 @@ web_simulator/
 │   ├── simulator.js         シーン構築・メッシュ読込・入力・rosbridge通信・描画ループ
 │   ├── vehicle_physics.js   差動2輪駆動の物理モデル（質量70kg）
 │   ├── course.js            コースレイアウトの地面テクスチャ生成
-│   ├── lane_threshold_detector.js  閾値処理による白線マスク検出
-│   ├── lane_model_detector.js      ONNXモデルによる白線マスク検出（crop_bottom前処理）
-│   ├── oit_lane_pipeline.js BEV変換・スライディングウィンドウ白線追跡・Pure Pursuit
+│   ├── lane_model_detector.js      YOLOP (ONNX) による白線マスク検出（crop_bottom前処理）
+│   ├── ufld_lane_detector.js       UFLD (ONNX) による白線点列検出
+│   ├── ideal_lane_detector.js      理想検出（コースの実際の白線 + ノイズ）
+│   ├── course_lines.js             外周コースの 3 本線（tools/extract_course_lines.py で生成）
+│   ├── lane_navigator.js           oit_navigation lane_nav の JS 移植（線追跡・境界記録・QP・追従）
 │   └── twist_mux.js         WASD/自動運転の優先度＋タイムアウト調停
-├── models/                  honda_shihou_finetuned.onnx（export_onnx_web.py の出力）
+├── tools/extract_course_lines.py   コース画像から 3 本線を抽出
+├── models/                  honda_shihou_finetuned.onnx（export_onnx_web.py）/ ufld.onnx（export_ufld_onnx.py, git 管理外）
 └── vendor/                  three.js / roslib.js / onnxruntime-web のローカル同梱コピー
 ```
 
@@ -517,8 +407,8 @@ Unity上のコース設計ツールのスクリーンショット）を、[`js/c
 - 実寸法（外形約98.9m×91.4m、道幅9.0mなど）は現時点では未反映です（指示によりいったん保留）。
   地面の大きさは画像のアスペクト比（1024:819）だけを使い、幅100m相当で仮に配置しています
 - 画像をそのまま貼っているだけの **見た目のみ** の実装です。道路外への進入判定や
-  ゲート通過判定、周回計測などのロジックは実装していません（車体はこれまで通り
-  どこでも自由に走行できます）
+  ゲート通過判定などのロジックは実装していません（車体はこれまで通り
+  どこでも自由に走行できます）。周回の判定は oit_navigation の自己位置ベースで行います
 - 実寸法を反映する場合は `js/course.js` の `COURSE_WIDTH_M`（現在100m固定）を
   実際のコース幅に合わせて変更してください
 - 車体の初期位置は odom 原点 `(0,0,0)` のままです。コース画像は

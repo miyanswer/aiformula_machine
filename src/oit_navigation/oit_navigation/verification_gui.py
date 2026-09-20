@@ -11,10 +11,12 @@ verification_gui.py - 検証用launch選択GUI (ブラウザ版)
 noVNC (RViz用, :8080) とは別のポート (既定 :8090) で待受ける。
 
 検証パイプライン (既存launchの組み合わせで表現):
-    1. YOLO単体     (信号機検出)         -> traffic_light_video_test.launch.py
-    2. YOLOP単体    (白線・走路認識)      -> yolop_video_test.launch.py
-    3. YOLOP+PurePursuit (経路生成まで)   -> video_test.launch.py traffic_light:=false
-    4. 統合 (YOLO+YOLOP+PurePursuit)      -> video_test.launch.py traffic_light:=true
+    1. YOLO単体        (信号機検出)                 -> traffic_light_video_test.launch.py
+    2. 白線検出 YOLOP  (左/中央/右の割り当てまで)   -> video_test.launch.py backend:=yolop traffic_light:=false
+    3. 白線検出 UFLD   (同上, UFLD の重みが必要)    -> video_test.launch.py backend:=ufld traffic_light:=false
+    4. 統合 (白線 YOLOP + 信号機)                   -> video_test.launch.py backend:=yolop traffic_light:=true
+    ※ 動画にはオドメトリが無いため, 周回マップ作成/QP走行 (lane_navigator) は
+      Web シミュレータ or 実機で検証する.
 """
 
 import glob
@@ -62,21 +64,21 @@ PIPELINES = [
         "device_arg": "device",
     },
     {
-        "label": "② YOLOP単体 (白線・走路認識)",
-        "launch_file": "yolop_video_test.launch.py",
-        "fixed_args": {"rviz": "true"},
+        "label": "② 白線検出 YOLOP (左/中央/右)",
+        "launch_file": "video_test.launch.py",
+        "fixed_args": {"backend": "yolop", "traffic_light": "false", "rviz": "true"},
         "device_arg": "use_device",
     },
     {
-        "label": "③ YOLOP + PurePursuit (経路生成)",
+        "label": "③ 白線検出 UFLD (左/中央/右)",
         "launch_file": "video_test.launch.py",
-        "fixed_args": {"traffic_light": "false", "rviz": "true"},
+        "fixed_args": {"backend": "ufld", "traffic_light": "false", "rviz": "true"},
         "device_arg": "use_device",
     },
     {
-        "label": "④ 統合 (YOLO + YOLOP + PurePursuit)",
+        "label": "④ 統合 (白線 YOLOP + 信号機)",
         "launch_file": "video_test.launch.py",
-        "fixed_args": {"traffic_light": "true", "rviz": "true"},
+        "fixed_args": {"backend": "yolop", "traffic_light": "true", "rviz": "true"},
         "device_arg": "use_device",
     },
 ]

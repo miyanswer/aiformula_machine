@@ -3,10 +3,14 @@ import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { VehiclePhysics, VEHICLE, MAX_SPEED, MAX_ANGULAR } from './vehicle_physics.js';
 import { createCourseTexture, COURSE_WIDTH_M, COURSE_DEPTH_M } from './course.js';
-import { ThresholdLaneDetector } from './lane_threshold_detector.js';
-import { ModelLaneDetector } from './lane_model_detector.js';
 import { TwistMux } from './twist_mux.js';
-import { BevTransformer, BevLaneExtractor, stepPurePursuitControl, applyLaneOverlay } from './oit_lane_pipeline.js';
+import { UfldLaneDetector } from './ufld_lane_detector.js';
+import { IdealLaneDetector } from './ideal_lane_detector.js';
+import { ModelLaneDetector } from './lane_model_detector.js';
+import {
+  DEFAULT_CAMERA, projectToGround, fitLine, LineTracker, LINE_TRACKER_PARAMS, LaneNavigator,
+  NAVIGATOR_PARAMS, RACELINE_PARAMS, TRACKER_PARAMS, MAPPING, RACING, ROLES, extractMaskLines,
+} from './lane_navigator.js';
 
 // ---------------------------------------------------------------------------
 // Geometry taken directly from vehicles/sample_vehicle/xacro/ai_car1.xacro
@@ -351,26 +355,27 @@ const ODOM_FRAME_ID = 'odom';
 const ODOM_CHILD_FRAME_ID = 'base_footprint';
 
 let canTopic = null;
-let maskImageTopic = null;
-let annotatedCameraImageTopic = null;
-let bevAnnotatedImageTopic = null;
-let annotatedMaskImageTopic = null;
 let laneLeftTopic = null;
 let laneRightTopic = null;
 let laneCenterTopic = null;
+let laneDetectorAnnotatedImageTopic = null;
 let targetTrajectoryTopic = null;
+let leftBoundaryTopic = null;
+let rightBoundaryTopic = null;
 let autonomousCmdVelTopic = null;
 let laneTrackerStatusTopic = null;
 let muxedCmdVelTopic = null;
-// "ROS2連携" detector mode subscriptions: when selected, the heavy YOLOP/BEV/
-// Pure Pursuit computation runs on the ROS 2 side (see
+// "ROS2連携" detector mode subscriptions: when selected, UFLD inference +
+// the lap-mapping/QP navigator run on the ROS 2 side (see
 // src/oit_navigation/launch/simulator_test.launch.py) instead of in the
 // browser, and the simulator just displays what it publishes back + drives
 // the vehicle from its cmd_vel -- see setDetectorMode('ros2') below.
-let rosMaskImageSub = null;
-let rosBevAnnotatedImageSub = null;
+let rosLaneDetectorAnnotatedImageSub = null;
 let rosAutonomousCmdVelSub = null;
 let rosLaneTrackerStatusSub = null;
+let rosTargetTrajectorySub = null;
+let rosLeftBoundarySub = null;
+let rosRightBoundarySub = null;
 // Wheel-speed CAN frame, decoded on the real robot by
 // odometry_publisher/include/odometry_publisher/wheel.hpp:
 //   RPM_ID = 1809; data[0..3] = right wheel RPM, data[4..7] = left wheel RPM,
@@ -386,29 +391,32 @@ const CAN_WHEEL_DIAMETER = 0.254; // [m] config/wheel.yaml wheel.diameter
 const CAN_PUBLISH_HZ = 100; // matches the real CAN bus's ~10ms measurement cycle
 
 // ---------------------------------------------------------------------------
-// oit_navigation lane pipeline: white-line detection -> BEV transform ->
-// Pure Pursuit control, ported to run client-side (see
-// js/lane_threshold_detector.js and js/oit_lane_pipeline.js). Topic names
-// below are copied verbatim from
-// src/oit_navigation/config/navigation_params.yaml / the node's declared
-// parameter defaults, so this simulator's output is a drop-in match for the
-// real vehicle's oit_navigation stack.
+// oit_navigation pipeline: UFLD white-line detection -> left/center/right
+// line tracking -> lap 1 center-line tracking + boundary recording -> QP
+// min-curvature raceline -> lap 2+ raceline following, ported to run
+// client-side (js/lane_model_detector.js (YOLOP), js/ufld_lane_detector.js,
+// js/lane_navigator.js). Topic names
+// below are copied verbatim from src/oit_navigation/config/navigation_params.yaml
+// (lane_detector / lane_navigator node parameters), so this
+// simulator's output is a drop-in match for the real vehicle's stack.
 const ROBOT_FRAME_ID = 'base_link';
-const MASK_IMAGE_TOPIC = '/aiformula_perception/object_road_detector/mask_image';
-const ANNOTATED_CAMERA_IMAGE_TOPIC = '/aiformula_visualization/object_road_detector/annotated_image';
-const BEV_ANNOTATED_IMAGE_TOPIC = '/aiformula_visualization/bev_annotated_image';
-const ANNOTATED_MASK_IMAGE_TOPIC = '/aiformula_perception/lane_line_publisher/annotated_mask_image';
+const ODOM_NAV_FRAME_ID = 'odom';
+const LANE_DETECTOR_ANNOTATED_IMAGE_TOPIC = '/aiformula_visualization/lane_detector/annotated_image';
 const LANE_LINE_LEFT_TOPIC = '/aiformula_perception/lane_line_publisher/lane_lines/left';
 const LANE_LINE_RIGHT_TOPIC = '/aiformula_perception/lane_line_publisher/lane_lines/right';
 const LANE_LINE_CENTER_TOPIC = '/aiformula_perception/lane_line_publisher/lane_lines/center';
 const TARGET_TRAJECTORY_TOPIC = '/aiformula_visualization/target_trajectory';
+const LEFT_BOUNDARY_TOPIC = '/aiformula_visualization/lane_navigator/left_boundary';
+const RIGHT_BOUNDARY_TOPIC = '/aiformula_visualization/lane_navigator/right_boundary';
 // "mpc" input of twist_mux (see launchers/sample_launchers/launch/twist_mux.launch.py) --
-// the real vehicle's autonomous lane-tracker output topic. This simulator
-// always publishes it once the pipeline is running (mirroring how the real
-// node always publishes regardless of twist_mux arbitration); whether the
+// the real vehicle's lane_navigator output topic (unchanged from the old
+// Pure Pursuit node, so twist_mux needs no change). This simulator always
+// publishes it once the pipeline is running (mirroring how the real node
+// always publishes regardless of twist_mux arbitration); whether the
 // simulated vehicle itself obeys it is decided by the twistMux instance
 // below (js/twist_mux.js), gated by the "自動運転" HUD toggle.
 const AUTONOMOUS_CMD_VEL_TOPIC = '/aiformula_control/extremum_seeking_mpc/cmd_vel';
+// lane_navigator status (std_msgs/String, JSON -- LaneNavigator.status()).
 const LANE_TRACKER_STATUS_TOPIC = '/aiformula_control/lane_tracker/status';
 // twist_mux's arbitrated output (topic_list.yaml control.speed_command.multiplexed).
 const MUXED_CMD_VEL_TOPIC = '/aiformula_control/twist_mux/cmd_vel';
@@ -425,19 +433,24 @@ const TWIST_MUX_SOURCES = [
   { name: 'mpc', priority: 50, timeoutSec: 0.3 },
 ];
 
-// Autonomous control law gains/limits (navigation_params.yaml), except
-// target speed / max angular speed: per instruction, those stay the
-// simulator's own WASD limits (MAX_SPEED=1.5, MAX_ANGULAR=1.2) rather than
-// the real vehicle's defaults (target_linear_speed=1.0, max_angular_speed=1.5).
-const PURE_PURSUIT_PARAMS = {
-  lookaheadDistance: 5.0,
-  targetSpeed: MAX_SPEED,
-  angularGain: 0.85,
-  crossTrackGain: 0.95,
-  maxAngularSpeed: MAX_ANGULAR,
-  maxAngularAccel: 4.0,
+// Navigator parameters = navigation_params.yaml defaults, except speed /
+// angular limits: per instruction, those stay the simulator's own WASD
+// limits (MAX_SPEED=1.5, MAX_ANGULAR=1.2) rather than the real vehicle's.
+// lane_width: this course's center line <-> boundary line distance (outer
+// loop, measured from png/shihou_cource_unity.png: ~3.1m on both sides).
+const SIM_LANE_WIDTH = 3.1;
+const SIM_NAVIGATOR_PARAMS = {
+  ...NAVIGATOR_PARAMS,
+  raceline: { ...RACELINE_PARAMS, vMax: MAX_SPEED },
+  tracker: { ...TRACKER_PARAMS, maxAngularSpeed: MAX_ANGULAR },
 };
-const LANE_DATA_TIMEOUT_MS = 800; // navigation_params.yaml data_timeout
+const LANE_DATA_TIMEOUT_MS = 800; // navigation_params.yaml lines_timeout
+// Start pose on the center white line of the outer loop (the lap-1 method
+// drives on top of it). Spawn (0,0,0) is in the loop's inner lane (heading
+// counter-clockwise around the course); the center line is 1.6m to its
+// right there (UFLD ground projection at spawn: center -1.62m, inner
+// boundary +2.04m).
+const SIM_START_POSE = { x: 0.0, y: -1.6, yaw: 0.0 };
 
 const urlInput = document.getElementById('ros-url');
 const topicInput = document.getElementById('ros-topic');
@@ -450,29 +463,34 @@ function setStatus(state, label) {
   statusText.textContent = label;
 }
 
-function disconnect() {
-  if (ros) ros.close();
-  ros = null;
+function clearRosTopics() {
   cmdVelTopic = null;
   compressedImageTopic = null;
   imuTopic = null;
   odomTopic = null;
   canTopic = null;
-  maskImageTopic = null;
-  annotatedCameraImageTopic = null;
-  bevAnnotatedImageTopic = null;
-  annotatedMaskImageTopic = null;
   laneLeftTopic = null;
   laneRightTopic = null;
   laneCenterTopic = null;
+  laneDetectorAnnotatedImageTopic = null;
   targetTrajectoryTopic = null;
+  leftBoundaryTopic = null;
+  rightBoundaryTopic = null;
   autonomousCmdVelTopic = null;
   laneTrackerStatusTopic = null;
   muxedCmdVelTopic = null;
-  rosMaskImageSub = null;
-  rosBevAnnotatedImageSub = null;
+  rosLaneDetectorAnnotatedImageSub = null;
   rosAutonomousCmdVelSub = null;
   rosLaneTrackerStatusSub = null;
+  rosTargetTrajectorySub = null;
+  rosLeftBoundarySub = null;
+  rosRightBoundarySub = null;
+}
+
+function disconnect() {
+  if (ros) ros.close();
+  ros = null;
+  clearRosTopics();
   connectBtn.textContent = '接続';
   setStatus('', '未接続');
 }
@@ -512,31 +530,34 @@ function connect() {
       name: CAN_TOPIC_NAME,
       messageType: 'can_msgs/msg/Frame',
     });
-    maskImageTopic = new ROSLIB.Topic({ ros, name: MASK_IMAGE_TOPIC, messageType: 'sensor_msgs/msg/Image' });
-    annotatedCameraImageTopic = new ROSLIB.Topic({ ros, name: ANNOTATED_CAMERA_IMAGE_TOPIC, messageType: 'sensor_msgs/msg/Image' });
-    bevAnnotatedImageTopic = new ROSLIB.Topic({ ros, name: BEV_ANNOTATED_IMAGE_TOPIC, messageType: 'sensor_msgs/msg/Image' });
-    annotatedMaskImageTopic = new ROSLIB.Topic({ ros, name: ANNOTATED_MASK_IMAGE_TOPIC, messageType: 'sensor_msgs/msg/Image' });
+    laneDetectorAnnotatedImageTopic = new ROSLIB.Topic({ ros, name: LANE_DETECTOR_ANNOTATED_IMAGE_TOPIC, messageType: 'sensor_msgs/msg/Image' });
     laneLeftTopic = new ROSLIB.Topic({ ros, name: LANE_LINE_LEFT_TOPIC, messageType: 'nav_msgs/msg/Path' });
     laneRightTopic = new ROSLIB.Topic({ ros, name: LANE_LINE_RIGHT_TOPIC, messageType: 'nav_msgs/msg/Path' });
     laneCenterTopic = new ROSLIB.Topic({ ros, name: LANE_LINE_CENTER_TOPIC, messageType: 'nav_msgs/msg/Path' });
     targetTrajectoryTopic = new ROSLIB.Topic({ ros, name: TARGET_TRAJECTORY_TOPIC, messageType: 'nav_msgs/msg/Path' });
+    leftBoundaryTopic = new ROSLIB.Topic({ ros, name: LEFT_BOUNDARY_TOPIC, messageType: 'nav_msgs/msg/Path' });
+    rightBoundaryTopic = new ROSLIB.Topic({ ros, name: RIGHT_BOUNDARY_TOPIC, messageType: 'nav_msgs/msg/Path' });
     autonomousCmdVelTopic = new ROSLIB.Topic({ ros, name: AUTONOMOUS_CMD_VEL_TOPIC, messageType: 'geometry_msgs/msg/Twist' });
     laneTrackerStatusTopic = new ROSLIB.Topic({ ros, name: LANE_TRACKER_STATUS_TOPIC, messageType: 'std_msgs/msg/String' });
     muxedCmdVelTopic = new ROSLIB.Topic({ ros, name: MUXED_CMD_VEL_TOPIC, messageType: 'geometry_msgs/msg/Twist' });
 
-    // "ROS2連携" mode subscriptions (see onRos*() callbacks above) -- always
+    // "ROS2連携" mode subscriptions (see onRos*() callbacks below) -- always
     // subscribed once connected, regardless of the current detectorMode;
     // each callback itself no-ops unless detectorMode === 'ros2'. Separate
     // Topic instances from the publish-side ones above (same topic names)
     // since roslib.js topics are one-directional.
-    rosMaskImageSub = new ROSLIB.Topic({ ros, name: MASK_IMAGE_TOPIC, messageType: 'sensor_msgs/msg/Image' });
-    rosMaskImageSub.subscribe(onRosMaskImage);
-    rosBevAnnotatedImageSub = new ROSLIB.Topic({ ros, name: BEV_ANNOTATED_IMAGE_TOPIC, messageType: 'sensor_msgs/msg/Image' });
-    rosBevAnnotatedImageSub.subscribe(onRosBevAnnotatedImage);
+    rosLaneDetectorAnnotatedImageSub = new ROSLIB.Topic({ ros, name: LANE_DETECTOR_ANNOTATED_IMAGE_TOPIC, messageType: 'sensor_msgs/msg/Image' });
+    rosLaneDetectorAnnotatedImageSub.subscribe(onRosLaneDetectorAnnotatedImage);
     rosAutonomousCmdVelSub = new ROSLIB.Topic({ ros, name: AUTONOMOUS_CMD_VEL_TOPIC, messageType: 'geometry_msgs/msg/Twist' });
     rosAutonomousCmdVelSub.subscribe(onRosAutonomousCmdVel);
     rosLaneTrackerStatusSub = new ROSLIB.Topic({ ros, name: LANE_TRACKER_STATUS_TOPIC, messageType: 'std_msgs/msg/String' });
     rosLaneTrackerStatusSub.subscribe(onRosLaneTrackerStatus);
+    rosTargetTrajectorySub = new ROSLIB.Topic({ ros, name: TARGET_TRAJECTORY_TOPIC, messageType: 'nav_msgs/msg/Path' });
+    rosTargetTrajectorySub.subscribe((msg) => onRosMapPath('raceline', msg));
+    rosLeftBoundarySub = new ROSLIB.Topic({ ros, name: LEFT_BOUNDARY_TOPIC, messageType: 'nav_msgs/msg/Path' });
+    rosLeftBoundarySub.subscribe((msg) => onRosMapPath('left', msg));
+    rosRightBoundarySub = new ROSLIB.Topic({ ros, name: RIGHT_BOUNDARY_TOPIC, messageType: 'nav_msgs/msg/Path' });
+    rosRightBoundarySub.subscribe((msg) => onRosMapPath('right', msg));
   });
 
   ros.on('error', () => {
@@ -546,26 +567,7 @@ function connect() {
   });
 
   ros.on('close', () => {
-    cmdVelTopic = null;
-    compressedImageTopic = null;
-    imuTopic = null;
-    odomTopic = null;
-    canTopic = null;
-    maskImageTopic = null;
-    annotatedCameraImageTopic = null;
-    bevAnnotatedImageTopic = null;
-    annotatedMaskImageTopic = null;
-    laneLeftTopic = null;
-    laneRightTopic = null;
-    laneCenterTopic = null;
-    targetTrajectoryTopic = null;
-    autonomousCmdVelTopic = null;
-    laneTrackerStatusTopic = null;
-    muxedCmdVelTopic = null;
-    rosMaskImageSub = null;
-    rosBevAnnotatedImageSub = null;
-    rosAutonomousCmdVelSub = null;
-    rosLaneTrackerStatusSub = null;
+    clearRosTopics();
     connectBtn.disabled = false;
     connectBtn.textContent = '接続';
     setStatus('', '未接続');
@@ -669,108 +671,156 @@ function publishCompressedImage() {
 }
 
 // ---------------------------------------------------------------------------
-// oit_navigation lane pipeline wiring: threshold-based white-line mask ->
-// BEV warp -> lane extraction -> Pure Pursuit, rendered into the two HUD
-// panels and published on the unified topic names declared above.
+// oit_navigation pipeline wiring: UFLD (browser ONNX) -> ground projection ->
+// left/center/right line tracking -> LaneNavigator (lap 1: center-line
+// tracking + boundary recording, lap 2+: QP raceline following), rendered
+// into the two HUD panels and published on the same topic names the real
+// lane_detector / lane_navigator nodes use.
 // ---------------------------------------------------------------------------
-const thresholdDetector = new ThresholdLaneDetector();
-const modelDetector = new ModelLaneDetector();
-const bevTransformer = new BevTransformer();
-const laneExtractor = new BevLaneExtractor();
+const ufldDetector = new UfldLaneDetector();
+const idealDetector = new IdealLaneDetector();
+// YOLOP white-line segmentation (same weights as the real vehicle's
+// lane_detector backend=yolop), exported by export_onnx_web.py.
+const yolopDetector = new ModelLaneDetector();
+const YOLOP_ONNX_URL = 'models/honda_shihou_finetuned.onnx';
+let yolopLoadPromise = null;
+// Generated locally by `ros2 run oit_navigation export_ufld_onnx` (~245MB,
+// not committed -- see web_simulator/README.md).
+const UFLD_ONNX_URL = 'models/ufld.onnx';
+const UFLD_META_URL = 'models/ufld.json';
+const MODEL_WASM_DIR = 'vendor/onnxruntime-web/';
+let ufldLoadPromise = null;
 
 const laneCanvas = document.getElementById('lane-canvas');
 const laneCtx = laneCanvas.getContext('2d', { willReadFrequently: true });
-const bevCanvas = document.getElementById('bev-canvas');
-const bevCtx = bevCanvas.getContext('2d', { willReadFrequently: true });
-const oitModeEl = document.getElementById('oit-mode');
+const mapCanvas = document.getElementById('map-canvas');
+const mapCtx = mapCanvas.getContext('2d');
 const detectorStatusEl = document.getElementById('oit-detector-status');
-const thresholdBtn = document.getElementById('detector-threshold-btn');
-const modelBtn = document.getElementById('detector-model-btn');
+const oitStateEl = document.getElementById('oit-state');
+const oitLapEl = document.getElementById('oit-lap');
+const oitSamplesEl = document.getElementById('oit-samples');
+const oitMessageEl = document.getElementById('oit-message');
+const ufldBtn = document.getElementById('detector-ufld-btn');
+const yolopBtn = document.getElementById('detector-yolop-btn');
+const idealBtn = document.getElementById('detector-ideal-btn');
 const ros2Btn = document.getElementById('detector-ros2-btn');
 const autonomousBtn = document.getElementById('autonomous-btn');
+const finishMappingBtn = document.getElementById('finish-mapping-btn');
+const navResetBtn = document.getElementById('nav-reset-btn');
+const startPoseBtn = document.getElementById('start-pose-btn');
 
-// Model file produced by src/oit_navigation/oit_navigation/export_onnx_web.py
-// from models/honda_shihou_finetuned_best.pth (see js/lane_model_detector.js).
-const MODEL_ONNX_URL = 'models/honda_shihou_finetuned.onnx';
-const MODEL_WASM_DIR = 'vendor/onnxruntime-web/';
-
-let activeDetector = thresholdDetector;
-let modelLoadPromise = null;
-
-// 'threshold' | 'model' | 'ros2'. In 'ros2' mode, the heavy YOLOP/BEV/Pure
-// Pursuit computation runs on the ROS 2 side instead of in the browser (see
-// src/oit_navigation/launch/simulator_test.launch.py) -- updateLanePipeline()
-// below becomes a no-op, and the panels + autonomous "mpc" cmd instead come
-// from subscribing to what that pipeline publishes back over rosbridge
-// (onRosMaskImage/onRosBevAnnotatedImage/onRosAutonomousCmdVel below).
-let detectorMode = 'threshold';
+// 'yolop' | 'ufld' | 'ideal' | 'ros2'. 'yolop' is what the real vehicle
+// runs (models/ in git). 'ideal' replaces the detector with the course's true
+// white lines + noise/dropouts (js/ideal_lane_detector.js) to verify the
+// driving method independently of UFLD's accuracy on rendered images. In
+// 'ros2' mode, UFLD + lane_navigator run on the ROS 2 side (src/oit_navigation/launch/simulator_test.launch.py) --
+// updateLanePipeline() below becomes a no-op, and the panels + autonomous
+// "mpc" cmd instead come from subscribing to what those nodes publish back
+// over rosbridge (onRos*() below).
+let detectorMode = 'yolop';
 let lastRosCmdVelTime = 0;
 
-// Switches where the "mpc" source's mask/BEV/cmd_vel comes from. The ONNX
-// model is loaded lazily on first switch to "model" mode (not at startup)
-// so the default threshold mode never pays its download/WASM-init cost. If
-// loading fails, falls back to threshold mode so the simulator keeps working.
+// ---------------------------------------------------------------------------
+// Browser stand-in for the real vehicle's odom_imu_localizer node: dead
+// reckoning from wheel speed (CAN, here physics.v) + IMU yaw rate (here
+// physics.omega), midpoint integration -- NOT the simulator's ground-truth
+// pose, so the navigator sees the same kind of estimate as on the vehicle.
+// Its frame starts at the vehicle pose at reset (a frame choice only; the
+// map panel then overlays the course naturally).
+const localizer = { x: 0, y: 0, yaw: 0, v: 0, omega: 0, s: 0 };
+function resetLocalizer() {
+  Object.assign(localizer, { x: physics.x, y: physics.y, yaw: physics.yaw, v: 0, omega: 0, s: 0 });
+}
+function integrateLocalizer(v, omega, dt) {
+  const yawMid = localizer.yaw + 0.5 * omega * dt;
+  localizer.x += v * Math.cos(yawMid) * dt;
+  localizer.y += v * Math.sin(yawMid) * dt;
+  localizer.yaw = Math.atan2(Math.sin(localizer.yaw + omega * dt), Math.cos(localizer.yaw + omega * dt));
+  localizer.s += Math.abs(v) * dt;
+  localizer.v = v;
+  localizer.omega = omega;
+}
+
+const lineTracker = new LineTracker({ ...LINE_TRACKER_PARAMS, laneWidthInit: SIM_LANE_WIDTH });
+const laneNavigator = new LaneNavigator(SIM_NAVIGATOR_PARAMS);
+let latestTracked = null;
+let lastNavStepTime = null;
+let lastPipelineTime = 0;
+let lastMapPublishTime = 0;
+const localizerTrail = [];
+const laneTrace = [];
+
+function resetNavigation() {
+  laneNavigator.reset();
+  lineTracker.reset();
+  resetLocalizer();
+  localizerTrail.length = 0;
+  latestTracked = null;
+  lastNavStepTime = null;
+  rosMap.left = rosMap.right = rosMap.raceline = null;
+  lastMapPublishTime = 0;
+}
+
 function setDetectorMode(mode) {
   detectorMode = mode;
-  thresholdBtn.classList.toggle('active', mode === 'threshold');
-  modelBtn.classList.toggle('active', mode === 'model');
+  yolopBtn.classList.toggle('active', mode === 'yolop');
+  ufldBtn.classList.toggle('active', mode === 'ufld');
+  idealBtn.classList.toggle('active', mode === 'ideal');
   ros2Btn.classList.toggle('active', mode === 'ros2');
-
-  if (mode === 'threshold') {
-    activeDetector = thresholdDetector;
-    detectorStatusEl.textContent = '閾値処理';
+  if (mode === 'ideal') {
+    detectorStatusEl.textContent = '理想検出 (コース形状 + ノイズ)';
     return;
   }
-
   if (mode === 'ros2') {
     detectorStatusEl.textContent = ros ? 'ROS2連携 (信号待ち)' : 'ROS2連携 (rosbridge未接続)';
     return;
   }
-
-  if (modelDetector.session) {
-    activeDetector = modelDetector;
-    detectorStatusEl.textContent = 'モデル (読込済)';
+  if (mode === 'yolop') {
+    if (yolopDetector.session) {
+      detectorStatusEl.textContent = 'YOLOP (読込済)';
+      return;
+    }
+    detectorStatusEl.textContent = 'YOLOP 読込中...';
+    if (!yolopLoadPromise) yolopLoadPromise = yolopDetector.load(YOLOP_ONNX_URL, MODEL_WASM_DIR);
+    yolopLoadPromise
+      .then(() => { if (detectorMode === 'yolop') detectorStatusEl.textContent = 'YOLOP (読込済)'; })
+      .catch((err) => {
+        console.error('Failed to load YOLOP ONNX model', err);
+        yolopLoadPromise = null;
+        detectorStatusEl.textContent = 'YOLOP 読込エラー';
+      });
     return;
   }
-
-  detectorStatusEl.textContent = 'モデル読込中...';
-  if (!modelLoadPromise) {
-    modelLoadPromise = modelDetector.load(MODEL_ONNX_URL, MODEL_WASM_DIR);
+  if (ufldDetector.session) {
+    detectorStatusEl.textContent = 'UFLD (読込済)';
+    return;
   }
-  modelLoadPromise
+  detectorStatusEl.textContent = 'UFLD 読込中...';
+  if (!ufldLoadPromise) ufldLoadPromise = ufldDetector.load(UFLD_ONNX_URL, UFLD_META_URL, MODEL_WASM_DIR);
+  ufldLoadPromise
     .then(() => {
-      // Only switch over if the user hasn't switched to a different mode
-      // while the model was loading.
-      if (modelBtn.classList.contains('active')) {
-        activeDetector = modelDetector;
-        detectorStatusEl.textContent = 'モデル (読込済)';
-      }
+      if (detectorMode === 'ufld') detectorStatusEl.textContent = 'UFLD (読込済)';
     })
     .catch((err) => {
-      console.error('Failed to load lane detection ONNX model', err);
-      detectorStatusEl.textContent = 'モデル読込エラー(閾値処理へ切替)';
-      setDetectorMode('threshold');
+      console.error('Failed to load UFLD ONNX model', err);
+      ufldLoadPromise = null;
+      detectorStatusEl.textContent = 'UFLD 読込エラー (models/ufld.onnx を生成してください)';
     });
 }
 
-thresholdBtn.addEventListener('click', () => setDetectorMode('threshold'));
-modelBtn.addEventListener('click', () => setDetectorMode('model'));
+yolopBtn.addEventListener('click', () => setDetectorMode('yolop'));
+ufldBtn.addEventListener('click', () => setDetectorMode('ufld'));
+idealBtn.addEventListener('click', () => setDetectorMode('ideal'));
 ros2Btn.addEventListener('click', () => setDetectorMode('ros2'));
-setDetectorMode('threshold');
 
 let autonomousMode = false;
 let latestAutonomousCmd = { v: 0, omega: 0 };
-let lastOmegaCmd = 0;
-let lastControlTime = performance.now();
-let lastMaskTime = 0;
 
-// Arbitrates between WASD ("gamepad") and Pure Pursuit ("mpc") exactly like
-// the real vehicle's twist_mux (see js/twist_mux.js and TWIST_MUX_SOURCES
-// above): a human on WASD always overrides autonomous driving instantly,
-// and control reverts to autonomous once no key has been held for 0.3s.
-// "mpc" starts disabled since autonomousMode starts false. This is the same
-// mux regardless of detectorMode -- only *where* "mpc" commands come from
-// (local computation vs. subscribed ROS 2 cmd_vel) changes.
+// Arbitrates between WASD ("gamepad") and lane_navigator ("mpc") exactly
+// like the real vehicle's twist_mux (see js/twist_mux.js and
+// TWIST_MUX_SOURCES above): a human on WASD always overrides autonomous
+// driving instantly, and control reverts to autonomous once no key has been
+// held for 0.3s. "mpc" starts disabled since autonomousMode starts false.
 const twistMux = new TwistMux(TWIST_MUX_SOURCES);
 twistMux.setEnabled('mpc', autonomousMode);
 
@@ -785,55 +835,76 @@ autonomousBtn.addEventListener('click', () => {
   twistMux.setEnabled('mpc', autonomousMode);
 });
 
+// Same as the real lane_navigator's ~/finish_mapping service: closes lap 1
+// by hand (e.g. when odometry drift keeps the automatic lap detection from
+// firing) and builds the map + QP raceline from what was recorded so far.
+finishMappingBtn.addEventListener('click', () => {
+  if (detectorMode === 'ros2') {
+    callRosTrigger(FINISH_MAPPING_SERVICE);
+    return;
+  }
+  laneNavigator.finishMapping();
+});
+navResetBtn.addEventListener('click', () => {
+  if (detectorMode === 'ros2') {
+    callRosTrigger(RESET_SERVICE);
+    rosMap.left = rosMap.right = rosMap.raceline = null;
+    return;
+  }
+  resetNavigation();
+});
+startPoseBtn.addEventListener('click', () => {
+  physics.x = SIM_START_POSE.x;
+  physics.y = SIM_START_POSE.y;
+  physics.yaw = SIM_START_POSE.yaw;
+  physics.v = 0;
+  physics.omega = 0;
+  odomTrailPoints.length = 0;
+  odomTrailGeometry.setFromPoints([]);
+  resetNavigation();
+});
+
 // ---------------------------------------------------------------------------
 // "ROS2連携" mode: subscription callbacks for what
-// src/oit_navigation/launch/simulator_test.launch.py's yolop_lane_detector /
-// bev_pure_pursuit_node publish back over rosbridge. These subscriptions are
-// always live once connected (see connect() below); each callback no-ops
-// unless detectorMode is actually 'ros2', so switching modes never needs to
-// coordinate subscribe/unsubscribe timing with the connection state.
+// src/oit_navigation/launch/simulator_test.launch.py's lane_detector /
+// lane_navigator publish back over rosbridge. These subscriptions are always
+// live once connected (see connect() above); each callback no-ops unless
+// detectorMode is actually 'ros2'.
 // ---------------------------------------------------------------------------
+const FINISH_MAPPING_SERVICE = '/lane_navigator/finish_mapping';
+const RESET_SERVICE = '/lane_navigator/reset';
+const rosMap = { left: null, right: null, raceline: null };
+let rosStatus = null;
 
-// mask_image (mono8): same shape/semantics as the local detectors' output,
-// so it's rendered the same way onto the white-line panel (camera + green
-// overlay via applyLaneOverlay -- see js/oit_lane_pipeline.js).
-function onRosMaskImage(msg) {
+function callRosTrigger(name) {
+  if (!ros) return;
+  const srv = new ROSLIB.Service({ ros, name, serviceType: 'std_srvs/srv/Trigger' });
+  srv.callService({}, (res) => { oitMessageEl.textContent = res.message || name; });
+}
+
+// lane_detector's annotated image (bgr8): camera + detected points +
+// role-colored tracked lines, displayed as-is.
+function onRosLaneDetectorAnnotatedImage(msg) {
   if (detectorMode !== 'ros2') return;
-  const width = msg.width;
-  const height = msg.height;
+  const { width, height } = msg;
   const bytes = base64ToUint8Array(msg.data);
-  const mask = new Uint8Array(width * height);
-  for (let i = 0; i < mask.length; i++) mask[i] = bytes[i] > 0 ? 1 : 0;
-
-  laneCtx.drawImage(captureCanvas, 0, 0, width, height);
-  const imageData = laneCtx.getImageData(0, 0, width, height);
-  applyLaneOverlay(imageData, mask, 0.5);
+  const imageData = laneCtx.createImageData(width, height);
+  const bgr = msg.encoding === 'bgr8';
+  for (let i = 0, j = 0; j < imageData.data.length; i += 3, j += 4) {
+    imageData.data[j] = bytes[bgr ? i + 2 : i];
+    imageData.data[j + 1] = bytes[i + 1];
+    imageData.data[j + 2] = bytes[bgr ? i : i + 2];
+    imageData.data[j + 3] = 255;
+  }
+  if (laneCanvas.width !== width || laneCanvas.height !== height) {
+    laneCanvas.width = width;
+    laneCanvas.height = height;
+  }
   laneCtx.putImageData(imageData, 0, 0);
 }
 
-// bev_annotated_image (bgr8): bev_pure_pursuit_node's own fully-rendered BEV
-// visualization (sliding windows, left/right lane pixels, target line, EGO
-// marker) -- displayed as-is rather than recomputed locally, so the BEV
-// panel shows exactly what the real ROS 2 pipeline computed.
-function onRosBevAnnotatedImage(msg) {
-  if (detectorMode !== 'ros2') return;
-  const width = msg.width;
-  const height = msg.height;
-  const bytes = base64ToUint8Array(msg.data);
-  const imageData = bevCtx.createImageData(width, height);
-  for (let i = 0, j = 0; j < imageData.data.length; i += 3, j += 4) {
-    // bgr8: byte order is [B, G, R] per pixel.
-    imageData.data[j] = bytes[i + 2];
-    imageData.data[j + 1] = bytes[i + 1];
-    imageData.data[j + 2] = bytes[i];
-    imageData.data[j + 3] = 255;
-  }
-  bevCtx.putImageData(imageData, 0, 0);
-}
-
-// extremum_seeking_mpc/cmd_vel: the ROS 2 side's actual Pure Pursuit output.
-// Fed directly into twistMux's "mpc" source (no local recomputation) --
-// this is the real control link this mode exists for.
+// extremum_seeking_mpc/cmd_vel: the ROS 2 lane_navigator's actual output.
+// Fed directly into twistMux's "mpc" source (no local recomputation).
 function onRosAutonomousCmdVel(msg) {
   if (detectorMode !== 'ros2') return;
   const v = msg.linear.x;
@@ -845,13 +916,27 @@ function onRosAutonomousCmdVel(msg) {
   detectorStatusEl.textContent = 'ROS2連携 (受信中)';
 }
 
-// lane_tracker/status: "[oit_navigation] Mode=Both Lanes | Speed=... | ...".
-// Only the Mode= field is pulled out, to reuse the same oit-mode HUD field
-// the local pipeline already fills in.
+// lane_tracker/status: JSON from LaneNavigator.status().
 function onRosLaneTrackerStatus(msg) {
   if (detectorMode !== 'ros2') return;
-  const match = /Mode=([^|]+)/.exec(msg.data);
-  oitModeEl.textContent = match ? match[1].trim() : msg.data;
+  try {
+    rosStatus = JSON.parse(msg.data);
+    showNavStatus(rosStatus);
+  } catch (err) {
+    oitMessageEl.textContent = msg.data;
+  }
+}
+
+function onRosMapPath(kind, msg) {
+  if (detectorMode !== 'ros2') return;
+  rosMap[kind] = msg.poses.map((ps) => [ps.pose.position.x, ps.pose.position.y]);
+}
+
+function showNavStatus(st) {
+  oitStateEl.textContent = { MAPPING: '1周目: 中央線走行 + 境界記録', OPTIMIZING: 'QP 計算中', RACING: 'レーシングライン走行', STOPPED: '停止' }[st.state] || st.state;
+  oitLapEl.textContent = `${st.lap}`;
+  oitSamplesEl.textContent = `${st.samples} 点 (次の間隔 ${st.spacing}m, κ=${st.kappa})`;
+  oitMessageEl.textContent = st.message || '-';
 }
 
 // rosbridge decodes a base64 *string* into a message's uint8[] field (same
@@ -866,10 +951,7 @@ function uint8ArrayToBase64(bytes) {
 }
 
 // Inverse of uint8ArrayToBase64 -- rosbridge base64-encodes a subscribed
-// message's uint8[] fields (sensor_msgs/Image.data) the same way it decodes
-// a *published* base64 string back into bytes, so this is what "ROS2連携"
-// mode needs to read the ROS-side yolop_lane_detector/bev_pure_pursuit_node
-// nodes' Image messages back out.
+// message's uint8[] fields (sensor_msgs/Image.data).
 function base64ToUint8Array(base64) {
   const binary = atob(base64);
   const bytes = new Uint8Array(binary.length);
@@ -908,9 +990,9 @@ function publishImageTopic(topic, width, height, encoding, bytesPerPixel, dataBy
   );
 }
 
-function publishPathTopic(topic, points) {
+function publishPathTopic(topic, points, frameId = ROBOT_FRAME_ID) {
   if (!topic) return;
-  const header = { stamp: nowStamp(), frame_id: ROBOT_FRAME_ID };
+  const header = { stamp: nowStamp(), frame_id: frameId };
   topic.publish(
     new ROSLIB.Message({
       header,
@@ -922,131 +1004,324 @@ function publishPathTopic(topic, points) {
   );
 }
 
-// Triggered from the same accumulator as the camera image publish (15Hz).
-// The threshold detector is synchronous and fast, but the ONNX model
-// detector is not -- lanePipelineBusy is a single-slot guard (same idea as
-// yolop_lane_detector.py's worker thread) so a slow model inference never
-// gets a second one queued behind it.
+// ---------------------------------------------------------------------------
+// Drawing: lane panel (camera + UFLD) and course-map panel (top-down).
+// ---------------------------------------------------------------------------
+const ROLE_COLORS = { left: '#35d0ff', center: '#ffd400', right: '#ff5ad8' };
+
+// Inverse of projectToGround(): base_link ground point -> image pixel.
+function groundToImage(x, y, width, height) {
+  const cam = DEFAULT_CAMERA;
+  const sx = width / cam.refWidth, sy = height / cam.refHeight;
+  const s = Math.sin(cam.pitchDown), c = Math.cos(cam.pitchDown);
+  const xr = x - cam.camX, zr = -cam.camHeight;
+  const zc = c * xr - s * zr;
+  if (zc < 0.3) return null;
+  const yDown = -(s * xr + c * zr);
+  return [cam.cx * sx + (cam.fx * sx * -y) / zc, cam.cy * sy + (cam.fy * sy * yDown) / zc];
+}
+
+function sampleLine(fit, step = 0.5) {
+  const pts = [];
+  if (!fit) return pts;
+  const x0 = Math.max(0.8, fit.inferred ? 1.0 : fit.xMin);
+  const x1 = Math.min(12.0, fit.inferred ? 8.0 : fit.xMax);
+  for (let x = x0; x <= x1 + 1e-6; x += step) pts.push([x, fit.yAt(x)]);
+  return pts;
+}
+
+function drawLanePanel(lanes, tracked, width, height, mask = null) {
+  if (laneCanvas.width !== width || laneCanvas.height !== height) {
+    laneCanvas.width = width;
+    laneCanvas.height = height;
+  }
+  laneCtx.drawImage(captureCanvas, 0, 0, width, height);
+  if (mask) {
+    // YOLOP white-line mask, lightly tinted green
+    const img = laneCtx.getImageData(0, 0, width, height);
+    for (let i = 0; i < mask.length; i++) {
+      if (!mask[i]) continue;
+      img.data[i * 4] *= 0.5;
+      img.data[i * 4 + 1] = 0.5 * img.data[i * 4 + 1] + 127;
+      img.data[i * 4 + 2] *= 0.5;
+    }
+    laneCtx.putImageData(img, 0, 0);
+  }
+  // Raw UFLD points (per slot, white)
+  laneCtx.fillStyle = 'rgba(255,255,255,0.85)';
+  lanes.forEach((l) => {
+    if (!l) return;
+    for (let k = 0; k < l.u.length; k++) {
+      laneCtx.beginPath();
+      laneCtx.arc(l.u[k], l.v[k], 2.5, 0, 2 * Math.PI);
+      laneCtx.fill();
+    }
+  });
+  if (!tracked) return;
+  // Tracked role lines re-projected into the image (dashed = inferred)
+  for (const role of ROLES) {
+    const fit = tracked.lines[role];
+    if (!fit) continue;
+    const px = sampleLine(fit).map(([x, y]) => groundToImage(x, y, width, height)).filter(Boolean);
+    if (px.length < 2) continue;
+    laneCtx.strokeStyle = ROLE_COLORS[role];
+    laneCtx.lineWidth = 3;
+    laneCtx.setLineDash(tracked.detected[role] ? [] : [8, 6]);
+    laneCtx.beginPath();
+    px.forEach(([u, v], i) => (i ? laneCtx.lineTo(u, v) : laneCtx.moveTo(u, v)));
+    laneCtx.stroke();
+  }
+  laneCtx.setLineDash([]);
+  laneCtx.font = '14px sans-serif';
+  ROLES.forEach((role, i) => {
+    laneCtx.fillStyle = ROLE_COLORS[role];
+    const tag = tracked.detected[role] ? '検出' : tracked.lines[role] ? '補完' : 'なし';
+    laneCtx.fillText(`${{ left: '左', center: '中央', right: '右' }[role]}: ${tag}`, 8, 18 + 17 * i);
+  });
+}
+
+function drawMapPanel(map, pose) {
+  const W = mapCanvas.width, H = mapCanvas.height;
+  mapCtx.fillStyle = '#0b0d10';
+  mapCtx.fillRect(0, 0, W, H);
+  const layers = [map.left, map.right, map.raceline, map.trail, pose ? [[pose[0], pose[1]]] : null].filter((l) => l && l.length);
+  if (!layers.length) return;
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  for (const l of layers) for (const [x, y] of l) {
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y);
+  }
+  const pad = 4;
+  const span = Math.max(maxX - minX, maxY - minY, 10) + 2 * pad;
+  const scale = Math.min(W, H) / span;
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+  const toPx = ([x, y]) => [W / 2 + (x - cx) * scale, H / 2 - (y - cy) * scale];
+
+  const polyline = (pts, color, width, closed = false) => {
+    if (!pts || pts.length < 2) return;
+    mapCtx.strokeStyle = color;
+    mapCtx.lineWidth = width;
+    mapCtx.beginPath();
+    pts.forEach((p, i) => { const [u, v] = toPx(p); i ? mapCtx.lineTo(u, v) : mapCtx.moveTo(u, v); });
+    if (closed) mapCtx.closePath();
+    mapCtx.stroke();
+  };
+  const dots = (pts, color, r) => {
+    if (!pts) return;
+    mapCtx.fillStyle = color;
+    for (const p of pts) { const [u, v] = toPx(p); mapCtx.beginPath(); mapCtx.arc(u, v, r, 0, 2 * Math.PI); mapCtx.fill(); }
+  };
+  polyline(map.trail, 'rgba(90,140,255,0.6)', 1.5);
+  dots(map.left, ROLE_COLORS.left, 3);
+  dots(map.right, ROLE_COLORS.right, 3);
+  if (map.raceline) {
+    polyline(map.raceline, '#ff9f1a', 2, true);
+    mapCtx.strokeStyle = '#ff9f1a';
+    mapCtx.lineWidth = 1.5;
+    for (const p of map.raceline) { const [u, v] = toPx(p); mapCtx.beginPath(); mapCtx.arc(u, v, 4, 0, 2 * Math.PI); mapCtx.stroke(); }
+  }
+  if (pose) {
+    const [u, v] = toPx(pose);
+    const a = -pose[2];
+    mapCtx.fillStyle = '#ff3b3b';
+    mapCtx.beginPath();
+    mapCtx.moveTo(u + 10 * Math.cos(a), v + 10 * Math.sin(a));
+    mapCtx.lineTo(u + 6 * Math.cos(a + 2.4), v + 6 * Math.sin(a + 2.4));
+    mapCtx.lineTo(u + 6 * Math.cos(a - 2.4), v + 6 * Math.sin(a - 2.4));
+    mapCtx.closePath();
+    mapCtx.fill();
+  }
+  mapCtx.font = '14px sans-serif';
+  mapCtx.fillStyle = '#e8eaed';
+  mapCtx.fillText(`${(span - 2 * pad).toFixed(0)}m 四方 | ●左境界 ●右境界 ○QPウェイポイント`, 8, H - 10);
+}
+
+function navMapLayers() {
+  const nav = laneNavigator;
+  const samples = nav.recorder.samples;
+  const m = nav.courseMap;
+  return {
+    left: m ? m.left : samples.map((s) => s.left),
+    right: m ? m.right : samples.map((s) => s.right),
+    raceline: nav.raceline ? nav.raceline.points : null,
+    trail: localizerTrail,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Pipeline tick (15Hz, same timer as the camera publish). lanePipelineBusy is
+// a single-slot guard so a slow inference never gets a second one queued.
+// ---------------------------------------------------------------------------
 let lanePipelineBusy = false;
 
+function stepNavigator(tracked, now = performance.now() / 1000) {
+  const dt = lastNavStepTime === null ? 0 : Math.min(now - lastNavStepTime, 0.5);
+  lastNavStepTime = now;
+  const pose = [localizer.x, localizer.y, localizer.yaw];
+  const cmd = laneNavigator.step(now, dt, pose, localizer.v, localizer.omega, localizer.s, tracked);
+  latestAutonomousCmd = { v: cmd.v, omega: cmd.omega };
+  twistMux.update('mpc', cmd.v, cmd.omega, performance.now());
+  if (autonomousCmdVelTopic) {
+    autonomousCmdVelTopic.publish(
+      new ROSLIB.Message({ linear: { x: cmd.v, y: 0, z: 0 }, angular: { x: 0, y: 0, z: cmd.omega } })
+    );
+  }
+  const st = laneNavigator.status();
+  showNavStatus(st);
+  if (laneTrackerStatusTopic) laneTrackerStatusTopic.publish(new ROSLIB.Message({ data: JSON.stringify(st) }));
+  return cmd;
+}
+
 async function updateLanePipeline() {
-  // In "ROS2連携" mode, the ROS 2 side does this work instead (see
-  // onRosMaskImage/onRosBevAnnotatedImage/onRosAutonomousCmdVel above) --
-  // running the local detector here too would be wasted CPU (the exact
-  // browser jank this mode exists to avoid) and would fight over the same
-  // mask/BEV canvases and twistMux "mpc" slot.
-  if (detectorMode === 'ros2') return;
-  if (lanePipelineBusy) return;
+  if (fastForwarding) return;
+  if (detectorMode === 'ros2') {
+    drawMapPanel({ ...rosMap, trail: null }, null);
+    return;
+  }
+  if (lanePipelineBusy || (detectorMode === 'ufld' && !ufldDetector.session)
+    || (detectorMode === 'yolop' && !yolopDetector.session)) return;
   lanePipelineBusy = true;
   try {
-    const { mask, width, height } = await activeDetector.infer(captureCanvas);
-    lastMaskTime = performance.now();
-
-    // Panel 1: camera + green lane overlay (draw_lane_lines port)
-    laneCtx.drawImage(captureCanvas, 0, 0, width, height);
-    const camImageData = laneCtx.getImageData(0, 0, width, height);
-    applyLaneOverlay(camImageData, mask, 0.5);
-    laneCtx.putImageData(camImageData, 0, 0);
-
-    const maskBytes255 = new Uint8Array(mask.length);
-    for (let i = 0; i < mask.length; i++) maskBytes255[i] = mask[i] * 255;
-    publishImageTopic(maskImageTopic, width, height, 'mono8', 1, maskBytes255, IMAGE_FRAME_ID);
-    publishImageTopic(
-      annotatedCameraImageTopic,
-      width,
-      height,
-      'rgb8',
-      3,
-      canvasToRgb8Bytes(laneCtx, width, height),
-      IMAGE_FRAME_ID
-    );
-
-    // Panel 2: BEV transform + sliding-window lane extraction
-    const bevMask = bevTransformer.warpToBev(mask, width, height);
-    const { targetCenter, leftPts, rightPts } = laneExtractor.extractLaneTrajectories(bevMask, bevCtx);
-
-    // Pure Pursuit control step (real elapsed time since the last control
-    // update, matching bev_pure_pursuit_node.py's wall-clock dt).
-    const now = performance.now();
-    const dt = Math.min((now - lastControlTime) / 1000, 0.5);
-    lastControlTime = now;
-
-    const cmd = stepPurePursuitControl(targetCenter, lastOmegaCmd, dt, PURE_PURSUIT_PARAMS);
-    lastOmegaCmd = cmd.omega;
-    latestAutonomousCmd = { v: cmd.v, omega: cmd.omega };
-    twistMux.update('mpc', cmd.v, cmd.omega, now);
-
-    // Draw the Pure Pursuit trajectory + EGO marker onto the BEV panel
-    // *after* the control step, so the line drawn is the origin-anchored
-    // trajectory that actually connects to the vehicle's own origin (see
-    // BevLaneExtractor.drawTrajectory's docstring).
-    laneExtractor.drawTrajectory(bevCtx, cmd.farPt ? cmd.originAnchoredTrajectory : null, cmd.farPt);
-
-    const bevBytes = canvasToRgb8Bytes(bevCtx, bevCanvas.width, bevCanvas.height);
-    publishImageTopic(bevAnnotatedImageTopic, bevCanvas.width, bevCanvas.height, 'rgb8', 3, bevBytes, ROBOT_FRAME_ID);
-    publishImageTopic(annotatedMaskImageTopic, bevCanvas.width, bevCanvas.height, 'rgb8', 3, bevBytes, ROBOT_FRAME_ID);
-    publishPathTopic(laneLeftTopic, leftPts);
-    publishPathTopic(laneRightTopic, rightPts);
-    publishPathTopic(laneCenterTopic, targetCenter);
-
-    if (autonomousCmdVelTopic) {
-      autonomousCmdVelTopic.publish(
-        new ROSLIB.Message({ linear: { x: cmd.v, y: 0, z: 0 }, angular: { x: 0, y: 0, z: cmd.omega } })
-      );
-    }
-
-    if (cmd.farPt) {
-      publishPathTopic(targetTrajectoryTopic, cmd.originAnchoredTrajectory);
-      const mode = leftPts && rightPts ? 'Both Lanes' : leftPts ? 'Left Anchor' : 'Right Anchor';
-      oitModeEl.textContent = mode;
-      if (laneTrackerStatusTopic) {
-        const omegaStr = `${cmd.omega >= 0 ? '+' : ''}${cmd.omega.toFixed(2)}`;
-        const originEy = cmd.crossTrackError;
-        const farYStr = `${cmd.farPt[1] >= 0 ? '+' : ''}${cmd.farPt[1].toFixed(2)}`;
-        laneTrackerStatusTopic.publish(
-          new ROSLIB.Message({
-            data:
-              `[oit_navigation] Mode=${mode} | Speed=${cmd.v.toFixed(2)}m/s | Omega=${omegaStr}rad/s | ` +
-              `Origin_ey=${originEy >= 0 ? '+' : ''}${originEy.toFixed(2)}m | Far_5m=(${cmd.farPt[0].toFixed(2)}, ${farYStr}m)`,
-          })
-        );
-      }
-    } else {
-      oitModeEl.textContent = 'Fallback (No Lane)';
-    }
+    await runPerception(performance.now() / 1000);
   } catch (err) {
-    console.error('oit_navigation lane pipeline error', err);
+    console.error('oit_navigation UFLD pipeline error', err);
   } finally {
     lanePipelineBusy = false;
   }
 }
 
-// Watchdog: if no mask has completed for LANE_DATA_TIMEOUT_MS (model still
-// loading, inference stalled, tab throttled), decelerate the autonomous
-// command toward a stop instead of latching the last successful cmd_vel
-// forever -- mirrors bev_pure_pursuit_node.py's watchdog_timer/_handle_fallback.
+// One perception + navigation tick: detect lines (UFLD or ideal), track
+// roles, step the navigator at time `now` [s], draw panels, publish topics.
+async function runPerception(now) {
+  {
+    const width = captureCanvas.width, height = captureCanvas.height;
+    let lanes;
+    let fits;
+    let mask = null;
+    const toFits = (ls) => ls.map((l) => {
+      if (!l) return null;
+      const g = projectToGround(DEFAULT_CAMERA, l.u, l.v, width, height);
+      return fitLine(g.x, g.y);
+    });
+    if (detectorMode === 'yolop') {
+      ({ mask } = await yolopDetector.infer(captureCanvas));
+      lanes = extractMaskLines(mask, width, height);
+      fits = toFits(lanes);
+    } else if (detectorMode === 'ideal') {
+      const obs = idealDetector.detect({ x: physics.x, y: physics.y, yaw: physics.yaw });
+      fits = obs.fits;
+      // Observed ground points re-projected into the image, for the lane panel.
+      lanes = obs.points.map(({ x, y }) => {
+        const px = x.map((xi, i) => groundToImage(xi, y[i], width, height)).filter(Boolean);
+        return { u: px.map((q) => q[0]), v: px.map((q) => q[1]) };
+      });
+    } else {
+      lanes = await ufldDetector.detect(captureCanvas);
+      fits = toFits(lanes);
+    }
+    const tracked = lineTracker.update(fits);
+    latestTracked = tracked;
+    // Debug trace (last ~60s) for automated verification from the console.
+    laneTrace.push({
+      t: +now.toFixed(2),
+      pose: [+physics.x.toFixed(2), +physics.y.toFixed(2), +physics.yaw.toFixed(3)],
+      meas: fits.map((f) => (f ? +f.yAt(LINE_TRACKER_PARAMS.xRef).toFixed(2) : null)),
+      det: ROLES.map((r) => (tracked.detected[r] ? 1 : 0)).join(''),
+      off: ROLES.map((r) => +tracked.offsets[r].toFixed(2)),
+    });
+    if (laneTrace.length > 900) laneTrace.shift();
+    if (fastForwarding) {
+      stepNavigator(tracked, now);
+      return;
+    }
+    lastPipelineTime = performance.now();
+    stepNavigator(tracked, now);
+
+    drawLanePanel(lanes, tracked, width, height, mask);
+    publishImageTopic(laneDetectorAnnotatedImageTopic, width, height, 'rgb8', 3, canvasToRgb8Bytes(laneCtx, width, height), IMAGE_FRAME_ID);
+    publishPathTopic(laneLeftTopic, sampleLine(tracked.lines.left));
+    publishPathTopic(laneCenterTopic, sampleLine(tracked.lines.center));
+    publishPathTopic(laneRightTopic, sampleLine(tracked.lines.right));
+
+    const layers = navMapLayers();
+    drawMapPanel(layers, [localizer.x, localizer.y, localizer.yaw]);
+    if (performance.now() - lastMapPublishTime > 1000) {
+      lastMapPublishTime = performance.now();
+      publishPathTopic(leftBoundaryTopic, layers.left, ODOM_NAV_FRAME_ID);
+      publishPathTopic(rightBoundaryTopic, layers.right, ODOM_NAV_FRAME_ID);
+      if (layers.raceline) publishPathTopic(targetTrajectoryTopic, layers.raceline, ODOM_NAV_FRAME_ID);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic fast-forward for automated verification: steps physics
+// (autonomous command only), the localizer and perception+navigation at
+// IMAGE_PUBLISH_HZ in *simulated* time, without depending on
+// requestAnimationFrame (which browsers throttle/stop in hidden tabs).
+//   await window.__sim.fastForward(120)   // simulate 120 s
+// Works with the 'ideal', 'yolop' and 'ufld' detector modes (the models render the
+// onboard camera each perception tick).
+// ---------------------------------------------------------------------------
+let fastForwarding = false;
+let simClock = 0;
+
+async function fastForward(seconds, physicsDt = 1 / 60) {
+  if (detectorMode === 'ros2') throw new Error('fastForward is for the in-browser detector modes');
+  fastForwarding = true;
+  // Let an in-flight regular pipeline tick finish first (an ONNX session
+  // cannot run two inferences at once).
+  while (lanePipelineBusy) await new Promise((r) => setTimeout(r, 5));
+  try {
+    const end = simClock + seconds;
+    let nextPerception = simClock;
+    lastNavStepTime = null;
+    while (simClock < end) {
+      if (simClock >= nextPerception) {
+        nextPerception += 1 / IMAGE_PUBLISH_HZ;
+        if (detectorMode === 'ufld' || detectorMode === 'yolop') {
+          updateOnboardCameraPose();
+          renderOnboardCapture();
+        }
+        await runPerception(simClock);
+      }
+      const cmd = autonomousMode ? latestAutonomousCmd : { v: 0, omega: 0 };
+      physics.stepAutonomous(cmd.v, cmd.omega, physicsDt);
+      integrateLocalizer(physics.v, physics.omega, physicsDt);
+      recordLocalizerTrail();
+      simClock += physicsDt;
+    }
+  } finally {
+    fastForwarding = false;
+    lastNavStepTime = null;
+    drawMapPanel(navMapLayers(), [localizer.x, localizer.y, localizer.yaw]);
+  }
+  return laneNavigator.status();
+}
+
+function recordLocalizerTrail() {
+  const last = localizerTrail[localizerTrail.length - 1];
+  if (!last || Math.hypot(localizer.x - last[0], localizer.y - last[1]) > 0.5) {
+    localizerTrail.push([localizer.x, localizer.y]);
+    if (localizerTrail.length > 4000) localizerTrail.shift();
+  }
+}
+
+// Watchdog: if no UFLD frame has completed for LANE_DATA_TIMEOUT_MS (model
+// still loading, inference stalled, tab throttled), keep stepping the
+// navigator without a new observation -- lap 1 decelerates to a stop (no
+// center line to follow), lap 2+ keeps following the raceline on odometry
+// -- instead of latching the last cmd_vel forever. Mirrors the real
+// lane_navigator node's control timer.
 setInterval(() => {
-  // In "ROS2連携" mode this local fallback doesn't apply -- twistMux's own
-  // 0.3s timeout on the "mpc" source (fed directly by onRosAutonomousCmdVel)
-  // already hands control back the same way if the ROS 2 side goes quiet.
   if (detectorMode === 'ros2') {
     if (lastRosCmdVelTime !== 0 && performance.now() - lastRosCmdVelTime > LANE_DATA_TIMEOUT_MS) {
       detectorStatusEl.textContent = 'ROS2連携 (信号途絶)';
     }
     return;
   }
-  if (lastMaskTime !== 0 && performance.now() - lastMaskTime <= LANE_DATA_TIMEOUT_MS) return;
-  const now = performance.now();
-  const dt = Math.min((now - lastControlTime) / 1000, 0.5);
-  lastControlTime = now;
-  const cmd = stepPurePursuitControl(null, lastOmegaCmd, dt, PURE_PURSUIT_PARAMS);
-  lastOmegaCmd = cmd.omega;
-  latestAutonomousCmd = { v: cmd.v, omega: cmd.omega };
-  // Matches the real bev_pure_pursuit_node.py: its watchdog still publishes
-  // to the mpc topic while decelerating, so twist_mux still sees "mpc" as
-  // alive/fresh even though no lane is currently tracked.
-  twistMux.update('mpc', cmd.v, cmd.omega, now);
-}, LANE_DATA_TIMEOUT_MS / 2);
+  if (fastForwarding || performance.now() - lastPipelineTime <= LANE_DATA_TIMEOUT_MS / 2) return;
+  stepNavigator(null);
+}, LANE_DATA_TIMEOUT_MS / 4);
 
 const IMU_PUBLISH_HZ = 100;
 
@@ -1181,9 +1456,8 @@ setInterval(publishVehicleInfoCan, 1000 / CAN_PUBLISH_HZ);
 // animate() via an accumulator. Backgrounding the simulator tab for even a
 // few seconds - switching to another tab/window, minimizing - froze this
 // camera feed for exactly that long, so oit_navigation's whole pipeline
-// (yolop_lane_detector, bev_pure_pursuit_node) received nothing and every
-// downstream visualization (mask, /aiformula_visualization/bev_annotated_image,
-// etc.) appeared to just stop updating. Running the capture+publish tick on
+// (lane_detector, lane_navigator) received nothing and every downstream
+// visualization appeared to just stop updating. Running the capture+publish tick on
 // its own timer keeps frames flowing (against whatever scene state is
 // current - stale while backgrounded, since physics integration is still
 // tied to animate() - real work resumes once the tab regains focus).
@@ -1197,6 +1471,14 @@ setInterval(() => {
 // Physics + render loop
 // ---------------------------------------------------------------------------
 const physics = new VehiclePhysics();
+// Debug hook for automated verification (browser console / test harness).
+window.__sim = {
+  physics, captureCanvas, renderOnboardCapture, laneNavigator, lineTracker, localizer, ufldDetector,
+  idealDetector, laneTrace, localizerTrail, fastForward: (sec) => fastForward(sec),
+  setDetectorMode: (m) => setDetectorMode(m), resetNavigation: () => resetNavigation(),
+};
+resetLocalizer();
+setDetectorMode('yolop');
 const speedVal = document.getElementById('speed-val');
 const yawRateVal = document.getElementById('yaw-rate-val');
 const imuAxVal = document.getElementById('imu-ax');
@@ -1280,6 +1562,25 @@ resetViewBtn.addEventListener('click', () => {
 
 const clock = new THREE.Clock();
 
+function updateOnboardCameraPose() {
+  // Onboard (ZED mount) camera: rigidly attached to the vehicle.
+  // Pitch down angle is 1.8 deg, matching real extrinsic.yaml orientation (r: -88.2 -> ~1.8 deg tilt).
+  const PITCH_DOWN_RAD = (1.8 * Math.PI) / 180;
+  const LOOK_DIST = 5.0;
+  const mountRos = {
+    x: physics.x + CAMERA_MOUNT.x * Math.cos(physics.yaw) - CAMERA_MOUNT.y * Math.sin(physics.yaw),
+    y: physics.y + CAMERA_MOUNT.x * Math.sin(physics.yaw) + CAMERA_MOUNT.y * Math.cos(physics.yaw),
+    z: VEHICLE.wheelRadius + CAMERA_MOUNT.z, // 0.12m (base_link height) + 0.44m = 0.56m above ground
+  };
+  const lookAheadRos = {
+    x: mountRos.x + Math.cos(physics.yaw) * LOOK_DIST,
+    y: mountRos.y + Math.sin(physics.yaw) * LOOK_DIST,
+    z: mountRos.z - LOOK_DIST * Math.tan(PITCH_DOWN_RAD),
+  };
+  onboardCamera.position.copy(rosToThree(mountRos.x, mountRos.y, mountRos.z));
+  onboardCamera.lookAt(rosToThree(lookAheadRos.x, lookAheadRos.y, lookAheadRos.z));
+}
+
 function animate() {
   requestAnimationFrame(animate);
   const dt = Math.min(clock.getDelta(), 0.1);
@@ -1297,10 +1598,17 @@ function animate() {
   }
   const { activeSource } = twistMux.mux(performance.now());
 
-  if (activeSource === 'mpc') {
+  if (fastForwarding) {
+    // fastForward() owns the physics/localizer while it runs.
+  } else if (activeSource === 'mpc') {
     physics.stepAutonomous(latestAutonomousCmd.v, latestAutonomousCmd.omega, dt);
   } else {
     physics.step(effectiveKeys, dt);
+  }
+  if (!fastForwarding) {
+    // odom_imu_localizer stand-in: wheel speed + IMU yaw rate dead reckoning.
+    integrateLocalizer(physics.v, physics.omega, dt);
+    recordLocalizerTrail();
   }
 
   vehicleRoot.position.set(physics.x, physics.y, 0);
@@ -1333,22 +1641,7 @@ function animate() {
 
   controls.update();
 
-  // Onboard (ZED mount) camera: rigidly attached to the vehicle.
-  // Pitch down angle is 1.8 deg, matching real extrinsic.yaml orientation (r: -88.2 -> ~1.8 deg tilt).
-  const PITCH_DOWN_RAD = (1.8 * Math.PI) / 180;
-  const LOOK_DIST = 5.0;
-  const mountRos = {
-    x: physics.x + CAMERA_MOUNT.x * Math.cos(physics.yaw) - CAMERA_MOUNT.y * Math.sin(physics.yaw),
-    y: physics.y + CAMERA_MOUNT.x * Math.sin(physics.yaw) + CAMERA_MOUNT.y * Math.cos(physics.yaw),
-    z: VEHICLE.wheelRadius + CAMERA_MOUNT.z, // 0.12m (base_link height) + 0.44m = 0.56m above ground
-  };
-  const lookAheadRos = {
-    x: mountRos.x + Math.cos(physics.yaw) * LOOK_DIST,
-    y: mountRos.y + Math.sin(physics.yaw) * LOOK_DIST,
-    z: mountRos.z - LOOK_DIST * Math.tan(PITCH_DOWN_RAD),
-  };
-  onboardCamera.position.copy(rosToThree(mountRos.x, mountRos.y, mountRos.z));
-  onboardCamera.lookAt(rosToThree(lookAheadRos.x, lookAheadRos.y, lookAheadRos.z));
+  updateOnboardCameraPose();
 
   publishAccumulator += dt;
   if (publishAccumulator >= PUBLISH_INTERVAL) {

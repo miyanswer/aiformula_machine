@@ -2,7 +2,7 @@
 """
 export_onnx_web.py - Export the YOLOP lane-line segmentation head to ONNX for
 in-browser inference (see web_simulator/js/lane_model_detector.js). This lets
-the web simulator run the same white-line detection yolop_lane_detector.py
+the web simulator run the same white-line detection yolop_lane_backend.py
 runs on the real vehicle, directly in the browser via onnxruntime-web.
 
 Only the lane-line segmentation head is exported: the object-detection head
@@ -12,7 +12,7 @@ exporter's dead-code elimination.
 
 The input shape is a fixed 640x640 square (not dynamic, not letterboxed):
 the web simulator preprocesses its onboard-camera capture with the same
-"crop_bottom" ROI as yolop_lane_detector.py (drop the top top_cut_ratio
+"crop_bottom" ROI as yolop_lane_backend.py (drop the top top_cut_ratio
 fraction of rows, keeping the road-relevant bottom portion), then resizes
 that crop directly to 640x640 -- see js/lane_model_detector.js.
 

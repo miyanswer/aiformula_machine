@@ -12,9 +12,9 @@ def generate_launch_description():
 
     一括起動されるシステム:
       1. 機体ハードウェア基盤 (hardware_bringup: カメラ, IMU, CAN, motor_controller, twist_mux, odom)
-      2. 認識・追従・信号機検出・障害物検出 (oit_navigation/navigation.launch.py:
-         yolop_lane_detector + bev_pure_pursuit_node + traffic_light_distance_node +
-         object_publisher_node + image_compressor_node)
+      2. 白線検出・周回マップ走行・信号機検出 (oit_navigation/navigation.launch.py:
+         lane_detector (YOLOP 既定) + odom_imu_localizer + lane_navigator +
+         traffic_light_distance_node + image_compressor_node)
     """
     pkg_sample_launchers = get_package_share_directory("sample_launchers")
     pkg_oit_navigation = get_package_share_directory("oit_navigation")
@@ -35,6 +35,26 @@ def generate_launch_description():
             default_value="true",
             description="Launch RViz2 for monitoring (true/false)",
         ),
+        DeclareLaunchArgument(
+            "backend",
+            default_value="yolop",
+            description="White-line detector: 'yolop' (models/ YOLOP, default) or 'ufld' (needs UFLD weights)",
+        ),
+        DeclareLaunchArgument(
+            "use_tensorrt",
+            default_value="false",
+            description="Run YOLOP via TensorRT on Jetson (falls back to PyTorch if unavailable)",
+        ),
+        DeclareLaunchArgument(
+            "map_save_path",
+            default_value="",
+            description="Save the lap-1 course map (JSON) here",
+        ),
+        DeclareLaunchArgument(
+            "map_load_path",
+            default_value="",
+            description="Start from a saved course map (lap 2+ raceline driving)",
+        ),
     ]
 
     # 1. 機体ハードウェア基盤一括起動
@@ -44,7 +64,7 @@ def generate_launch_description():
         ),
     )
 
-    # 2. 認識・追従・信号機・障害物検出パイプライン
+    # 2. 白線検出・周回マップ走行・信号機検出パイプライン
     navigation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             osp.join(pkg_oit_navigation, "launch", "navigation.launch.py"),
@@ -53,6 +73,10 @@ def generate_launch_description():
             "use_device": LaunchConfiguration("use_device"),
             "traffic_light": LaunchConfiguration("enable_traffic_light"),
             "rviz": LaunchConfiguration("use_rviz"),
+            "backend": LaunchConfiguration("backend"),
+            "use_tensorrt": LaunchConfiguration("use_tensorrt"),
+            "map_save_path": LaunchConfiguration("map_save_path"),
+            "map_load_path": LaunchConfiguration("map_load_path"),
         }.items(),
     )
 

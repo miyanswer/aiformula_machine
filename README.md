@@ -1,6 +1,6 @@
 # aiformula_machine (AI Formula 車載自律走行・機体プラットフォーム)
 
-AI Formula 実車機体に搭載する **機体ハードウェア基盤（センシング・モーター駆動・安全機構）** と **自律走行スタック（白線認識・2D BEV 追従制御・信号機距離推定）** を統合したパッケージ群です。
+AI Formula 実車機体に搭載する **機体ハードウェア基盤（センシング・モーター駆動・安全機構）** と **自律走行スタック（白線認識・周回マップ作成・QP レーシングライン走行・信号機距離推定）** を統合したパッケージ群です。
 
 実機上での自律走行はもちろん、実機がない環境でも **PC 単体（Docker / 動画入力）でアルゴリズム検証・可視化（RViz2 / Web GUI）** を即座に行うことができます。
 
@@ -11,7 +11,7 @@ AI Formula 実車機体に搭載する **機体ハードウェア基盤（セン
 ```
 aiformula_machine/
 ├── src/
-│   └── oit_navigation/       # 自律走行スタック (YOLOP白線認識, 2D BEV Pure Pursuit制御, 信号機距離推定)
+│   └── oit_navigation/       # 自律走行スタック (白線 左/中央/右 検出, 周回マップ + QP レーシングライン, 信号機距離推定)
 ├── sensing/
 │   ├── zed-ros2-wrapper/     # ZED X ステレオカメラ 公式ラッパー (RGB / Depth / IMU)
 │   ├── vectornav/            # VectorNav 9軸IMU / GNSS ドライバ
@@ -37,7 +37,7 @@ aiformula_machine/
 
 | ディレクトリ / パッケージ | 役割・説明 |
 | :--- | :--- |
-| **`src/oit_navigation`** | **自律走行スタック**: YOLOP白線認識・2D BEV変換・スライディングウィンドウ追跡・Pure Pursuit制御・信号機距離推定・Web検証GUI |
+| **`src/oit_navigation`** | **自律走行スタック**: 白線検出 (YOLOP 既定 / UFLD) で左境界・中央線・右境界を認識 → 1周目は中央白線トラッキング走行しながら左右境界を記録 → 2周目以降は QP (最小曲率) のアウト・イン・アウト経路を走行。信号機距離推定・Web検証GUI |
 | **`vehicles/sample_vehicle`** | 車両物理モデル、URDF/Xacro、TF座標系定義、ZED Xマウント位置 |
 | **`sensing/zed-ros2-wrapper`**| ZED X ステレオカメラ 公式ドライバ (RGB/Depth/Point Cloud/IMU) |
 | **`sensing/vectornav`** | VectorNav 9軸IMU / GNSS ドライバ |
@@ -73,7 +73,8 @@ make bash
 > **🤖 Jetson AGX Orin (JetPack 5.1.x / L4T R35) での実行:**
 > - `make build` 実行前に `cat /etc/nv_tegra_release` で搭載中のL4Tバージョンを確認してください。`docker/Dockerfile.jetson` は既定で `r35.3.1`（JetPack 5.1.1相当）のベースイメージを使いますが、異なる場合は `make build JETSON_BASE_TAG=r35.2.1` のように上書きしてください（ズレると `torch.cuda.is_available()` が `False` になります）。
 > - `docker info | grep -i runtime` で `nvidia` ランタイムが登録されていることを事前に確認してください（JetPack標準セットアップ済みであれば通常は有効です）。
-> - `models/*_rtx_2070_..._sm75.engine` はRTX2070(sm75)向けのTensorRTエンジンで、Orin(sm87)では使われません。`yolop_lane_detector` は起動時に現在のGPU向けのエンジンが無ければ自動でコンパイルし直すため（`src/oit_navigation/oit_navigation/yolop_lane_detector.py` の `_init_tensorrt_detector` 参照）、追加の手動作業は不要ですが、初回起動時は数分ほど余分に時間がかかります。
+> - `models/*_rtx_2070_..._sm75.engine` はRTX2070(sm75)向けのTensorRTエンジンで、Orin(sm87)では使われません。`lane_detector` (backend=yolop, `use_tensorrt:=true`) は起動時に現在のGPU向けのエンジンが無ければ自動でコンパイルし直すため（`src/oit_navigation/oit_navigation/yolop_lane_backend.py` の `_init_tensorrt` 参照）、追加の手動作業は不要ですが、初回起動時は数分ほど余分に時間がかかります。
+> - 実機は GitHub から clone したリポジトリで走らせるため、白線検出は git 管理されている YOLOP の重み (`models/honda_shihou_finetuned_best.pth`) を使います (`backend:=yolop`, 既定)。UFLD の重み (245MB) は git 管理外です。
 > - Jetsonでは `rviz_aiformula_plugins` パッケージ（RViz専用プラグイン、実車走行には不要）はビルド対象から外れます。`make build-ws` / `make build-pkg` が `IS_JETSON` を自動検知して `--packages-skip rviz_aiformula_plugins` を付与するため、いつも通り `make build-ws` を実行するだけで構いません（手動でフラグを付ける必要はありません）。
 > - Jetson上ではRViz2/rqt本体をインストールしていない（ヘッドレス構成の）ため、`make rqt` / `make rqt-graph` / `make open-rviz` は動作しません。可視化が必要な場合はMac側の Web シミュレータ（[http://localhost:8000/web_simulator/](http://localhost:8000/web_simulator/)）や、動画検証用の Web GUI（PC単体検証時）を利用してください。
 > - `sensing/zed-ros2-wrapper` ディレクトリには `COLCON_IGNORE` が置かれていないため、`colcon build` がこれもビルド対象に含めてしまい、ZED SDK が無い環境（Jetson/PC問わず）ではその分の失敗ログが出ることがあります（x86版でも既存の問題で、本ブランチが持ち込んだものではありません）。実車走行に `zed-ros2-wrapper` 自体は不要なので、失敗しても無視して構いません。
@@ -87,10 +88,11 @@ make bash
 
 ### 2. PC 単体での動作確認・アルゴリズム検証（実機不要）
 
-実機がなくても、車載カメラの録画動画（MP4）を再生して白線認識・走行ライン生成・信号機検出・RViz2 可視化を PC 単体でテストできます。
+実機がなくても、車載カメラの録画動画（MP4）を再生して白線検出（左境界/中央線/右境界の割り当てまで）・信号機検出・RViz2 可視化を PC 単体でテストできます。
+動画にはオドメトリが無いため、周回マップ作成と QP 走行は Web シミュレータ（`web_simulator/`、「理想検出/YOLOP/UFLD/ROS2連携」モード）で検証します。
 
 #### 【方法 A】Web 検証 GUI を使う（おすすめ）
-ブラウザ上で動画選択、検証パイプライン（白線単体 / 信号機単体 / 統合制御）の選択、起動・停止を直感的に行えます。
+ブラウザ上で動画選択、検証パイプライン（信号機単体 / 白線検出 YOLOP / 白線検出 UFLD / 統合）の選択、起動・停止を直感的に行えます。
 
 ```bash
 # Docker コンテナ内で実行 (またはホスト側で 2_test_pc_standalone.sh 実行)
@@ -106,7 +108,7 @@ ros2 run oit_navigation verification_gui
 # 任意の動画パスやデバイスを指定する場合:
 ./2_test_pc_standalone.sh /aiformula_machine/mp4/custom_video.mp4 cpu
 ```
-👉 ブラウザで [http://localhost:8080](http://localhost:8080) を開くと、リアルタイムに白線認識結果や緑色の目標走行ラインが RViz2 に描画されます。
+👉 ブラウザで [http://localhost:8080](http://localhost:8080) を開くと、リアルタイムに白線検出結果（左=水色/中央=黄/右=桃, 補完線は破線）が RViz2 に描画されます。
 
 ---
 
@@ -121,7 +123,8 @@ bash bash/1_bringup_hardware.sh
 ```
 
 #### B. 実機フルシステム（機体 ＋ 自律走行）を一括起動
-ハードウェア初期化から、YOLOP 白線認識・BEV 追従制御・信号機検知までの全ノードを 1 コマンドで起動します。
+ハードウェア初期化から、白線検出 (YOLOP)・自己位置推定・周回マップ/QP 走行・信号機検知までの全ノードを 1 コマンドで起動します。
+スタート位置 (中央白線の上) に車両を置き、数秒停止させてから (ジャイロバイアス推定) 自動運転を開始してください。1 周目は中央白線の上を走りながら左右境界を記録し、スタート地点に戻ると QP でレーシングラインを作って 2 周目以降それを走ります。
 ```bash
 bash bash/3_bringup_all_nodes.sh
 ```
@@ -156,5 +159,5 @@ bash bash/teleop_keyboard.sh
     - `01_system_architecture.md`: システム全体構成・ノード連携
     - `02_topic_and_interfaces.md`: トピック名・型・インターフェース仕様
     - `03_perception_and_ai.md`: 白線認識・信号機認識アルゴリズム
-    - `04_navigation_and_control.md`: 2D BEV 幾何変換・Pure Pursuit 制御理論
+    - `04_navigation_and_control.md`: 2D BEV 幾何変換・Pure Pursuit 制御理論（※旧方式の資料。現行の走行方式は src/oit_navigation/README.md を参照）
     - `05_launch_and_operations.md`: Launch構成・運用手順

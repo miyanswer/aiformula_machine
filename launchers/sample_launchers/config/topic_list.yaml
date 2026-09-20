@@ -13,6 +13,7 @@ sensing:
     gyro: "/aiformula_sensing/gyro_odometry_publisher/odom"
     wheel: "/aiformula_sensing/wheel_odometry_publisher/odom"
     gnss: "/aiformula_sensing/gnss_odometry_publisher/odom"
+    odom_imu: "/aiformula_sensing/odom_imu_localizer/odom"   # oit_navigation odom_imu_localizer (CAN + IMU)
   rear_potentiometer: "/aiformula_sensing/rear_potentiometer/yaw"
 
 perception:
@@ -21,6 +22,8 @@ perception:
     bounding_box: "/aiformula_perception/object_road_detector/rect"
     info: "/aiformula_perception/object_publisher/object_info"
   annotated_mask_image: "/aiformula_perception/lane_line_publisher/annotated_mask_image"
+  lane_detector:
+    lane_lines: "/aiformula_perception/lane_detector/lane_lines"   # aiformula_interfaces/LaneLines
   lane_lines:
     left: "/aiformula_perception/lane_line_publisher/lane_lines/left"
     right: "/aiformula_perception/lane_line_publisher/lane_lines/right"
@@ -46,9 +49,15 @@ control:
     handle_controller: "/aiformula_control/twist_mux/handle_controller/lock"
     gamepad: "/aiformula_control/twist_mux/gamepad/lock"
   output_can_data: "/aiformula_control/motor_controller/reference_signal"
+  lane_navigator_status: "/aiformula_control/lane_tracker/status"   # JSON (LaneNavigator.status())
 
 visualization:
   annotated_image: "/aiformula_visualization/object_road_detector/annotated_image"
   aiformula_pilot: "/aiformula_visualization/zed/left_image/compressed"
   unfiltered_object: "/aiformula_visualization/object_publisher/unfiltered_object"
   traffic_light_annotated_image: "/aiformula_visualization/traffic_light/annotated_image"
+  lane_detector_annotated_image: "/aiformula_visualization/lane_detector/annotated_image"
+  lane_navigator:
+    left_boundary: "/aiformula_visualization/lane_navigator/left_boundary"
+    right_boundary: "/aiformula_visualization/lane_navigator/right_boundary"
+    target_trajectory: "/aiformula_visualization/target_trajectory"

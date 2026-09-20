@@ -1,221 +1,118 @@
+"""
+MP4 動画で白線検出 (左境界/中央線/右境界の割り当てまで) と信号機検出をデバッグする起動ファイル (実機不要).
+
+    MP4 -> video_publisher -> .../left_image/undistorted(/compressed)
+        -> lane_detector (backend: yolop / ufld) -> LaneLines, Path x3, 注釈画像
+        -> traffic_light_distance_node (traffic_light:=true のとき)
+        -> RViz2
+
+動画にはオドメトリ (CAN/IMU) が無いため, 周回マップ作成と QP 走行 (odom_imu_localizer / lane_navigator)
+は起動しない. それらは Web シミュレータ (simulator_test.launch.py) か実機で検証する.
+
+例:
+    ros2 launch oit_navigation video_test.launch.py backend:=yolop traffic_light:=false
+    ros2 launch oit_navigation video_test.launch.py backend:=ufld video_path:=/aiformula_machine/mp4/xxx.mp4
+"""
+
 import os.path as osp
 import subprocess
+
+from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, Shutdown
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
-from ament_index_python.packages import get_package_share_directory
 
 from common_python.launch_util import get_frame_ids_and_topic_names
 from common_python.workspace_paths import default_workspace_asset
 
 
 def _cleanup_old_processes():
-    """Kill lingering zombie processes from previous launches to prevent accumulation."""
     try:
         subprocess.run(
-            ["pkill", "-9", "-f", "video_publisher|yolop_lane_detector|bev_pure_pursuit_node|traffic_light_distance_node|object_publisher_node|rviz2|robot_state_publisher|joint_state_publisher"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
+            ["pkill", "-9", "-f",
+             "video_publisher|lane_detector|traffic_light_distance_node|rviz2|robot_state_publisher|joint_state_publisher"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
         )
     except Exception:
         pass
 
 
-
 def generate_launch_description():
     _cleanup_old_processes()
-
-    VEHICLE_NAME = "ai_car1"
-
     FRAME_IDS, TOPIC_NAMES = get_frame_ids_and_topic_names()
+    camera_topic = TOPIC_NAMES["sensing"]["zedx"]["left_image"]["undistorted"]
 
-    pkg_oit_navigation = get_package_share_directory("oit_navigation")
-    pkg_sample_vehicle = get_package_share_directory("sample_vehicle")
+    pkg = get_package_share_directory("oit_navigation")
+    pkg_vehicle = get_package_share_directory("sample_vehicle")
 
-    default_params_file = osp.join(pkg_oit_navigation, "config", "navigation_params.yaml")
-    default_traffic_light_params_file = osp.join(pkg_oit_navigation, "config", "traffic_light_params.yaml")
-    default_rviz_file = osp.join(pkg_oit_navigation, "config", "oit_navigation.rviz")
-
-    launch_args = [
-        DeclareLaunchArgument(
-            "video_path",
-            default_value=default_workspace_asset("mp4", "shihou_video_2026_08_24_13_51_47.mp4"),
-            description="Absolute path to the test MP4 video file",
-        ),
-        DeclareLaunchArgument(
-            "use_device",
-            default_value="cpu",
-            description="Inference device: 'cpu' or '0' (CUDA GPU)",
-        ),
-        DeclareLaunchArgument(
-            "fps",
-            default_value="15.0",
-            description="Playback frame rate in FPS",
-        ),
-        DeclareLaunchArgument(
-            "loop",
-            default_value="true",
-            description="Loop video playback when finished",
-        ),
-        DeclareLaunchArgument(
-            "weight_path",
-            default_value=default_workspace_asset("models", "honda_shihou_finetuned_best.pth"),
-            description="Path to the YOLOP weight .pth file",
-        ),
-        DeclareLaunchArgument(
-            "use_tensorrt",
-            default_value="false",
-            description="Run YOLOP via a TensorRT engine instead of PyTorch (see export_tensorrt.py). "
-                        "Falls back to PyTorch automatically if the engine/TensorRT bindings are missing.",
-        ),
-        DeclareLaunchArgument(
-            "tensorrt_engine_path",
-            default_value="",
-            description="Path to the .engine file. Empty = weight_path with a .engine extension.",
-        ),
-        DeclareLaunchArgument(
-            "input_image_topic",
-            default_value=TOPIC_NAMES["sensing"]["zedx"]["left_image"]["undistorted"] + "/compressed",
-            description="Input camera image topic (Raw or Compressed)",
-        ),
-        DeclareLaunchArgument(
-            "params_file",
-            default_value=default_params_file,
-            description="Path to navigation params YAML",
-        ),
-        DeclareLaunchArgument(
-            "rviz",
-            default_value="true",
-            description="Launch RViz2 for visualization",
-        ),
-        DeclareLaunchArgument(
-            "traffic_light",
-            default_value="true",
-            description="Launch the traffic light distance estimator node",
-        ),
-        DeclareLaunchArgument(
-            "traffic_light_model_path",
-            default_value=default_workspace_asset("models", "traffic_light.pt"),
-            description="Path to the YOLO traffic light model (.pt)",
-        ),
-        DeclareLaunchArgument(
-            "traffic_light_params_file",
-            default_value=default_traffic_light_params_file,
-            description="Path to traffic light distance params YAML",
-        ),
-        DeclareLaunchArgument(
-            "object_publisher",
-            default_value="true",
-            description="Launch the object_publisher_node (converts YOLOP boxes to ObjectInfo)",
-        ),
+    args = [
+        DeclareLaunchArgument("video_path",
+                              default_value=default_workspace_asset("mp4", "shihou_video_2026_08_24_13_51_47.mp4"),
+                              description="検証する MP4 のパス"),
+        DeclareLaunchArgument("use_device", default_value="cpu", description="'cpu' / '0' (CUDA) / 'mps'"),
+        DeclareLaunchArgument("fps", default_value="15.0"),
+        DeclareLaunchArgument("loop", default_value="true"),
+        DeclareLaunchArgument("backend", default_value="yolop", description="'yolop' / 'ufld'"),
+        DeclareLaunchArgument("weight_path",
+                              default_value=default_workspace_asset("models", "honda_shihou_finetuned_best.pth"),
+                              description="YOLOP の重み (.pth)"),
+        DeclareLaunchArgument("ufld_weight_path",
+                              default_value=default_workspace_asset("models", "ufld_honda_finetuned_best.pth")),
+        DeclareLaunchArgument("use_tensorrt", default_value="false"),
+        DeclareLaunchArgument("tensorrt_engine_path", default_value=""),
+        DeclareLaunchArgument("lane_width", default_value="3.5", description="中央線 <-> 境界線の距離の初期値 [m]"),
+        DeclareLaunchArgument("input_image_topic", default_value=camera_topic + "/compressed"),
+        DeclareLaunchArgument("params_file", default_value=osp.join(pkg, "config", "navigation_params.yaml")),
+        DeclareLaunchArgument("rviz", default_value="true"),
+        DeclareLaunchArgument("traffic_light", default_value="true"),
+        DeclareLaunchArgument("traffic_light_model_path",
+                              default_value=default_workspace_asset("models", "traffic_light.pt")),
+        DeclareLaunchArgument("traffic_light_params_file",
+                              default_value=osp.join(pkg, "config", "traffic_light_params.yaml")),
     ]
 
-    # 1. 車両 TF 座標系ブロードキャスター
-    vehicle_tf_broadcaster = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            osp.join(pkg_sample_vehicle, "launch", "vehicle_tf_broadcaster.launch.py"),
-        ),
-        launch_arguments={
-            "vehicle_name": VEHICLE_NAME,
-            "use_sim_time": "false",
-        }.items(),
+    vehicle_tf = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(osp.join(pkg_vehicle, "launch", "vehicle_tf_broadcaster.launch.py")),
+        launch_arguments={"vehicle_name": "ai_car1", "use_sim_time": "false"}.items(),
     )
-
-    # 2. 動画配信ノード (MP4 -> カメラトピック)
-    video_publisher_node = Node(
-        package="oit_navigation",
-        executable="video_publisher",
-        name="video_publisher",
-        output="screen",
+    video = Node(
+        package="oit_navigation", executable="video_publisher", name="video_publisher", output="screen",
         parameters=[{
-            "video_path": LaunchConfiguration("video_path"),
-            "topic_name": TOPIC_NAMES["sensing"]["zedx"]["left_image"]["undistorted"],
-            "frame_id": FRAME_IDS["zedx"]["left"],
-            "fps": LaunchConfiguration("fps"),
+            "video_path": LaunchConfiguration("video_path"), "topic_name": camera_topic,
+            "frame_id": FRAME_IDS["zedx"]["left"], "fps": LaunchConfiguration("fps"),
             "loop": LaunchConfiguration("loop"),
         }],
     )
-
-    # 3. YOLOP 白線・道路セグメンテーションノード
-    yolop_node = Node(
-        package="oit_navigation",
-        executable="yolop_lane_detector",
-        name="yolop_lane_detector",
-        output="screen",
-        parameters=[
-            LaunchConfiguration("params_file"),
-            {
-                "use_device": LaunchConfiguration("use_device"),
-                "weight_path": LaunchConfiguration("weight_path"),
-                "use_tensorrt": LaunchConfiguration("use_tensorrt"),
-                "tensorrt_engine_path": LaunchConfiguration("tensorrt_engine_path"),
-                "input_image_topic": LaunchConfiguration("input_image_topic"),
-            },
-        ],
+    lane_detector = Node(
+        package="oit_navigation", executable="lane_detector", name="lane_detector", output="screen",
+        parameters=[LaunchConfiguration("params_file"), {
+            "backend": LaunchConfiguration("backend"),
+            "use_device": LaunchConfiguration("use_device"),
+            "weight_path": LaunchConfiguration("weight_path"),
+            "ufld_weight_path": LaunchConfiguration("ufld_weight_path"),
+            "use_tensorrt": LaunchConfiguration("use_tensorrt"),
+            "tensorrt_engine_path": LaunchConfiguration("tensorrt_engine_path"),
+            "input_image_topic": LaunchConfiguration("input_image_topic"),
+            "lane_width": LaunchConfiguration("lane_width"),
+        }],
     )
-
-    # 4. BEV レーン追従 ＆ Pure Pursuit 制御ノード
-    bev_controller_node = Node(
-        package="oit_navigation",
-        executable="bev_pure_pursuit_node",
-        name="bev_pure_pursuit_node",
-        output="screen",
-        parameters=[LaunchConfiguration("params_file")],
+    traffic_light = Node(
+        package="oit_navigation", executable="traffic_light_distance_node", name="traffic_light_distance_node",
+        output="screen", condition=IfCondition(LaunchConfiguration("traffic_light")),
+        parameters=[LaunchConfiguration("traffic_light_params_file"), {
+            "image_topic": LaunchConfiguration("input_image_topic"),
+            "model_path": LaunchConfiguration("traffic_light_model_path"),
+            "device": LaunchConfiguration("use_device"),
+            "real_height_m": 0.32,
+            "publish_annotated_image": True,
+        }],
     )
-
-    # 5. 信号機検出 & 画面占有率による距離逆算ノード (信号は 1 辺 32cm の正方形)
-    traffic_light_distance_node = Node(
-        package="oit_navigation",
-        executable="traffic_light_distance_node",
-        name="traffic_light_distance_node",
-        output="screen",
-        condition=IfCondition(LaunchConfiguration("traffic_light")),
-        parameters=[
-            LaunchConfiguration("traffic_light_params_file"),
-            {
-                "image_topic": LaunchConfiguration("input_image_topic"),
-                "model_path": LaunchConfiguration("traffic_light_model_path"),
-                "device": LaunchConfiguration("use_device"),
-                "real_height_m": 0.32,
-                "publish_annotated_image": True,
-            },
-        ],
+    rviz = Node(
+        package="rviz2", executable="rviz2", name="rviz2", output="screen",
+        arguments=["-d", osp.join(pkg, "config", "oit_navigation.rviz")],
+        condition=IfCondition(LaunchConfiguration("rviz")), on_exit=Shutdown(),
     )
-
-    # 6. 検出Rect -> 世界座標ObjectInfo変換ノード
-    object_publisher_node = Node(
-        package="oit_navigation",
-        executable="object_publisher_node",
-        name="object_publisher_node",
-        output="screen",
-        condition=IfCondition(LaunchConfiguration("object_publisher")),
-        parameters=[LaunchConfiguration("params_file")],
-    )
-
-    # 7. RViz2 可視化 (closing RViz shuts down all pipeline nodes cleanly)
-    rviz_node = Node(
-        package="rviz2",
-        executable="rviz2",
-        name="rviz2",
-        output="screen",
-        arguments=["-d", default_rviz_file],
-        condition=IfCondition(LaunchConfiguration("rviz")),
-        on_exit=Shutdown(),
-    )
-
-    return LaunchDescription(
-        launch_args
-        + [
-            vehicle_tf_broadcaster,
-            video_publisher_node,
-            yolop_node,
-            bev_controller_node,
-            traffic_light_distance_node,
-            object_publisher_node,
-            rviz_node,
-        ]
-    )
+    return LaunchDescription(args + [vehicle_tf, video, lane_detector, traffic_light, rviz])

@@ -1,160 +1,116 @@
-# oit_navigation (自律走行・白線認識・追従制御・信号機検知)
+# oit_navigation (白線検出・周回マップ作成・QP レーシングライン走行・信号機検知)
 
-AI Formula 向け **Vision-Only 2D BEV レーン追従・YOLOP 白線認識・Pure Pursuit 制御・YOLO 信号機距離推定** パッケージです。
+AI Formula 向けの自律走行スタックです。
 
-3D 点群（PointCloud2）や外部オドメトリに依存せず、車載カメラ（またはテスト用 MP4 動画）の映像から **YOLOP による白線セグメンテーション、2D 鳥瞰図（BEV）変換、スライディングウィンドウ白線追跡、道幅 3.5m 綺麗側優先オフセット補間、Pure Pursuit 経路追従制御、YOLO11n 信号機検知・距離推定、および RViz2 / Web GUI でのリアルタイム可視化** を提供します。
+1. **白線検出** (`lane_detector`): カメラ画像から白線を検出し、**左境界 / 中央線 / 右境界** に割り当てる
+   - `backend:=yolop` (既定・実機): `models/honda_shihou_finetuned_best.pth` (git 管理) の白線セグメンテーション
+   - `backend:=ufld`: `models/ufld_honda_finetuned_best.pth` (UFLD v1, 245MB, git 管理外)
+2. **1 周目** (`lane_navigator` MAPPING): 中央白線の上をレーントラッキング走行しながら、
+   CAN 車輪速 + IMU で積算した自己位置 (`odom_imu_localizer`) を基準に、
+   前方の **左境界点 (x_L, y_L) / 右境界点 (x_R, y_R)** を 2D で記録してマップを作る。
+   直線は間隔を大きく (既定 3m)、カーブは間隔を詰めて (既定 0.6m) 落としていく。
+3. **2 周目以降** (RACING): 記録した左右境界の各断面の道幅の中にウェイポイントを 1 点ずつ置き、
+   **2 次計画法 (QP)** で曲率最小 = **アウト・イン・アウト** のラインを作って追従する。
+4. **信号機距離推定** (`traffic_light_distance_node`): YOLO11n で赤/青信号を検出し距離を推定。
+
+アルゴリズム本体 (`oit_navigation/lane_nav/`) は ROS 非依存で、Web シミュレータの
+`web_simulator/js/lane_navigator.js` が同じ処理・同じパラメータで動きます (JS/Python で結果一致を確認済み)。
 
 ---
 
-## 🏎️ システムアーキテクチャ
+## 🏎️ システム構成
 
 ```mermaid
-flowchart TD
-    subgraph Sensing ["1. センシング / 動画入力"]
-        CAM["ZED X カメラ / MP4動画再生<br>(video_publisher)"]
-    end
+flowchart LR
+    CAM["ZED X カメラ / MP4 / Web シミュレータ"] --> DET
+    CAN["CAN 車輪速<br>/aiformula_sensing/vehicle_info"] --> LOC
+    IMU["IMU<br>/aiformula_sensing/vectornav/imu"] --> LOC
 
-    subgraph Perception ["2. 認識 (YOLOP & YOLO11n)"]
-        YOLOP["YOLOP 白線セグメンテーション<br>(yolop_lane_detector)<br>models/honda_shihou_finetuned_best.pth"]
-        YOLO_TL["YOLO11n 信号機検出 & 距離推定<br>(traffic_light_distance_node)<br>models/traffic_light.pt"]
+    subgraph DET ["lane_detector"]
+        B["YOLOP マスク -> 線ごとの点列<br>(or UFLD スロット点列)"] --> P["地面投影 (base_link)<br>2 次多項式フィット"] --> T["LineTracker<br>左 / 中央 / 右 に割り当て<br>見えない線は道幅から補完"]
     end
+    LOC["odom_imu_localizer<br>デッドレコニング<br>(停止中にジャイロバイアス推定)"]
 
-    subgraph Control ["3. BEV 幾何変換 & Pure Pursuit 制御 (bev_pure_pursuit_node)"]
-        IPM["2D BEV 逆透視投影 (BEVTransformer)<br>カメラ視点 → 俯瞰座標系"]
-        WINDOW["スライディングウィンドウ白線追跡 & 品質スコアリング"]
-        OFFSET["綺麗側優先 3.5m 幅オフセット補間目標ライン"]
-        PP["Pure Pursuit 操舵・速度制御 (Twist生成)"]
+    subgraph NAV ["lane_navigator"]
+        M["MAPPING: 中央線トラッキング<br>+ 左右境界の記録 (可変間隔)"] --> C["周回検出 -> 方位ドリフト/ループ補正<br>-> コースマップ"] --> Q["QP 最小曲率ライン<br>+ 速度プロファイル"] --> R["RACING: ライン追従<br>+ 白線観測による自己位置補正"]
     end
-
-    subgraph Output ["4. 指令出力 & RViz2 可視化"]
-        CMD["/aiformula_control/handle_controller/cmd_vel (Twist)"]
-        TL_DIST["/aiformula_perception/traffic_light/nearest_distance (Float32)"]
-        RV_BEV["/aiformula_visualization/bev_annotated_image (Image)"]
-        RV_LANES["/aiformula_visualization/detected_lane_lines (MarkerArray)"]
-        RV_PATH["/aiformula_visualization/target_trajectory (Path: 鮮やかな緑)"]
-        RV_MARKER["/aiformula_visualization/lane_target_markers (MarkerArray)"]
-    end
-
-    CAM -->|RGB画像| YOLOP
-    CAM -->|RGB画像| YOLO_TL
-    YOLOP -->|白線マスク画像| IPM
-    IPM --> WINDOW
-    WINDOW --> OFFSET
-    OFFSET --> PP
-    PP --> CMD
-    YOLO_TL --> TL_DIST
-    WINDOW --> RV_LANES
-    OFFSET --> RV_PATH
-    PP --> RV_MARKER
-    IPM --> RV_BEV
+    T -->|LaneLines| NAV
+    LOC -->|Odometry| NAV
+    NAV -->|"cmd_vel (twist_mux: mpc)"| MUX["twist_mux -> motor_controller"]
 ```
+
+### ノード
+
+| ノード | 入力 | 出力 |
+| :--- | :--- | :--- |
+| `lane_detector` | カメラ画像 (Image / CompressedImage) | `/aiformula_perception/lane_detector/lane_lines` (`aiformula_interfaces/LaneLines`)<br>`/aiformula_perception/lane_line_publisher/lane_lines/{left,center,right}` (Path, base_link)<br>`/aiformula_visualization/lane_detector/annotated_image` |
+| `odom_imu_localizer` | `/aiformula_sensing/vehicle_info` (CAN), `/aiformula_sensing/vectornav/imu` | `/aiformula_sensing/odom_imu_localizer/odom` (Odometry) |
+| `lane_navigator` | LaneLines, Odometry | `/aiformula_control/extremum_seeking_mpc/cmd_vel` (twist_mux の `mpc` 入力, 優先度 50)<br>`/aiformula_control/lane_tracker/status` (String, JSON)<br>`/aiformula_visualization/lane_navigator/{left,right}_boundary`, `/aiformula_visualization/target_trajectory` (Path, odom)<br>サービス `/lane_navigator/finish_mapping`, `/lane_navigator/reset` (std_srvs/Trigger) |
+| `traffic_light_distance_node` | カメラ画像 | `/aiformula_perception/traffic_light/*` |
+| `video_publisher` / `image_compressor_node` / `verification_gui` | 動画検証・配信用 | |
 
 ---
 
-## 📡 入出力トピック一覧
+## 🧠 アルゴリズム (`oit_navigation/lane_nav/`)
 
-### 入力トピック
-| トピック名 | メッセージ型 | 説明 |
-| :--- | :--- | :--- |
-| `/aiformula_sensing/zed_node/left_image/undistorted` | `sensor_msgs/msg/Image` | カメラの入力カラー画像（非圧縮） |
-| `/aiformula_sensing/zed_node/left_image/undistorted/compressed` | `sensor_msgs/msg/CompressedImage` | カメラの入力カラー画像（圧縮） |
-| `/aiformula_perception/object_road_detector/mask_image` | `sensor_msgs/msg/Image` | YOLOP による白線セグメンテーションマスク画像 |
-
-### 出力トピック
-| トピック名 | メッセージ型 | 説明 |
-| :--- | :--- | :--- |
-| `/aiformula_control/handle_controller/cmd_vel` | `geometry_msgs/msg/Twist` | 車両への速度・操舵角速度指令 |
-| `/aiformula_control/lane_tracker/status` | `std_msgs/msg/String` | 走行モード・指令速度・曲率ステータス (JSON) |
-| `/aiformula_perception/traffic_light/nearest_distance` | `std_msgs/msg/Float32` | 最も近い信号機までの推定距離 [m] |
-| `/aiformula_perception/traffic_light/red_distance` | `std_msgs/msg/Float32` | 最も近い赤信号までの推定距離 [m] |
-| `/aiformula_perception/traffic_light/green_distance` | `std_msgs/msg/Float32` | 最も近い青信号までの推定距離 [m] |
-| `/aiformula_visualization/target_trajectory` | `nav_msgs/msg/Path` | 綺麗側から 1.75m オフセットされた目標走行ライン（鮮やかな緑） |
-| `/aiformula_visualization/detected_lane_lines` | `visualization_msgs/msg/MarkerArray` | 検出白線ラインストリップ（左: シアン, 右: イエロー） |
-| `/aiformula_visualization/lane_target_markers` | `visualization_msgs/msg/MarkerArray` | 車両原点（0m）および前方注視点（5.0m）の目標球体マーカー |
-| `/aiformula_visualization/bev_annotated_image` | `sensor_msgs/msg/Image` | BEV 俯瞰認識オーバーレイ画像 |
-| `/aiformula_perception/traffic_light/annotated_image` | `sensor_msgs/msg/Image` | 信号機検出枠と推定距離のオーバーレイ画像 |
+| モジュール | 内容 |
+| :--- | :--- |
+| `geometry.py` | 画像点 -> 地面 (base_link) のピンホール + 平面投影 (BEV 画像は作らず点だけ投影)、2 次多項式フィット |
+| `mask_lines.py` | YOLOP の白線マスクを下から上へ行スキャンし、白線ごとの点列につなぐ |
+| `line_tracker.py` | 検出線を横位置で左/中央/右に割り当て (予測位置ゲート・順序・**道幅整合・平行性** で分岐線などを除外)。見えない線は道幅から補完 |
+| `boundary_recorder.py` | 前方 `x_rec` の左右境界を odom 座標に記録。曲率 (ヨーレート/速度 と 白線曲率) で間隔を 3.0m〜0.6m に可変 |
+| `course_map.py` | 周回検出、**ループ閉じ込み** (横ずれを走行距離比例で配分)、方位ドリフト補正 (スタート時と 1 周後の中央線の絶対方位差。白線の向きの推定ノイズが大きいため既定 off = `lap.yaw_drift_correction`)、JSON 保存/読込 |
+| `raceline_qp.py` | 断面 i のウェイポイント `P_i = L_i + α_i (R_i − L_i)`、`α_i ∈ [m_i, 1−m_i]` (車幅+マージン) で不等間隔 2 階差分の二乗和 (≒曲率) を最小化する箱制約 QP を FISTA で解く。速度は横加速度上限と加減速制限で整形 |
+| `path_tracker.py` | ウェイポイントを Catmull-Rom で補間し、前方注視点への円弧で角速度を出す |
+| `navigator.py` | MAPPING → OPTIMIZING → RACING の状態遷移、2 周目以降の白線観測による自己位置補正 (点-線 ICP。誤対応で暴走しないよう 1 更新 3cm / 0.005rad まで・2 本以上の線が対応したときだけ) |
 
 ---
 
 ## 🚀 使い方
 
-### 1. ビルド & 環境設定
 ```bash
-# Docker コンテナ内 (/aiformula_machine) で実行
-colcon build --packages-select oit_navigation --symlink-install
+colcon build --packages-select aiformula_interfaces oit_navigation --symlink-install
 source install/setup.bash
 ```
 
----
-
-### 2. PC 単体での動画検証（実機不要）
-
-#### 【方法 A】Web 検証 GUI を使う（おすすめ）
-ブラウザ上で動画の選択、検証パイプライン（白線 / 信号機 / 統合）の切り替え、起動・停止がワンクリックで行えます。
-
+### 実機
 ```bash
-ros2 run oit_navigation verification_gui
+ros2 launch oit_navigation navigation.launch.py use_device:=0 use_tensorrt:=true
+# 1 周目のマップを保存 / 保存済みマップで 2 周目から開始
+ros2 launch oit_navigation navigation.launch.py map_save_path:=~/aiformula_maps/course.json
+ros2 launch oit_navigation navigation.launch.py map_load_path:=~/aiformula_maps/course.json
+# 周回検出がドリフトで成立しないときは手動で 1 周目を終了
+ros2 service call /lane_navigator/finish_mapping std_srvs/srv/Trigger
 ```
-👉 ホスト PC のブラウザで [http://localhost:8090](http://localhost:8090) を開きます。
-同時に RViz2 画面を [http://localhost:8080](http://localhost:8080) (noVNC) で確認できます。
+- スタート時は **中央白線の上** に車両を置き、数秒停止してから走り出す (ジャイロバイアス推定)。
+- 中央線 <-> 境界線の距離の初期値は `lane_width` (既定 3.5m、走行中に推定更新)。
 
----
+### Web シミュレータ (システム構成・技術の組み合わせの検証)
+- ブラウザ内だけで完結: `web_simulator/` の「自動運転」タブで検出器 (YOLOP / UFLD / 理想検出) を選び「スタート位置へ」→「自動運転: ON」
+- ROS 2 ノードで動かす: `make rosbridge` → シミュレータで「接続」→ `make sim-nav` → 「ROS2連携」
 
-#### 【方法 B】CLI から動画検証 Launch を実行する
-目的に応じて 4 つの検証 launch を使い分けられます。
-
-| # | 検証内容 | 実行コマンド |
-| :--- | :--- | :--- |
-| **① 信号機単体** | 信号機検出 (bbox・占有率・距離) の確認 | `ros2 launch oit_navigation traffic_light_video_test.launch.py` |
-| **② YOLOP単体** | 白線・走路セグメンテーション認識の確認 | `ros2 launch oit_navigation yolop_video_test.launch.py` |
-| **③ 白線 ＋ 制御** | 白線認識から目標経路・Twist生成まで (信号機OFF) | `ros2 launch oit_navigation video_test.launch.py traffic_light:=false` |
-| **④ フル統合** | 全ノード（白線＋信号機＋追従制御＋RViz2）の一括動作 | `ros2 launch oit_navigation video_test.launch.py` |
-
-**主要な引数オプション:**
-- `video_path:=/path/to/video.mp4`: テスト対象動画のパスを指定
-- `use_device:=cpu` (または `cuda`, `mps`, `0`): 推論デバイスを指定
-- `rviz:=false`: RViz2 を起動しない場合
-
----
-
-### 3. 実機（実車機体）での起動
-
-実機カメラ（ZED X）のトピックを受信して自律走行ノードを動かします。
-
+### 動画 (白線検出の確認のみ)
 ```bash
-# GPU (CUDA) を使用して自律走行スタックを起動
-ros2 launch oit_navigation navigation.launch.py use_device:=0
+ros2 launch oit_navigation video_test.launch.py backend:=yolop traffic_light:=false
+ros2 run oit_navigation verification_gui   # http://localhost:8090
+```
+
+### テスト
+```bash
+python3 -m pytest src/oit_navigation/test/test_lane_nav.py      # ROS 不要
+python3 src/oit_navigation/test/lane_nav_sim.py --plot /tmp/sim.png   # オフライン 2D シミュレーション
 ```
 
 ---
 
-## 🧠 主要アルゴリズムの仕組み
+## ⚙️ 設定ファイル
 
-### 1. 2D BEV 変換 ＆ Pure Pursuit レーン追従 (`bev_pure_pursuit_node`)
-1. **IPM (Inverse Perspective Mapping) 変換**:
-   - カメラ視点のセグメンテーションマスクを、ホモグラフィ変換により車両直上の 2D 俯瞰（BEV）座標系に射影します。
-2. **スライディングウィンドウ白線追跡**:
-   - 左右の白線ピクセル群を底面から上方へウィンドウ追跡し、曲率・連続性・点数をスコアリングして「左線」「右線」を同定します。
-3. **綺麗側優先 3.5m 幅オフセット補間**:
-   - コース幅（3.5m）を基準とし、白線が片側しか綺麗に見えない場合でも、信頼度の高い側のラインから 1.75m オフセットして目標ライン（緑色の Path）を正確に生成します。
-4. **Pure Pursuit 操舵制御**:
-   - 前方注視点（Lookahead Distance）に向けた幾何学的円弧軌道から操舵角速度指令（`angular.z`）を算出し、カーブ曲率に応じた減速制御（`linear.x`）を行います。
+- [`config/navigation_params.yaml`](config/navigation_params.yaml): `lane_detector` / `odom_imu_localizer` / `lane_navigator` の全パラメータ
+  (変更したら `web_simulator/js/lane_navigator.js` の `*_PARAMS` も合わせる)
+- [`config/traffic_light_params.yaml`](config/traffic_light_params.yaml): 信号機モデル・距離係数
 
-### 2. YOLO11n 信号機検出 ＆ 距離推定 (`traffic_light_distance_node`)
-- 学習済みモデル `models/traffic_light.pt` を使用し、赤信号・青信号を検出します。
-- **正方形信号機（1辺 32cm）の画像内縦占有率** からピンホールカメラ幾何モデルを用いて信号機までの距離 [m] を逆算します。
+## 🛠️ モデル関連スクリプト
 
-$$\text{occupancy} = \frac{\text{bbox\_height\_px}}{\text{image\_height\_px}}$$
-
-$$\text{distance} = \frac{\text{distance\_coeff}}{\text{occupancy}}$$
-
-- カメラパラメータは ZED X (2.2mm レンズ / AR0234) を基準に設定されています（`focal_length_y: 733.0`, `reference_image_height: 1080`）。
-
----
-
-## ⚙️ 設定ファイル一覧
-
-- [`config/navigation_params.yaml`](file:///Users/miyanswer/aiformula_machine/src/oit_navigation/config/navigation_params.yaml):
-  - BEV 射影行列パラメータ、スライディングウィンドウ設定、Pure Pursuit ゲイン・注視距離、最高速度・最低速度設定
-- [`config/traffic_light_params.yaml`](file:///Users/miyanswer/aiformula_machine/src/oit_navigation/config/traffic_light_params.yaml):
-  - 信号機モデルパス、信頼度閾値、信号機実寸（32cm）、カメラ焦点距離・距離係数
+- `ros2 run oit_navigation export_tensorrt`: YOLOP -> TensorRT エンジン (Jetson。`use_tensorrt:=true` なら初回起動時に自動実行)
+- `ros2 run oit_navigation export_onnx_web`: YOLOP -> `web_simulator/models/honda_shihou_finetuned.onnx`
+- `ros2 run oit_navigation export_ufld_onnx`: UFLD -> `web_simulator/models/ufld.onnx` (245MB, git 管理外)

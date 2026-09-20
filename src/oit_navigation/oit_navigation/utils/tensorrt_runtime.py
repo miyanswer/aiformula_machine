@@ -1,14 +1,14 @@
 """
 tensorrt_runtime.py - Minimal TensorRT engine runner for YOLOP inference on real
-hardware (Jetson). Only imported when yolop_lane_detector's `use_tensorrt`
+hardware (Jetson). Only imported when lane_detector (backend=yolop)'s `use_tensorrt`
 parameter is enabled; this module's own imports (tensorrt, pycuda) are simply
 absent on machines without the NVIDIA TensorRT SDK - e.g. this project's
 default Mac/CPU dev container - so importing it there raises ImportError,
-which yolop_lane_detector catches to fall back to plain PyTorch.
+which lane_detector (backend=yolop) catches to fall back to plain PyTorch.
 
 Engines are built with export_tensorrt.py's YOLOPExportWrapper, which always
 declares exactly one input ("input") and two outputs ("raw_detections",
-"ll_seg") - the same two tensors yolop_lane_detector's PyTorch path already
+"ll_seg") - the same two tensors lane_detector (backend=yolop)'s PyTorch path already
 unpacks from the model's forward() before running NMS/lane decoding. This
 wrapper's job is only to reproduce those same two tensors from an engine
 instead of a live nn.Module.
@@ -28,7 +28,7 @@ import torch
 class TensorRTYOLOPRunner:
     """Loads a serialized TensorRT engine and runs inference, returning the
     same (raw_detections, ll_seg) tensors the PyTorch path produces so
-    yolop_lane_detector's NMS/lane-decode code is identical either way."""
+    lane_detector (backend=yolop)'s NMS/lane-decode code is identical either way."""
 
     def __init__(self, engine_path: str):
         import tensorrt as trt
@@ -41,7 +41,7 @@ class TensorRTYOLOPRunner:
 
         # pycuda.autoinit's context is only "current" on the thread that created
         # it (here: whatever thread constructs this runner, typically the ROS
-        # node's main thread during __init__). yolop_lane_detector.py actually
+        # node's main thread during __init__). yolop_lane_backend.py actually
         # calls infer() from a separate dedicated inference thread, so without
         # explicitly pushing this context onto that thread too, every CUDA call
         # below fails with "invalid resource handle" (looks fine at import/init
@@ -114,7 +114,7 @@ class TensorRTYOLOPRunner:
         Returns (raw_detections, ll_seg) as torch tensors, matching the PyTorch path."""
         # Make this runner's CUDA context current on whichever thread calls infer()
         # (see the note in __init__ - it's created on the constructing thread but
-        # actually used from yolop_lane_detector's dedicated inference thread).
+        # actually used from lane_detector (backend=yolop)'s dedicated inference thread).
         self._cuda_context.push()
         try:
             input_np = np.ascontiguousarray(input_tensor.detach().cpu().numpy().astype(np.float32))

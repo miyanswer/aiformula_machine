@@ -9,7 +9,7 @@ dev PC (or a different Jetson/TensorRT version) will not load elsewhere.
 Requires the NVIDIA TensorRT Python bindings and PyCUDA, which ship with
 JetPack / the TensorRT SDK - they are intentionally not a dependency of this
 package, since development on this project happens mostly on machines
-without an NVIDIA GPU at all (see yolop_lane_detector.py's PyTorch fallback).
+without an NVIDIA GPU at all (see yolop_lane_backend.py's PyTorch fallback).
 
 Usage (on the Jetson, with the workspace sourced):
     ros2 run oit_navigation export_tensorrt -- \\
@@ -45,7 +45,7 @@ INPUT_SIZE = 640
 
 class YOLOPExportWrapper(nn.Module):
     """Flattens YOLOP's nested output to exactly the two tensors this project
-    uses at inference time (see yolop_lane_detector.py's _run_inference):
+    uses at inference time (see yolop_lane_backend.py's _run_inference):
     raw detection predictions and the lane-line segmentation logits. The
     drivable-area segmentation head and the training-only feature maps are
     dropped since nothing downstream consumes them."""
@@ -93,7 +93,7 @@ def export_onnx(model: nn.Module, onnx_path: str) -> None:
 
 def _load_calibration_batches(images_dir: str):
     """Yields (1,3,640,640) float32 arrays from a directory of sample track images,
-    preprocessed identically to yolop_lane_detector's letterbox+normalize path
+    preprocessed identically to lane_detector (backend=yolop)'s letterbox+normalize path
     (plain resize here, since exact letterbox padding only shifts a few border
     pixels and does not meaningfully change INT8 calibration statistics)."""
     import cv2

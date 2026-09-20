@@ -1,18 +1,20 @@
-// In-browser port of oit_navigation's yolop_lane_detector.py running the
+// In-browser port of oit_navigation's lane_detector YOLOP backend
+// (src/oit_navigation/oit_navigation/yolop_lane_backend.py) running the
 // fine-tuned white-line segmentation model (models/honda_shihou_finetuned_best.pth,
 // exported by src/oit_navigation/oit_navigation/export_onnx_web.py) through
-// onnxruntime-web. This is the "モデル" detection mode, switchable at
-// runtime against js/lane_threshold_detector.js's "閾値処理" mode (see
-// js/simulator.js).
+// onnxruntime-web. This is the "YOLOP (ブラウザ)" detector mode -- the same
+// model the real vehicle uses; the mask it returns is turned into per-line
+// point sequences by extractMaskLines() (js/lane_navigator.js, port of
+// lane_nav/mask_lines.py).
 //
-// Preprocessing: "crop_bottom" ROI (yolop_lane_detector.py's roi_mode option)
+// Preprocessing: "crop_bottom" ROI (yolop_lane_backend.py's roi_mode option)
 // -- drop the top TOP_CUT_RATIO fraction of the onboard-camera capture
 // (sky/irrelevant background), then resize that remaining bottom crop
 // directly to a 640x640 square for the model (no letterbox padding bars;
 // the model's input is a plain stretched resize of the crop, matching how
 // export_onnx_web.py fixes the ONNX graph's input shape at exactly 640x640).
 //
-// NOTE on channel order: yolop_lane_detector.py never converts its cv2/BGR
+// NOTE on channel order: yolop_lane_backend.py never converts its cv2/BGR
 // frame to RGB before normalizing -- it feeds the raw BGR array straight
 // into `transforms.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])`
 // (an ImageNet mean/std nominally defined for RGB). This port reproduces
@@ -126,7 +128,7 @@ function buildNormalizedInput(image) {
 // nearest-neighbor resampling from the 640-tall model output back to
 // cropHeight rows, placed at [cutY, height) in the full-size mask (rows
 // above cutY -- the cropped-away sky -- stay 0, mirroring roi_mode
-// "crop_bottom"'s zero-fill in yolop_lane_detector.py).
+// "crop_bottom"'s zero-fill in yolop_lane_backend.py).
 function decodeLaneMask(llSegData, width, height, cutY, cropHeight) {
   const mask = new Uint8Array(width * height);
   const planeSize = MODEL_INPUT_SIZE * MODEL_INPUT_SIZE;

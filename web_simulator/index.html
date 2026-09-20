@@ -61,11 +61,11 @@
     height: 100%;
   }
   #lane-frame { top: 200px; height: 124px; }
-  #bev-frame { top: 332px; height: 220px; }
+  #map-frame { top: 332px; height: 220px; }
   @media (max-width: 700px) {
     .pip-frame-secondary { width: 45vw; }
     #lane-frame { top: calc(12px + 45vw * 9 / 16 + 8px); height: calc(45vw * 9 / 16); }
-    #bev-frame { top: calc(12px + 45vw * 9 / 16 + 8px + 45vw * 9 / 16 + 8px); height: 45vw; }
+    #map-frame { top: calc(12px + 45vw * 9 / 16 + 8px + 45vw * 9 / 16 + 8px); height: 45vw; }
   }
   #hud {
     position: fixed;
@@ -298,12 +298,12 @@
 
 <div id="pip-frame"><div id="pip-label">機体カメラ視点</div></div>
 <div id="lane-frame" class="pip-frame-secondary">
-  <div id="lane-label" class="pip-label">白線検知</div>
+  <div id="lane-label" class="pip-label">白線検知 (左/中央/右)</div>
   <canvas id="lane-canvas" width="640" height="360"></canvas>
 </div>
-<div id="bev-frame" class="pip-frame-secondary">
-  <div id="bev-label" class="pip-label">BEV / Pure Pursuit</div>
-  <canvas id="bev-canvas" width="640" height="640"></canvas>
+<div id="map-frame" class="pip-frame-secondary">
+  <div id="map-label" class="pip-label">周回マップ / QP ライン</div>
+  <canvas id="map-canvas" width="640" height="640"></canvas>
 </div>
 
 <div id="hud">
@@ -402,15 +402,24 @@
 
     <div class="hud-tab-panel" data-tab-panel="autonomy">
       <div id="oit-panel" class="sensor-panel" style="margin-top:0;">
-        <div class="panel-title">oit_navigation (白線検知 / BEV / Pure Pursuit)</div>
+        <div class="panel-title">oit_navigation (UFLD / 周回マップ / QP ライン)</div>
         <dl class="panel-grid">
-          <dt>状態</dt><dd id="oit-detector-status">-</dd>
-          <dt>モード</dt><dd id="oit-mode">Both Lanes</dd>
+          <dt>検出器</dt><dd id="oit-detector-status">-</dd>
+          <dt>走行状態</dt><dd id="oit-state">-</dd>
+          <dt>周回</dt><dd id="oit-lap">-</dd>
+          <dt>境界断面</dt><dd id="oit-samples">-</dd>
+          <dt>メッセージ</dt><dd id="oit-message">-</dd>
         </dl>
         <div id="detector-mode-controls" style="display:flex; gap:8px; margin-top:8px;">
-          <button id="detector-threshold-btn" class="detector-mode-btn" style="flex:1;">閾値処理</button>
-          <button id="detector-model-btn" class="detector-mode-btn" style="flex:1;">モデル (ONNX)</button>
+          <button id="detector-yolop-btn" class="detector-mode-btn" style="flex:1;" title="実機と同じ YOLOP (models/honda_shihou_finetuned_best.pth)">YOLOP</button>
+          <button id="detector-ufld-btn" class="detector-mode-btn" style="flex:1;" title="UFLD (models/ufld.onnx を export_ufld_onnx で生成)">UFLD</button>
+          <button id="detector-ideal-btn" class="detector-mode-btn" style="flex:1;" title="UFLDの代わりにコースの実際の白線(ノイズ・欠落つき)を観測する">理想検出</button>
           <button id="detector-ros2-btn" class="detector-mode-btn" style="flex:1;">ROS2連携</button>
+        </div>
+        <div id="nav-controls" style="display:flex; gap:8px; margin-top:8px;">
+          <button id="start-pose-btn" class="detector-mode-btn" style="flex:1;" title="車両を中央白線の上に置き, 1周目からやり直す">スタート位置へ</button>
+          <button id="finish-mapping-btn" class="detector-mode-btn" style="flex:1;" title="1周目を手動で終了してQPラインを作る">1周目終了</button>
+          <button id="nav-reset-btn" class="detector-mode-btn" style="flex:1;" title="記録を消して1周目からやり直す">リセット</button>
         </div>
         <div id="autonomous-controls" style="display:flex; gap:8px; margin-top:8px;">
           <button id="autonomous-btn" style="flex:1;">自動運転: OFF</button>
