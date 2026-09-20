@@ -4,7 +4,8 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { VehiclePhysics, VEHICLE, MAX_SPEED, MAX_ANGULAR } from './vehicle_physics.js';
 import { createCourseTexture, createCourseLines, COURSE_WIDTH_M, COURSE_DEPTH_M } from './course.js';
 import { COURSE_GEOMETRY } from './course_geometry.js';
-import { addMyLapsGantry } from './course_props.js';
+import { resolveCollisions, VEHICLE_COLLIDERS } from './collision.js';
+import { addMyLapsGantry, MYLAPS_COLLIDERS, MYLAPS_POSE, worldColliders } from './course_props.js';
 import { TwistMux } from './twist_mux.js';
 import { UfldLaneDetector } from './ufld_lane_detector.js';
 import { IdealLaneDetector } from './ideal_lane_detector.js';
@@ -146,9 +147,17 @@ rosRoot.add(course);
 // has those three lines erased, so these are the only ones on the loop.
 rosRoot.add(createCourseLines());
 
-// MyLaps timing gantry on the centre line, 20m past the second corner
-// (js/course_props.js). Scenery only, like the course plane above.
-addMyLapsGantry(rosRoot, setPose);
+// MyLaps timing gantry on the centre line, 25m past the second corner
+// (js/course_props.js). Its posts and cones are solid -- the vehicle cannot
+// pass between the 0.46m posts, which is intentional: it is the obstacle the
+// planned YOLO cone detector will have to steer around.
+const mylapsRoot = addMyLapsGantry(rosRoot, setPose);
+const obstacles = worldColliders(MYLAPS_POSE, MYLAPS_COLLIDERS);
+
+// Set (by animate()'s collision-correction block below) whenever the vehicle
+// overlaps an obstacle this frame, and cleared otherwise -- read by Task 9's
+// HUD indicator, so it must never latch.
+let contactActive = false;
 
 function setPose(object3d, pose) {
   object3d.position.set(pose.x, pose.y, pose.z);
@@ -1502,6 +1511,7 @@ window.__sim = {
   physics, captureCanvas, renderOnboardCapture, laneNavigator, lineTracker, localizer, ufldDetector,
   idealDetector, laneTrace, localizerTrail, fastForward: (sec) => fastForward(sec),
   setDetectorMode: (m) => setDetectorMode(m), resetNavigation: () => resetNavigation(),
+  obstacles, mylapsRoot,
 };
 resetLocalizer();
 setDetectorMode('yolop');
@@ -1631,6 +1641,24 @@ function animate() {
   } else {
     physics.step(effectiveKeys, dt);
   }
+
+  // Obstacle collision: push the vehicle back out of anything it overlaps.
+  // Applied after integration as a position correction, so VehiclePhysics
+  // itself stays a clean kinematic model. Sliding falls out of the
+  // correction (only the component along the contact normal is cancelled);
+  // a near head-on contact additionally kills forward speed.
+  if (!mylapsRoot.userData.collisionDisabled) {
+    const hit = resolveCollisions(physics, obstacles, VEHICLE_COLLIDERS);
+    if (hit.maxPenetration > 0) {
+      physics.x += hit.dx;
+      physics.y += hit.dy;
+      if (hit.headOn && physics.v > 0) physics.v = 0;
+    }
+    contactActive = hit.maxPenetration > 0;
+  } else {
+    contactActive = false;
+  }
+
   if (!fastForwarding) {
     // odom_imu_localizer stand-in: wheel speed + IMU yaw rate dead reckoning.
     integrateLocalizer(physics.v, physics.omega, dt);
