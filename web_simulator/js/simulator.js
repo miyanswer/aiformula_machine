@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { VehiclePhysics, VEHICLE, MAX_SPEED, MAX_ANGULAR } from './vehicle_physics.js';
 import { createCourseTexture, createCourseLines, COURSE_WIDTH_M, COURSE_DEPTH_M } from './course.js';
 import { COURSE_GEOMETRY } from './course_geometry.js';
-import { resolveCollisions, VEHICLE_COLLIDERS } from './collision.js';
+import { resolveCollisions, VEHICLE_COLLIDERS, PathTracker, DepartureMonitor } from './collision.js';
 import { addMyLapsGantry, MYLAPS_COLLIDERS, MYLAPS_POSE, worldColliders } from './course_props.js';
 import { TwistMux } from './twist_mux.js';
 import { UfldLaneDetector } from './ufld_lane_detector.js';
@@ -154,34 +154,77 @@ rosRoot.add(createCourseLines());
 const mylapsRoot = addMyLapsGantry(rosRoot, setPose);
 const obstacles = worldColliders(MYLAPS_POSE, MYLAPS_COLLIDERS);
 
-// Set by applyObstacleCollision() whenever the vehicle overlaps an obstacle
-// at the most recent physics step, and cleared otherwise -- read by Task 9's
-// HUD indicator, so it must never latch.
+// Set by applyCollisionAndDeparture() whenever the vehicle overlaps an
+// obstacle at the most recent physics step, and cleared otherwise -- read by
+// Task 9's HUD indicator, so it must never latch.
 let contactActive = false;
+
+// Course departure: reported, never blocked. The vehicle can leave the
+// track and drive back on; the HUD counts each excursion once. Both track
+// state against the corrected pose (after obstacle resolution) and are
+// updated from the same call sites as the obstacle correction itself --
+// see applyCollisionAndDeparture() below.
+const pathTracker = new PathTracker();
+const departureMonitor = new DepartureMonitor();
+const departureStateEl = document.getElementById('departure-state');
+const departureCountEl = document.getElementById('departure-count');
+const contactStateEl = document.getElementById('contact-state');
+
+// Last HUD values actually written to the DOM. applyCollisionAndDeparture()
+// runs once per physics step -- including inside fastForward()'s tight
+// while loop, which can call it thousands of times per invocation -- so
+// writes are skipped unless the displayed value changed. null forces the
+// first call to sync the DOM to the elements' static HTML defaults.
+let hudOutside = null;
+let hudCount = null;
+let hudContact = null;
 
 // Pushes the vehicle back out of anything it overlaps, applied after
 // integration as a position correction so VehiclePhysics itself stays a
 // clean kinematic model. Sliding falls out of the correction (only the
 // component along the contact normal is cancelled); a near head-on contact
-// additionally kills forward speed. Called once per physics step -- from
-// animate() after its step()/stepAutonomous() branch, and from
-// fastForward()'s own physics loop after its stepAutonomous() call -- so a
-// fast-forwarded lap collides with the gantry exactly like a real-time one.
+// additionally kills forward speed. Then checks course departure against
+// that same corrected pose (Task 9), so a vehicle pushed out of an obstacle
+// is evaluated at the position it actually ends up at -- folded into this
+// one function, rather than a second one, so both call sites below stay in
+// lockstep; a departure check wired only into animate() would make a
+// fast-forwarded lap silently stop counting excursions.
+// Called once per physics step -- from animate() after its step()/
+// stepAutonomous() branch, and from fastForward()'s own physics loop after
+// its stepAutonomous() call -- so a fast-forwarded lap collides with the
+// gantry and is checked for departures exactly like a real-time one.
 // Gated on mylapsRoot.userData.collisionDisabled, which nothing sets by
 // default (undefined is falsy, so collision starts enabled); it exists so
 // live verification can disable it to drive a clean lap.
-function applyObstacleCollision() {
+function applyCollisionAndDeparture() {
   if (mylapsRoot.userData.collisionDisabled) {
     contactActive = false;
-    return;
+  } else {
+    const hit = resolveCollisions(physics, obstacles, VEHICLE_COLLIDERS);
+    if (hit.maxPenetration > 0) {
+      physics.x += hit.dx;
+      physics.y += hit.dy;
+      if (hit.headOn && physics.v > 0) physics.v = 0;
+    }
+    contactActive = hit.maxPenetration > 0;
   }
-  const hit = resolveCollisions(physics, obstacles, VEHICLE_COLLIDERS);
-  if (hit.maxPenetration > 0) {
-    physics.x += hit.dx;
-    physics.y += hit.dy;
-    if (hit.headOn && physics.v > 0) physics.v = 0;
+
+  const { offset } = pathTracker.update(physics.x, physics.y);
+  const departure = departureMonitor.update(offset);
+
+  if (departure.outside !== hudOutside) {
+    hudOutside = departure.outside;
+    departureStateEl.textContent = hudOutside ? '逸脱中' : 'コース内';
+    departureStateEl.style.color = hudOutside ? '#ff6b6b' : '#8fd18f';
   }
-  contactActive = hit.maxPenetration > 0;
+  if (departure.count !== hudCount) {
+    hudCount = departure.count;
+    departureCountEl.textContent = String(hudCount);
+  }
+  if (contactActive !== hudContact) {
+    hudContact = contactActive;
+    contactStateEl.style.display = hudContact ? 'inline' : 'none';
+  }
 }
 
 function setPose(object3d, pose) {
@@ -819,6 +862,17 @@ function resetNavigation() {
   lastNavStepTime = null;
   rosMap.left = rosMap.right = rosMap.raceline = null;
   lastMapPublishTime = 0;
+  pathTracker.reset();
+  departureMonitor.reset();
+  // Reflect the reset in the HUD immediately, rather than waiting for the
+  // next physics step, and reset the write-guard cache to match.
+  hudOutside = false;
+  hudCount = 0;
+  hudContact = false;
+  departureStateEl.textContent = 'コース内';
+  departureStateEl.style.color = '#8fd18f';
+  departureCountEl.textContent = '0';
+  contactStateEl.style.display = 'none';
 }
 
 function setDetectorMode(mode) {
@@ -1346,7 +1400,7 @@ async function fastForward(seconds, physicsDt = 1 / 60) {
       }
       const cmd = autonomousMode ? latestAutonomousCmd : { v: 0, omega: 0 };
       physics.stepAutonomous(cmd.v, cmd.omega, physicsDt);
-      applyObstacleCollision();
+      applyCollisionAndDeparture();
       integrateLocalizer(physics.v, physics.omega, physicsDt);
       recordLocalizerTrail();
       simClock += physicsDt;
@@ -1537,7 +1591,7 @@ window.__sim = {
   physics, captureCanvas, renderOnboardCapture, laneNavigator, lineTracker, localizer, ufldDetector,
   idealDetector, laneTrace, localizerTrail, fastForward: (sec) => fastForward(sec),
   setDetectorMode: (m) => setDetectorMode(m), resetNavigation: () => resetNavigation(),
-  obstacles, mylapsRoot,
+  obstacles, mylapsRoot, pathTracker, departureMonitor,
 };
 resetLocalizer();
 setDetectorMode('yolop');
@@ -1668,7 +1722,7 @@ function animate() {
     physics.step(effectiveKeys, dt);
   }
 
-  applyObstacleCollision();
+  applyCollisionAndDeparture();
 
   if (!fastForwarding) {
     // odom_imu_localizer stand-in: wheel speed + IMU yaw rate dead reckoning.
