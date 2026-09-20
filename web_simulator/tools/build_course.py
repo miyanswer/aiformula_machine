@@ -48,6 +48,10 @@ DASH_MARK_M = 2.8
 DASH_GAP_M = 2.6
 INNER_GAP_MIN_M = 1.5
 
+START_YAW = 0.0   # js/simulator.js SIM_START_POSE: travel heading at the start line
+                  # (counter-clockwise around the loop). The reference path is
+                  # oriented to match, so arc length grows the way the car drives.
+
 # --- 背景テクスチャ (タスク 3) ---
 ERASE_CORRIDOR_M = 0.45           # 抽出線からの法線方向の消去範囲
 ASPHALT_BGR = (156, 150, 156)     # 元 PNG のアスファルト色
@@ -263,6 +267,17 @@ def build_geometry():
         traced[name] = [None if p is None else [p[0] + shift[0], p[1] + shift[1]]
                         for p in traced[name]]
 
+    # 2b. 進行方向を js/simulator.js の SIM_START_POSE.yaw (0 = +x, ループを
+    #     反時計回りに周回) に合わせる. 抽出順序 (レイ角の増加方向) がコースの
+    #     実際の走行方向と一致している保証は無いため, index 0 の接線が
+    #     START_YAW から 90 度以上ずれていたら経路を反転する. これで弧長が
+    #     走行方向に増えるようになり, 以降の外側/内側判定・接続口の弧長投影・
+    #     startPose.yaw が正しい向きで計算される. 反転すると錨点が末尾
+    #     (index -1) に移るので, 1 だけロールして index 0 に戻す.
+    tangent0 = path[1] - path[-1]
+    if np.cos(np.arctan2(tangent0[1], tangent0[0]) - START_YAW) < 0:
+        path = np.roll(path[::-1], 1, axis=0)
+
     seg = np.hypot(*(np.roll(path, -1, axis=0) - path).T)
     total = float(seg.sum())
 
@@ -305,10 +320,21 @@ def build_geometry():
     idx_ext = np.concatenate([idx_valid - N_RAYS, idx_valid, idx_valid + N_RAYS])
     s_ext = np.concatenate([unwrapped - total, unwrapped, unwrapped + total])
     ray_s = np.interp(np.arange(N_RAYS), idx_ext, s_ext)
+    # レイ index k の昇順は, ray_s (path 上の実弧長) の昇順と同じ向きとは
+    # 限らない -- path は 2b で走行方向に反転済みなので, レイの角度が増える
+    # 向きと走行方向が逆であれば ray_s は k に対して単調減少する. gap_intervals
+    # は「隣接差がすべて正で, 総和が total になる」forward な弧長列を前提に
+    # しているので, ray_s が減少列なら line/ray_s を丸ごと逆順にしてから渡す
+    # (順序を反転するだけで, 個々の値=実弧長そのものは変わらないので,
+    # 返ってくる (s0, s1) はそのまま正しい path 弧長系での区間になる).
+    if unwrapped[-1] - unwrapped[0] >= 0:
+        gap_line, gap_ray_s = traced["inner"], ray_s
+    else:
+        gap_line, gap_ray_s = traced["inner"][::-1], ray_s[::-1]
     inner_seg = np.empty(N_RAYS)
-    inner_seg[:-1] = ray_s[1:] - ray_s[:-1]
-    inner_seg[-1] = (ray_s[0] + total) - ray_s[-1]
-    inner_gaps = gap_intervals(traced["inner"], inner_seg, INNER_GAP_MIN_M)
+    inner_seg[:-1] = gap_ray_s[1:] - gap_ray_s[:-1]
+    inner_seg[-1] = (gap_ray_s[0] + total) - gap_ray_s[-1]
+    inner_gaps = gap_intervals(gap_line, inner_seg, INNER_GAP_MIN_M)
 
     tangent = path[1] - path[-1]
     start_yaw = float(np.arctan2(tangent[1], tangent[0]))

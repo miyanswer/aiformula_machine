@@ -12,8 +12,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from build_course import (  # noqa: E402
     ASPHALT_BGR, COURSE_WIDTH_M, DASH_GAP_M, DASH_MARK_M, ERASE_CORRIDOR_M, N_RAYS,
-    RAY_CENTER, SRC_IMG, WHITE_THRESHOLD, build_geometry, curvature_closed, dashed_line,
-    erase_lines, extract_ray_radii, fill_closed, gap_intervals, gapped_line,
+    RAY_CENTER, SRC_IMG, START_YAW, WHITE_THRESHOLD, build_geometry, curvature_closed,
+    dashed_line, erase_lines, extract_ray_radii, fill_closed, gap_intervals, gapped_line,
     lowpass_closed, nearest_distance, normals_closed, offset_closed, resample_closed,
 )
 
@@ -194,6 +194,14 @@ class TestBuildGeometryOnTheRealCourse(unittest.TestCase):
     def test_start_pose_is_the_world_origin_anchor(self):
         self.assertAlmostEqual(self.geom["startPose"]["x"], 0.0, delta=0.05)
         self.assertAlmostEqual(self.geom["startPose"]["y"], -1.6, delta=0.05)
+
+    def test_start_pose_yaw_faces_the_driving_direction(self):
+        """js/simulator.js SIM_START_POSE.yaw = 0 (+x). centerPath がその向きに
+        沿って弧長を増やしているか (=経路が逆走していないか) を確認する.
+        smoothing が変わっても意味を保つよう, 具体的な数値ではなく
+        START_YAW との向きの一致 (90 度未満のずれ) だけを assert する."""
+        yaw = self.geom["startPose"]["yaw"]
+        self.assertGreater(math.cos(yaw - START_YAW), 0.0)
 
     def test_inner_gaps_are_preserved(self):
         self.assertGreaterEqual(len(self.geom["innerGaps"]), 3)
