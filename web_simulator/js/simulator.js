@@ -129,12 +129,11 @@ scene.add(rosRoot);
 const vehicleRoot = new THREE.Group();
 rosRoot.add(vehicleRoot);
 
-// Course layout plane. Position recomputed for the 106.80m scale so the
-// texture's own outer loop lands on the generated 3.5m-lane geometry, with
-// the vehicle's spawn point held at the world origin anchor (0, -1.6) --
-// see tools/build_course.py's "world shift" diagnostic and
-// docs/superpowers/specs/2026-09-21-course-geometry-and-collision-design.md.
-const COURSE_POSE = { x: 14.1418, y: 40.5111, z: 0.01, roll: 0, pitch: 0, yaw: Math.PI / 2 };
+// Course layout plane. Position from tools/build_course.py's COURSE_POSE diagnostic.
+// The tool prints this because the smoothed reference path is anchored to the spawn
+// point, so the plane's translation is not simply the old pose times the scale factor.
+// The tool also uses the spawn point anchor when mapping pixels to world coordinates.
+const COURSE_POSE = { x: 13.2429, y: 37.9944, z: 0.01, roll: 0, pitch: 0, yaw: Math.PI / 2 };
 const course = new THREE.Mesh(
   new THREE.PlaneGeometry(COURSE_WIDTH_M, COURSE_DEPTH_M),
   new THREE.MeshBasicMaterial({ map: createCourseTexture() })
