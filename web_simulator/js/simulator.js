@@ -154,10 +154,35 @@ rosRoot.add(createCourseLines());
 const mylapsRoot = addMyLapsGantry(rosRoot, setPose);
 const obstacles = worldColliders(MYLAPS_POSE, MYLAPS_COLLIDERS);
 
-// Set (by animate()'s collision-correction block below) whenever the vehicle
-// overlaps an obstacle this frame, and cleared otherwise -- read by Task 9's
+// Set by applyObstacleCollision() whenever the vehicle overlaps an obstacle
+// at the most recent physics step, and cleared otherwise -- read by Task 9's
 // HUD indicator, so it must never latch.
 let contactActive = false;
+
+// Pushes the vehicle back out of anything it overlaps, applied after
+// integration as a position correction so VehiclePhysics itself stays a
+// clean kinematic model. Sliding falls out of the correction (only the
+// component along the contact normal is cancelled); a near head-on contact
+// additionally kills forward speed. Called once per physics step -- from
+// animate() after its step()/stepAutonomous() branch, and from
+// fastForward()'s own physics loop after its stepAutonomous() call -- so a
+// fast-forwarded lap collides with the gantry exactly like a real-time one.
+// Gated on mylapsRoot.userData.collisionDisabled, which nothing sets by
+// default (undefined is falsy, so collision starts enabled); it exists so
+// live verification can disable it to drive a clean lap.
+function applyObstacleCollision() {
+  if (mylapsRoot.userData.collisionDisabled) {
+    contactActive = false;
+    return;
+  }
+  const hit = resolveCollisions(physics, obstacles, VEHICLE_COLLIDERS);
+  if (hit.maxPenetration > 0) {
+    physics.x += hit.dx;
+    physics.y += hit.dy;
+    if (hit.headOn && physics.v > 0) physics.v = 0;
+  }
+  contactActive = hit.maxPenetration > 0;
+}
 
 function setPose(object3d, pose) {
   object3d.position.set(pose.x, pose.y, pose.z);
@@ -1321,6 +1346,7 @@ async function fastForward(seconds, physicsDt = 1 / 60) {
       }
       const cmd = autonomousMode ? latestAutonomousCmd : { v: 0, omega: 0 };
       physics.stepAutonomous(cmd.v, cmd.omega, physicsDt);
+      applyObstacleCollision();
       integrateLocalizer(physics.v, physics.omega, physicsDt);
       recordLocalizerTrail();
       simClock += physicsDt;
@@ -1642,22 +1668,7 @@ function animate() {
     physics.step(effectiveKeys, dt);
   }
 
-  // Obstacle collision: push the vehicle back out of anything it overlaps.
-  // Applied after integration as a position correction, so VehiclePhysics
-  // itself stays a clean kinematic model. Sliding falls out of the
-  // correction (only the component along the contact normal is cancelled);
-  // a near head-on contact additionally kills forward speed.
-  if (!mylapsRoot.userData.collisionDisabled) {
-    const hit = resolveCollisions(physics, obstacles, VEHICLE_COLLIDERS);
-    if (hit.maxPenetration > 0) {
-      physics.x += hit.dx;
-      physics.y += hit.dy;
-      if (hit.headOn && physics.v > 0) physics.v = 0;
-    }
-    contactActive = hit.maxPenetration > 0;
-  } else {
-    contactActive = false;
-  }
+  applyObstacleCollision();
 
   if (!fastForwarding) {
     // odom_imu_localizer stand-in: wheel speed + IMU yaw rate dead reckoning.
