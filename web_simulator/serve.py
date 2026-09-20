@@ -19,6 +19,12 @@ class CrossOriginIsolatedHandler(http.server.SimpleHTTPRequestHandler):
     def end_headers(self):
         self.send_header("Cross-Origin-Opener-Policy", "same-origin")
         self.send_header("Cross-Origin-Embedder-Policy", "require-corp")
+        # This server exists to iterate on the files it serves. Without this,
+        # browsers heuristically cache the ES modules under js/ and keep
+        # running an old copy after an edit -- which surfaces as a confusing
+        # "does not provide an export named ..." error for an export that is
+        # plainly there on disk, and survives opening a new tab.
+        self.send_header("Cache-Control", "no-store, must-revalidate")
         super().end_headers()
 
 
