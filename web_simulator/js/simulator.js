@@ -3,6 +3,7 @@ import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { VehiclePhysics, VEHICLE, MAX_SPEED, MAX_ANGULAR } from './vehicle_physics.js';
 import { createCourseTexture, createCourseLines, COURSE_WIDTH_M, COURSE_DEPTH_M } from './course.js';
+import { COURSE_GEOMETRY } from './course_geometry.js';
 import { addMyLapsGantry } from './course_props.js';
 import { TwistMux } from './twist_mux.js';
 import { UfldLaneDetector } from './ufld_lane_detector.js';
@@ -128,15 +129,12 @@ scene.add(rosRoot);
 const vehicleRoot = new THREE.Group();
 rosRoot.add(vehicleRoot);
 
-// Course layout the user asked to add, textured from their own course image
-// (see course.js). Real-world scale not modeled yet -- visual only, no
-// collision or lap/gate logic. A child of rosRoot (like everything else
-// placed in ROS coordinates) so it can be positioned directly with ROS
-// x/y/yaw: THREE.PlaneGeometry already lies in its local XY plane with a
-// +Z normal by default, which is exactly "flat on the ground, facing up"
-// in ROS convention -- unlike `ground` above (added straight to `scene`,
-// Three.js's own Y-up world), this needs no extra rotation.x tilt.
-const COURSE_POSE = { x: 13.22, y: 35.41, z: 0.01, roll: 0, pitch: 0, yaw: Math.PI / 2 };
+// Course layout plane. Position recomputed for the 106.80m scale so the
+// texture's own outer loop lands on the generated 3.5m-lane geometry, with
+// the vehicle's spawn point held at the world origin anchor (0, -1.6) --
+// see tools/build_course.py's "world shift" diagnostic and
+// docs/superpowers/specs/2026-09-21-course-geometry-and-collision-design.md.
+const COURSE_POSE = { x: 14.1418, y: 40.5111, z: 0.01, roll: 0, pitch: 0, yaw: Math.PI / 2 };
 const course = new THREE.Mesh(
   new THREE.PlaneGeometry(COURSE_WIDTH_M, COURSE_DEPTH_M),
   new THREE.MeshBasicMaterial({ map: createCourseTexture() })
@@ -466,9 +464,10 @@ const TWIST_MUX_SOURCES = [
 // Navigator parameters = navigation_params.yaml defaults, except speed /
 // angular limits: per instruction, those stay the simulator's own WASD
 // limits (MAX_SPEED=1.5, MAX_ANGULAR=1.2) rather than the real vehicle's.
-// lane_width: this course's center line <-> boundary line distance (outer
-// loop, measured from png/shihou_cource_unity.png: ~3.1m on both sides).
-const SIM_LANE_WIDTH = 3.1;
+// lane_width: this course's center line <-> boundary line distance. Now an
+// exact property of the generated geometry rather than a measurement of the
+// texture (it was 3.1 when the traced course averaged 3.27m).
+const SIM_LANE_WIDTH = COURSE_GEOMETRY.laneWidthM;
 const SIM_NAVIGATOR_PARAMS = {
   ...NAVIGATOR_PARAMS,
   raceline: { ...RACELINE_PARAMS, vMax: MAX_SPEED },
@@ -476,11 +475,9 @@ const SIM_NAVIGATOR_PARAMS = {
 };
 const LANE_DATA_TIMEOUT_MS = 800; // navigation_params.yaml lines_timeout
 // Start pose on the center white line of the outer loop (the lap-1 method
-// drives on top of it). Spawn (0,0,0) is in the loop's inner lane (heading
-// counter-clockwise around the course); the center line is 1.6m to its
-// right there (UFLD ground projection at spawn: center -1.62m, inner
-// boundary +2.04m).
-const SIM_START_POSE = { x: 0.0, y: -1.6, yaw: 0.0 };
+// drives on top of it). Taken from the generated geometry rather than
+// hand-measured, so it stays on the line whenever the course is rebuilt.
+const SIM_START_POSE = COURSE_GEOMETRY.startPose;
 
 const urlInput = document.getElementById('ros-url');
 const topicInput = document.getElementById('ros-topic');
