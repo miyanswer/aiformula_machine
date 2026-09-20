@@ -3,6 +3,7 @@ import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { VehiclePhysics, VEHICLE, MAX_SPEED, MAX_ANGULAR } from './vehicle_physics.js';
 import { createCourseTexture, COURSE_WIDTH_M, COURSE_DEPTH_M } from './course.js';
+import { addMyLapsGantry } from './course_props.js';
 import { TwistMux } from './twist_mux.js';
 import { UfldLaneDetector } from './ufld_lane_detector.js';
 import { IdealLaneDetector } from './ideal_lane_detector.js';
@@ -143,6 +144,10 @@ const course = new THREE.Mesh(
 setPose(course, COURSE_POSE); // setPose is defined just below; hoisted, so usable here
 rosRoot.add(course);
 
+// MyLaps timing gantry on the centre line, 20m past the second corner
+// (js/course_props.js). Scenery only, like the course plane above.
+addMyLapsGantry(rosRoot, setPose);
+
 function setPose(object3d, pose) {
   object3d.position.set(pose.x, pose.y, pose.z);
   // URDF rpy is R = Rz(yaw)*Ry(pitch)*Rx(roll) (fixed-axis/extrinsic).
@@ -249,6 +254,25 @@ function applyHubTint(mesh, treadColor, hubColor, hubRadius) {
   mesh.material = new THREE.MeshBasicMaterial({ vertexColors: true });
 }
 
+// AIF_body.dae has an authoring-time point light and camera baked in by the
+// exporter, and ColladaLoader adds both to the scene graph along with the
+// meshes. The light ends up parented to the vehicle, so it travels with it,
+// and its attenuation term evaluates absurdly high: measured against the
+// MyLaps gantry ~5m ahead, intensity 1 and intensity 0.01 both render it a
+// flat #ffffff, while intensity 0 gives the expected shading (black frame
+// rgb(0,0,0), orange cone rgb(151,18,8)). So every *lit* material near the
+// car blows out to pure white -- which is why the body renders as a
+// featureless white blob, and why the gantry lost all of its colour. Nothing
+// here wants the exporter's lights or cameras (the scene lights itself), so
+// drop them on load.
+function stripSceneExtras(object3d) {
+  const extras = [];
+  object3d.traverse((obj) => {
+    if (obj.isLight || obj.isCamera) extras.push(obj);
+  });
+  extras.forEach((obj) => obj.removeFromParent());
+}
+
 function loadInto(parent, url, styleOptions) {
   loader.load(
     url,
@@ -259,6 +283,7 @@ function loadInto(parent, url, styleOptions) {
       // for the whole vehicle, so undo ColladaLoader's own rotation here to
       // avoid applying it twice (which was pitching/mispositioning meshes).
       collada.scene.rotation.x = 0;
+      stripSceneExtras(collada.scene);
       styleMaterials(collada.scene, styleOptions);
       parent.add(collada.scene);
     },

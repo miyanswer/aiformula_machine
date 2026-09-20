@@ -40,6 +40,9 @@ build/
 # C++ / CMake
 *.o
 *.obj
+# ...but web_simulator/models/ holds Wavefront .obj 3D models, not C++ object
+# files (MyLaps.obj is loaded by js/course_props.js), so keep those tracked.
+!web_simulator/models/*.obj
 *.gch
 *.pch
 CMakeCache.txt
