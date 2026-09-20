@@ -259,19 +259,49 @@ class TestErasedCourseImage(unittest.TestCase):
                     remaining += 1
         self.assertEqual(remaining, 0)
 
-    def test_the_kerb_line_outside_the_loop_survives(self):
-        """外側の二重線 (縁石線) は残すこと. 消えた割合が 5% 未満であること."""
+    def test_erasure_stays_within_the_corridor(self):
+        """
+        Erasure must stay local to the traced line positions, within the corridor
+        plus dilation margin. This ensures that only the outer loop's three lines
+        are removed, not the kerb line, parking bays, or crosswalks.
+        """
         image = cv2.imread(SRC_IMG)
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        white = gray > WHITE_THRESHOLD
-        before = int(white.sum())
-        radii = extract_ray_radii(white, RAY_CENTER, N_RAYS)
-        corridor_px = ERASE_CORRIDOR_M / (COURSE_WIDTH_M / image.shape[1])
+        radii = extract_ray_radii(gray > WHITE_THRESHOLD, RAY_CENTER, N_RAYS)
+        h, w = image.shape[:2]
+        corridor_px = ERASE_CORRIDOR_M / (COURSE_WIDTH_M / w)
+
         out = erase_lines(image, radii, RAY_CENTER, N_RAYS, corridor_px,
                           WHITE_THRESHOLD, ASPHALT_BGR)
-        after = int((cv2.cvtColor(out, cv2.COLOR_BGR2GRAY) > WHITE_THRESHOLD).sum())
-        # 外周 3 本線だけが消えるので, 画像全体の白画素が半分以上残るはず
-        self.assertGreater(after, before * 0.5)
+
+        # Build changed mask: pixels where output differs from input
+        changed = (image != out).any(axis=2)
+        self.assertTrue(changed.any(), "erase_lines must change some pixels")
+
+        # Build seeds mask with 1s at each traced line position
+        seeds = np.zeros((h, w), np.uint8)
+        cx, cy = RAY_CENTER
+        for name in ("outer", "center", "inner"):
+            for k, r in enumerate(radii[name]):
+                if r is None:
+                    continue
+                th = 2 * np.pi * k / N_RAYS
+                px = int(round(cx + r * np.cos(th)))
+                py = int(round(cy + r * np.sin(th)))
+                if 0 <= px < w and 0 <= py < h:
+                    seeds[py, px] = 1
+
+        # Distance transform: for each pixel, distance to nearest seed
+        # cv2.distanceTransform on inverse of seeds (1 = seed, 0 = not seed)
+        dist = cv2.distanceTransform(1 - seeds, cv2.DIST_L2, 5)
+
+        # Maximum distance of changed pixels from traced line positions.
+        # Margin of 4.0 px covers cv2.dilate with 3x3 kernel at 2 iterations:
+        # ~2.0 px orthogonally + ~2.9 px diagonal, plus rounding/interpolation tolerance.
+        max_dist = float(dist[changed].max())
+        bound = corridor_px + 4.0
+        self.assertLessEqual(max_dist, bound,
+                           msg="erasure at %.1f px from line exceeds corridor %.1f + margin 4.0" % (max_dist, corridor_px))
 
 
 if __name__ == "__main__":
