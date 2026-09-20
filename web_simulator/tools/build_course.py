@@ -469,6 +469,25 @@ def erase_lines(image, radii, center, n_rays, corridor_px, threshold, fill_bgr):
     return out
 
 
+def course_pose(geom):
+    # type: (dict) -> Tuple[float, float]
+    """
+    背景テクスチャ (png) を置く板の位置 (js/simulator.js の COURSE_POSE に
+    書き写す値) を返す.
+
+    radii_to_world() はピクセル -> 世界座標の変換を SRC_POSE (無変換) と
+    COURSE_WIDTH_M (= SRC_WIDTH_M * SCALE_K, 実寸化のスケールはここに
+    集約されている) だけで行っている. つまり SCALE_K は COURSE_WIDTH_M に
+    既に入っており, SRC_POSE 自体はスケールしない. build_geometry() が
+    その後で基準パスを START_WORLD にアンカリングするために平行移動した分
+    (geom["_shift"]) だけ, 板の位置も同じだけずらせばよい -- SCALE_K を
+    もう一度掛けてはいけない (掛けると背景テクスチャの位置だけが実寸化の
+    スケールぶんズレて, 生成した線がテクスチャの線からはみ出る).
+    """
+    shift = geom["_shift"]
+    return SRC_POSE[0] + shift[0], SRC_POSE[1] + shift[1]
+
+
 def main():
     geom = build_geometry()
     path = np.array(geom["centerPath"])
@@ -482,10 +501,7 @@ def main():
         print("lane width  : %-6s %.4f m (min %.4f / max %.4f)" % (side, d.mean(), d.min(), d.max()))
     print("inner gaps  : %s" % geom["innerGaps"])
     print("start pose  : %s" % geom["startPose"])
-    # simulator.js にそのまま書き写す値. 仕様書の計算値 (14.119, 37.927) に
-    # 基準パスのアンカリング平行移動を足したもの.
-    pose_x = 13.22 * SCALE_K + geom["_shift"][0]
-    pose_y = -1.6 + 37.01 * SCALE_K + geom["_shift"][1]
+    pose_x, pose_y = course_pose(geom)
     print("COURSE_POSE : x: %.4f, y: %.4f   <- copy into js/simulator.js" % (pose_x, pose_y))
     write_geometry_js(geom)
     write_lines_js(geom)

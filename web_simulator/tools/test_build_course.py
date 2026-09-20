@@ -13,9 +13,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from build_course import (  # noqa: E402
     ASPHALT_BGR, COURSE_WIDTH_M, DASH_GAP_M, DASH_MARK_M, ERASE_CORRIDOR_M,
     INNER_PRESENCE_TOL_M, N_RAYS, RAY_CENTER, SRC_IMG, START_YAW, WHITE_THRESHOLD,
-    build_geometry, curvature_closed, dashed_line, erase_lines, extract_ray_radii,
-    fill_closed, gap_intervals, gapped_line, lowpass_closed, nearest_distance,
-    normals_closed, offset_closed, resample_closed,
+    build_geometry, course_pose, curvature_closed, dashed_line, erase_lines,
+    extract_ray_radii, fill_closed, gap_intervals, gapped_line, lowpass_closed,
+    nearest_distance, normals_closed, offset_closed, resample_closed,
 )
 
 
@@ -236,6 +236,32 @@ class TestBuildGeometryOnTheRealCourse(unittest.TestCase):
         d_correct = nearest_distance(traced_outer, offset_closed(path, sign * 3.5))
         d_flipped = nearest_distance(traced_outer, offset_closed(path, -sign * 3.5))
         self.assertLess(float(d_correct.mean()), float(d_flipped.mean()))
+
+    def test_course_pose_maps_traced_lines_back_onto_their_pixels(self):
+        """COURSE_POSE (course_pose(geom), これが js/simulator.js に書き写す
+        背景テクスチャの板位置) は radii_to_world() の逆変換になっているはず
+        なので, traced な外側線の世界座標をこの pose で png/shihou_cource_unity.png
+        のピクセルへ逆変換すると, そこは実際に白線を読み取った画素そのもの
+        になる. COURSE_POSE がズレていれば (例えば SCALE_K を二重適用する
+        など), この逆変換先はもう白線の上ではなくなり, このテストが落ちる."""
+        pose_x, pose_y = course_pose(self.geom)
+        image = cv2.imread(SRC_IMG)
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape
+        depth_m = COURSE_WIDTH_M * h / w
+        traced_outer = [p for p in self.geom["_traced"]["outer"] if p is not None]
+        self.assertGreater(len(traced_outer), 0)
+        white = 0
+        for wx, wy in traced_outer:
+            ly = pose_x - wx
+            lx = wy - pose_y
+            py = (0.5 - ly / depth_m) * h
+            px = (lx / COURSE_WIDTH_M + 0.5) * w
+            xi, yi = int(round(px)), int(round(py))
+            if 0 <= xi < w and 0 <= yi < h and gray[yi, xi] > WHITE_THRESHOLD:
+                white += 1
+        ratio = white / float(len(traced_outer))
+        self.assertGreater(ratio, 0.95)
 
 
 class TestEraseLines(unittest.TestCase):
