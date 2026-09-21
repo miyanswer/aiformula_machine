@@ -46,13 +46,19 @@ function normalsClosed(path) {
   });
 }
 
-function offsetClosed(path, distance) {
+// Exported so tools/verify_course.js can offset centerPath the same way
+// createCourseLines() does (to rebuild outerPath/innerPath) when measuring
+// the drawn ribbon width -- reusing this instead of re-deriving the offset
+// keeps the check tied to the actual generator, not a parallel copy of it.
+export function offsetClosed(path, distance) {
   const normals = normalsClosed(path);
   return path.map((p, i) => [p[0] + normals[i][0] * distance, p[1] + normals[i][1] * distance]);
 }
 
-// Cumulative arc length of a closed polyline, plus its total.
-function arcLengths(path) {
+// Cumulative arc length of a closed polyline, plus its total. Exported so
+// tools/verify_course.js can compute the same `s`/`total` it needs to call
+// solidActiveMask()/dashActiveMask() below.
+export function arcLengths(path) {
   const s = [0];
   for (let i = 1; i < path.length; i++) {
     s.push(s[i - 1] + Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]));
@@ -65,7 +71,13 @@ function arcLengths(path) {
 
 // Builds one flat ribbon of the given width along `path[from..to]`, as a
 // triangle list in the XY plane at z = 0 (the caller lifts the whole group).
-function ribbonVertices(path, indices, width) {
+// Exported so tools/verify_course.js can measure the drawn ribbon width from
+// this function's own (full double-precision) output, rather than from the
+// rendered mesh's BufferGeometry -- that stores vertices in a Float32Array,
+// whose rounding at this course's ~120m coordinate range is large enough on
+// its own (~1e-6..1e-5 m) to swamp a sub-micrometre tolerance, regardless of
+// whether the ribbon math itself is correct.
+export function ribbonVertices(path, indices, width) {
   const half = width / 2;
   const normals = normalsClosed(path);
   const out = [];
@@ -121,20 +133,34 @@ function circularRuns(active) {
   return runs;
 }
 
-// Index ranges to draw, given arc-length intervals to skip (junction
-// openings) or a dash pattern.
-function solidRanges(s, total, skip) {
+// Per-point "is this index drawn" predicates, factored out of
+// solidRanges()/dashRanges() below and exported so tools/verify_course.js
+// can build the same active-index mask createCourseLines() actually draws
+// and diff it against COURSE_LINES -- instead of re-implementing the
+// skip/dash predicate in the check, which would only ever agree with
+// itself and prove nothing about whether course_lines.js matches.
+export function solidActiveMask(s, total, skip) {
   const inSkip = (value) => skip.some(([s0, s1]) => {
     const v0 = value;
     const v1 = value + total;
     return (v0 >= s0 && v0 < s1) || (v1 >= s0 && v1 < s1);
   });
-  return circularRuns(s.map((value) => !inSkip(value)));
+  return s.map((value) => !inSkip(value));
+}
+
+export function dashActiveMask(s, markM, gapM) {
+  const pitch = markM + gapM;
+  return s.map((value) => value % pitch < markM);
+}
+
+// Index ranges to draw, given arc-length intervals to skip (junction
+// openings) or a dash pattern.
+function solidRanges(s, total, skip) {
+  return circularRuns(solidActiveMask(s, total, skip));
 }
 
 function dashRanges(s, markM, gapM) {
-  const pitch = markM + gapM;
-  return circularRuns(s.map((value) => value % pitch < markM));
+  return circularRuns(dashActiveMask(s, markM, gapM));
 }
 
 function ribbonMesh(path, ranges, width, material) {

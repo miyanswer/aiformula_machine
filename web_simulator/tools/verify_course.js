@@ -11,6 +11,9 @@
 import { COURSE_GEOMETRY } from '../js/course_geometry.js';
 import { COURSE_LINES } from '../js/course_lines.js';
 import {
+  arcLengths, dashActiveMask, offsetClosed, ribbonVertices, solidActiveMask,
+} from '../js/course.js';
+import {
   DepartureMonitor, VEHICLE_COLLIDERS, resolveCollisions,
 } from '../js/collision.js';
 import { MYLAPS_COLLIDERS, MYLAPS_POSE, worldColliders } from '../js/course_props.js';
@@ -56,11 +59,78 @@ export async function runChecks() {
   }
   check('line width constant', COURSE_GEOMETRY.lineWidthM === 0.15, `${COURSE_GEOMETRY.lineWidthM}`);
 
+  // 1b. Drawn ribbon width. The above only checks the *constant*; it says
+  // nothing about the triangles createCourseLines() actually emits. Measure
+  // from ribbonVertices() -- the exact function the renderer calls -- at
+  // several points around the outer/inner/center paths, at full double
+  // precision (see course.js's comment on ribbonVertices for why not from
+  // the rendered mesh's Float32BufferGeometry: its rounding at this
+  // course's ~120m coordinate range is itself larger than the 1e-6 m
+  // tolerance we want here, independent of whether the ribbon is correct).
+  {
+    const { centerPath, laneWidthM, lineWidthM, outerSign } = COURSE_GEOMETRY;
+    const outerPath = offsetClosed(centerPath, outerSign * laneWidthM);
+    const innerPath = offsetClosed(centerPath, -outerSign * laneWidthM);
+    let maxDiff = 0;
+    for (const p of [centerPath, outerPath, innerPath]) {
+      for (let i = 0; i + 1 < p.length; i += 97) {
+        // a0/a1 are the two edge vertices of the cross-section at index i
+        // (see ribbonVertices(): out = [a0(3), a1(3), b0(3), a1(3), b1(3), b0(3)]).
+        const v = ribbonVertices(p, [i, i + 1], lineWidthM);
+        const w = Math.hypot(v[0] - v[3], v[1] - v[4]);
+        maxDiff = Math.max(maxDiff, Math.abs(w - lineWidthM));
+      }
+    }
+    check('drawn ribbon width matches lineWidthM', maxDiff < 1e-6, `max diff ${maxDiff.toExponential(3)} m`);
+  }
+
+  // 1c. Drawn mask vs data. dashRanges()/solidRanges() (course.js) and
+  // dashed_line()/gapped_line() (build_course.py) are two independent
+  // implementations of the same dash/gap predicate, and nothing pinned that
+  // they agree. Build the drawn active-index mask from course.js's own
+  // exported predicates (not a re-implementation here -- a duplicate would
+  // only ever agree with itself) and diff it against COURSE_LINES, which
+  // build_course.py produced independently.
+  {
+    const { s, total } = arcLengths(path);
+    const centerActive = dashActiveMask(s, COURSE_GEOMETRY.dash.markM, COURSE_GEOMETRY.dash.gapM);
+    const innerActive = solidActiveMask(s, total, COURSE_GEOMETRY.innerGaps);
+    for (const [name, active] of [['center', centerActive], ['inner', innerActive]]) {
+      let mismatches = 0;
+      for (let i = 0; i < active.length; i++) {
+        const dataActive = COURSE_LINES[name][i] !== null;
+        if (active[i] !== dataActive) mismatches++;
+      }
+      check(`drawn mask matches COURSE_LINES.${name}`, mismatches === 0, `${mismatches} mismatches / ${active.length}`);
+    }
+  }
+
   // 3. スポーン
+  // VehiclePhysics starts at the odom origin (0,0,0); COURSE_GEOMETRY.startPose
+  // is (0, -1.6), ~1.6 m from the centre line. So right after page load this
+  // check would spuriously fail -- it only means anything once the vehicle
+  // has actually been moved onto startPose (README.md's documented repro
+  // clicks #start-pose-btn first). Detect that precondition explicitly
+  // instead of silently reporting a misleading "spawn" failure: skip with a
+  // clear message when it isn't met, and only then assert the < 5cm bound
+  // the design doc actually asks for.
   const sim = window.__sim;
   if (sim) {
-    const d = nearestDistance([sim.physics.x, sim.physics.y], path);
-    check('spawn on the centre line', d < 0.05, `${d.toFixed(4)} m`);
+    const dx = sim.physics.x - COURSE_GEOMETRY.startPose.x;
+    const dy = sim.physics.y - COURSE_GEOMETRY.startPose.y;
+    let dyaw = (sim.physics.yaw - COURSE_GEOMETRY.startPose.yaw) % (2 * Math.PI);
+    if (dyaw > Math.PI) dyaw -= 2 * Math.PI;
+    if (dyaw < -Math.PI) dyaw += 2 * Math.PI;
+    const atStartPose = Math.hypot(dx, dy) < 0.1 && Math.abs(dyaw) < 0.1;
+    if (!atStartPose) {
+      check('spawn on the centre line', false,
+        'SKIPPED (precondition unmet): vehicle is not at COURSE_GEOMETRY.startPose -- '
+        + 'click #start-pose-btn (or call window.__sim.resetNavigation() after setting '
+        + 'physics to startPose) before running this check, see README.md');
+    } else {
+      const d = nearestDistance([sim.physics.x, sim.physics.y], path);
+      check('spawn on the centre line', d < 0.05, `${d.toFixed(4)} m`);
+    }
   }
 
   // 4. 理想検出との一致
@@ -78,6 +148,17 @@ export async function runChecks() {
   // "centre line" fit is identified per-trial as whichever returned fit has
   // the smallest |yAt(0)| -- the outer/inner fits sit roughly +/-3.5m away
   // at this pose, so they are not mistaken for the centre line.
+  //
+  // Tolerance: 3 cm, not the originally-written 1 cm. The measured mean
+  // offset is about -1.95 cm, which is a structural bias of the detector,
+  // not a geometry error: IdealLaneDetector only observes points beyond
+  // xMin = 1.2 m and fits a straight line whose x=0 intercept is then
+  // evaluated -- a few centimetres of intercept error is expected for a
+  // dashed, curved centre line observed only past 1.2 m. See the design
+  // spec's 検証方針 item 4 (docs/superpowers/specs/
+  // 2026-09-21-course-geometry-and-collision-design.md), amended in commit
+  // 0fa72f9 for this exact reasoning. The geometry itself is separately
+  // covered by the sub-millimetre lane-width check above.
   {
     const detector = new IdealLaneDetector();
     const pose = {
@@ -98,16 +179,40 @@ export async function runChecks() {
       ? centreOffsets.reduce((a, b) => a + b, 0) / centreOffsets.length
       : NaN;
     check('ideal detector frame matches geometry',
-      centreOffsets.length >= trials * 0.3 && Math.abs(mean) < 0.05,
+      centreOffsets.length >= trials * 0.3 && Math.abs(mean) < 0.03,
       `n=${centreOffsets.length}/${trials} mean offset ${Number.isFinite(mean) ? mean.toFixed(4) : 'NaN'} m`);
   }
 
   // 5. 障害物
   const obstacles = worldColliders(MYLAPS_POSE, MYLAPS_COLLIDERS);
   const headOnPose = { x: MYLAPS_POSE.x + 0.5, y: MYLAPS_POSE.y, yaw: Math.PI };
-  const r = resolveCollisions(headOnPose, obstacles, VEHICLE_COLLIDERS);
-  check('gate blocks a head-on approach', r.maxPenetration > 0 && r.headOn,
-    `penetration ${r.maxPenetration.toFixed(4)} m, headOn ${r.headOn}`);
+
+  // Kept as its own assertion so the residual-penetration check below cannot
+  // pass by never touching anything.
+  const firstContact = resolveCollisions(headOnPose, obstacles, VEHICLE_COLLIDERS);
+  check('gate blocks a head-on approach', firstContact.maxPenetration > 0 && firstContact.headOn,
+    `penetration ${firstContact.maxPenetration.toFixed(4)} m, headOn ${firstContact.headOn}`);
+
+  // Spec item 5 requires "residual penetration after correction stays under
+  // 1mm", not merely "a contact was detected" -- the latter still passes if
+  // resolveCollisions()'s sequential per-obstacle correction (each obstacle
+  // is measured against the position already corrected by earlier obstacles
+  // this call, so two obstacles on opposite sides cannot net-cancel) is
+  // reverted to measuring every obstacle from the same starting position.
+  // Iterate resolve -> apply the returned (dx, dy) -> resolve again from the
+  // corrected pose until the correction stops moving the vehicle (or a
+  // safety cap), then assert the final maxPenetration is under 1e-3 m.
+  let pose = { ...headOnPose };
+  let res = resolveCollisions(pose, obstacles, VEHICLE_COLLIDERS);
+  let iterations = 0;
+  while (iterations < 50 && (Math.abs(res.dx) > 1e-9 || Math.abs(res.dy) > 1e-9)) {
+    pose = { x: pose.x + res.dx, y: pose.y + res.dy, yaw: pose.yaw };
+    res = resolveCollisions(pose, obstacles, VEHICLE_COLLIDERS);
+    iterations++;
+  }
+  check('residual penetration after correction < 1mm', res.maxPenetration < 1e-3,
+    `residual ${res.maxPenetration.toFixed(6)} m after ${iterations} correction step(s)`);
+
   const clearPose = { x: MYLAPS_POSE.x + 20, y: MYLAPS_POSE.y, yaw: Math.PI };
   const clear = resolveCollisions(clearPose, obstacles, VEHICLE_COLLIDERS);
   check('no contact when clear', clear.maxPenetration === 0, `penetration ${clear.maxPenetration}`);
