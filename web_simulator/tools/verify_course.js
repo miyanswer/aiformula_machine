@@ -36,7 +36,14 @@ function nearestDistance(point, path) {
 
 export async function runChecks() {
   const results = [];
-  const check = (name, pass, detail) => results.push({ name, pass, detail });
+  // Three states, not two: pass/fail for an assertion that actually ran,
+  // and a distinct "skipped" for one whose precondition wasn't met. A skip
+  // is not a failure -- it means this check didn't test anything, not that
+  // what it would have tested is broken -- so it must not flip the overall
+  // `pass` below, and the console table must show it as neither PASS nor
+  // FAIL.
+  const check = (name, pass, detail) => results.push({ name, pass, detail, skipped: false });
+  const skip = (name, detail) => results.push({ name, pass: null, detail, skipped: true });
   const path = COURSE_GEOMETRY.centerPath;
 
   // 1. 寸法
@@ -106,16 +113,34 @@ export async function runChecks() {
   }
 
   // 3. スポーン
-  // VehiclePhysics starts at the odom origin (0,0,0); COURSE_GEOMETRY.startPose
-  // is (0, -1.6), ~1.6 m from the centre line. So right after page load this
-  // check would spuriously fail -- it only means anything once the vehicle
-  // has actually been moved onto startPose (README.md's documented repro
-  // clicks #start-pose-btn first). Detect that precondition explicitly
-  // instead of silently reporting a misleading "spawn" failure: skip with a
-  // clear message when it isn't met, and only then assert the < 5cm bound
-  // the design doc actually asks for.
+  // Two independent assertions instead of one that depends on runtime state:
+  //
+  // (a) COURSE_GEOMETRY.startPose itself lies on the centre line. This is
+  //     what 検証方針 item 3 actually cares about -- that the course's
+  //     designated start anchor sits where it should -- and it needs no
+  //     vehicle, no simulator, nothing but the geometry data, so it always
+  //     runs and would catch a regenerated course whose anchor drifted off
+  //     centerPath. Where the vehicle happens to be sitting right now is
+  //     incidental to that.
+  const startPoseDist = nearestDistance(
+    [COURSE_GEOMETRY.startPose.x, COURSE_GEOMETRY.startPose.y], path
+  );
+  check('startPose lies on the centre line', startPoseDist < 0.05, `${startPoseDist.toFixed(4)} m`);
+
+  // (b) the vehicle's own measured distance from the centre line -- only
+  //     meaningful once the vehicle has actually been moved onto startPose.
+  //     VehiclePhysics starts at the odom origin (0,0,0), ~1.6 m from
+  //     startPose, so right after page load this precondition never holds;
+  //     the HUD's 「スタート位置へ」 button (#start-pose-btn, index.html)
+  //     is what moves it there (README.md's documented repro clicks it
+  //     first). Skipped -- not failed -- when the precondition isn't met,
+  //     so a fresh page load reports a clean run rather than red for a
+  //     state this part of the check deliberately didn't test.
   const sim = window.__sim;
-  if (sim) {
+  const spawnCheckName = 'vehicle spawn distance from the centre line';
+  if (!sim) {
+    skip(spawnCheckName, 'window.__sim is not present (not running inside the simulator page)');
+  } else {
     const dx = sim.physics.x - COURSE_GEOMETRY.startPose.x;
     const dy = sim.physics.y - COURSE_GEOMETRY.startPose.y;
     let dyaw = (sim.physics.yaw - COURSE_GEOMETRY.startPose.yaw) % (2 * Math.PI);
@@ -123,13 +148,12 @@ export async function runChecks() {
     if (dyaw < -Math.PI) dyaw += 2 * Math.PI;
     const atStartPose = Math.hypot(dx, dy) < 0.1 && Math.abs(dyaw) < 0.1;
     if (!atStartPose) {
-      check('spawn on the centre line', false,
-        'SKIPPED (precondition unmet): vehicle is not at COURSE_GEOMETRY.startPose -- '
-        + 'click #start-pose-btn (or call window.__sim.resetNavigation() after setting '
-        + 'physics to startPose) before running this check, see README.md');
+      skip(spawnCheckName,
+        'vehicle is not at COURSE_GEOMETRY.startPose -- click #start-pose-btn '
+        + '(「スタート位置へ」) before running this check, see README.md');
     } else {
       const d = nearestDistance([sim.physics.x, sim.physics.y], path);
-      check('spawn on the centre line', d < 0.05, `${d.toFixed(4)} m`);
+      check(spawnCheckName, d < 0.05, `${d.toFixed(4)} m`);
     }
   }
 
@@ -226,7 +250,20 @@ export async function runChecks() {
   check('departure counts once per excursion', JSON.stringify(seen) === JSON.stringify([0, 0, 0, 0, 1, 1, 1, 2]),
     JSON.stringify(seen));
 
-  const pass = results.every((x) => x.pass);
-  console.table(results);
-  return { pass, results };
+  // Overall pass is computed over the non-skipped results only -- a skip
+  // means "not tested", not "failed", so it must not drag the run red.
+  const pass = results.every((x) => x.skipped || x.pass);
+  const counts = {
+    pass: results.filter((x) => !x.skipped && x.pass).length,
+    fail: results.filter((x) => !x.skipped && !x.pass).length,
+    skipped: results.filter((x) => x.skipped).length,
+  };
+  // Print a `state` column (PASS/FAIL/SKIP) rather than the raw boolean/null
+  // `pass` field, so a skip reads as visibly distinct from both outcomes.
+  console.table(results.map((x) => ({
+    name: x.name,
+    state: x.skipped ? 'SKIP' : (x.pass ? 'PASS' : 'FAIL'),
+    detail: x.detail,
+  })));
+  return { pass, results, counts };
 }

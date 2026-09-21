@@ -462,12 +462,26 @@ cd web_simulator/tools && python3 -m unittest test_build_course
 
 ### ブラウザでの幾何検証
 
-ページを開いた直後は車体が odom 原点 `(0,0,0)` にいて、`COURSE_GEOMETRY.startPose`
-（中央線上、`(0, -1.6)`）から約 1.6 m 離れています。この状態でスポーンのチェックを
-走らせると中央線からのズレが大きく出てしまうので、先に HUD の「スタート位置へ」ボタン
-（`start-pose-btn`）で車体を `startPose` へ乗せてから実行してください。コンソールで以下を
-実行すると、8 項目のチェックがすべて pass します（`requestAnimationFrame` を使うため、
+`runChecks()` は 13 項目をチェックしますが、うち「車体スポーンが中央線から近いか」の
+1 項目だけは車体が `COURSE_GEOMETRY.startPose`（中央線上、`(0, -1.6)`）に乗っている
+ときにしか意味を持ちません。ページを開いた直後は車体が odom 原点 `(0,0,0)` にいて
+`startPose` から約 1.6 m 離れているので、この 1 項目は前提未達として SKIP されます
+（FAIL にはなりません）。残り 12 項目は前提なしに常に実行され、`startPose` 自体が
+中央線の基準パス上に乗っていることを検証する項目もここに含まれます。
+
+コンソールで以下を実行すると、ページを開いた直後の状態でも 12 項目が pass・1 項目
+（車体スポーンのチェック）が SKIP となり、`runChecks()` の戻り値は `pass: true`・
+`counts: {pass: 12, fail: 0, skipped: 1}` になります（`requestAnimationFrame` を使うため、
 ブラウザペインが表示された状態で実行してください。タブが裏に回っていると止まります）。
+
+```js
+const m = await import('/web_simulator/tools/verify_course.js');
+await m.runChecks();
+```
+
+さらに HUD の「スタート位置へ」ボタン（`start-pose-btn`）で車体を `startPose` へ乗せてから
+同じ手順を実行すると、SKIP だった項目も走って 13 項目すべてが pass します
+（`counts: {pass: 13, fail: 0, skipped: 0}`）。
 
 ```js
 document.getElementById('start-pose-btn').click();
@@ -479,12 +493,18 @@ await m.runChecks();
 
 - 車線幅は外側境界で 3.4999〜3.5001 m、内側境界で 3.4998〜3.5001 m（基準の 3.5 m に対し
   誤差 0.1 mm 未満）
-- 白線幅 `lineWidthM` は設定どおり 0.15 m
-- 車体の初期スポーンは中央線から 0.0047 m しかずれていない
+- 白線幅 `lineWidthM` は設定どおり 0.15 m。実際に生成されたリボンメッシュの幅も
+  `js/course.js` の `ribbonVertices()` の出力から実測して 1e-6 m 未満の誤差で一致
+- 描画される破線・実線のマスク（`js/course.js` の `dashActiveMask`/`solidActiveMask`）は
+  `js/course_lines.js`（`tools/build_course.py` が独立に生成）と、中央線・内側境界線
+  とも 2470 点中 0 ミスマッチで一致
+- `COURSE_GEOMETRY.startPose` は中央線の基準パス上の点そのもの（誤差 0 m）。車体を
+  実際に `startPose` へ乗せた場合の実測スポーン距離は中央線から 0.0047 m
 - 理想検出器（[`js/ideal_lane_detector.js`](js/ideal_lane_detector.js)）は 40 回の呼び出し中
-  33 回で中央線のフィットが得られ、平均横方向オフセットは -0.0195 m
+  33 回で中央線のフィットが得られ、平均横方向オフセットは -0.0195 m（許容は 3 cm 未満）
 - MyLaps ゲートへの正対衝突は 0.2166 m 貫入した時点で `headOn: true` と判定される一方、
-  20 m 離れていれば接触なし
+  20 m 離れていれば接触なし。補正（`resolveCollisions` の戻り値を適用して再評価する
+  ことを繰り返す）を収束させた後の残留貫入量は 1mm 未満
 - コース逸脱カウントの推移は `[0, 0, 0, 0, 1, 1, 1, 2]`（意図的にコース外へ出すテスト
   シーケンスに対する結果）
 
