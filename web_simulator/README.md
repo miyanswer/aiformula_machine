@@ -267,8 +267,9 @@ rosbridge 接続中は、右上 PiP と同じ機体カメラ視点を `sensor_ms
   - **UFLD**: `models/ufld.onnx`（[`js/ufld_lane_detector.js`](js/ufld_lane_detector.js)）。245MB で git 管理外のため、
     `models/ufld_honda_finetuned_best.pth` を置いて `ros2 run oit_navigation export_ufld_onnx` で生成する
   - **理想検出**: コースの実際の 3 本線（[`js/course_lines.js`](js/course_lines.js)、
-    [`tools/build_course.py`](tools/build_course.py) でコース画像から抽出）を
-    ノイズ・欠落つきで観測する。認識精度と走行方式を切り分けて検証するためのモード
+    [`tools/build_course.py`](tools/build_course.py) がコース画像から基準パスを抽出し、
+    そこからオフセットして生成）をノイズ・欠落つきで観測する。認識精度と走行方式を
+    切り分けて検証するためのモード
   - **ROS2連携**: 下記「ROS 2連携モード」
 - **スタート位置へ**: 車両を外周の中央白線の上 `(0, -1.6, 0)` に置き、記録を 1 周目からやり直す
 - **1周目終了**: 周回検出を待たずに記録を確定し QP ラインを作る（実機の `/lane_navigator/finish_mapping` と同じ）
@@ -420,7 +421,7 @@ Unity上のコース設計ツールのスクリーンショット）を元に、
   検知して HUD に表示しますが、走行そのものは止めません
 - 車体の初期位置は odom 原点 `(0,0,0)` のままです。コース画像は
   [`js/simulator.js`](js/simulator.js) の `COURSE_POSE` で現在
-  `(x: 13.22, y: 35.41, yaw: +90°)` に配置しています
+  `(x: 13.2429, y: 37.9944, yaw: +90°)` に配置しています
 
 ## コースの実寸
 
@@ -461,11 +462,15 @@ cd web_simulator/tools && python3 -m unittest test_build_course
 
 ### ブラウザでの幾何検証
 
-ページを開いてコンソールで以下を実行すると、8 項目のチェックがすべて pass します
-（`requestAnimationFrame` を使うため、ブラウザペインが表示された状態で実行してください。
-タブが裏に回っていると止まります）。
+ページを開いた直後は車体が odom 原点 `(0,0,0)` にいて、`COURSE_GEOMETRY.startPose`
+（中央線上、`(0, -1.6)`）から約 1.6 m 離れています。この状態でスポーンのチェックを
+走らせると中央線からのズレが大きく出てしまうので、先に HUD の「スタート位置へ」ボタン
+（`start-pose-btn`）で車体を `startPose` へ乗せてから実行してください。コンソールで以下を
+実行すると、8 項目のチェックがすべて pass します（`requestAnimationFrame` を使うため、
+ブラウザペインが表示された状態で実行してください。タブが裏に回っていると止まります）。
 
 ```js
+document.getElementById('start-pose-btn').click();
 const m = await import('/web_simulator/tools/verify_course.js');
 await m.runChecks();
 ```

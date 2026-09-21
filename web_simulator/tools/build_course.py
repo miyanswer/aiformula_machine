@@ -59,7 +59,10 @@ START_YAW = 0.0   # js/simulator.js SIM_START_POSE: travel heading at the start 
                   # oriented to match, so arc length grows the way the car drives.
 
 # --- 背景テクスチャ (タスク 3) ---
-ERASE_CORRIDOR_M = 0.45           # 抽出線からの法線方向の消去範囲
+ERASE_CORRIDOR_M = 0.45           # 消去回廊の基準幅. erase_lines() は隣接レイを
+                                   # cv2.line(thickness = 1.5*corridor_px) で結ぶため,
+                                   # 実際の法線方向の消去半幅は 0.75*ERASE_CORRIDOR_M
+                                   # (既定値では約 0.31m) で、この値そのものではない
 ASPHALT_BGR = (156, 150, 156)     # 元 PNG のアスファルト色
 
 
@@ -301,24 +304,12 @@ def build_geometry():
 
     # 4. 内側境界線の接続口 (実際に線が途切れている区間) を判定する.
     #
-    #    round 1/2 は N_RAYS 本のレイ空間に弧長を投影し直してから
-    #    gap_intervals に渡していたが, gap_intervals は受け取った列の
-    #    index 0 を弧長 0 として自前に s = cumsum(seg_lengths) を組み立てる
-    #    ため, 投影後の列の先頭 (最初に有効なレイ) の弧長が path 自身の
-    #    弧長軸の原点と一致しないと, 返ってくる区間が全体が一定量シフトして
-    #    しまう. round 1 はこれでズレたまま 0 区間を返し, round 2 の反転
-    #    修正は「反転すれば正しい座標系になる」と書いたが, それも誤りで,
-    #    ズレの原因そのものには手を付けていなかった (実際, round 2 の
-    #    innerGaps は世界座標で 1 か所に固まっており, その中点では抽出
-    #    サンプルが 0.04-0.35m しか離れておらず, 実際には線がある区間を
-    #    「欠損」と誤判定していた).
-    #
-    #    そこで, レイ空間への弧長投影を完全にやめ, path のインデックス
-    #    空間で直接「生成した内側境界線の各点の近くに, 抽出できた内側
-    #    サンプルが実在するか」を判定する presence test に切り替える.
+    #    生成した内側境界線 (path を -LANE_WIDTH_M だけオフセットしたもの) の
+    #    各点について, 抽出できた内側サンプルが近く (INNER_PRESENCE_TOL_M 以内)
+    #    に実在するかを path のインデックス空間で直接判定する presence test.
     #    line / seg_lengths の両方を path のインデックスでそろえて渡すので,
     #    gap_intervals が組み立てる弧長軸は path 自身の s = cumsum(seg) と
-    #    常に一致し, 原点のズレが原理的に起こらない.
+    #    常に一致する.
     inner_line_pts = np.array(lines["inner"])
     traced_inner_pts = np.array([p for p in traced["inner"] if p is not None])
     d_to_traced = np.array([
@@ -365,8 +356,8 @@ def write_geometry_js(geom, path=OUT_GEOM):
         f.write(";\n")
 
 
-def dashed_line(line, s, total, mark_m, gap_m):
-    # type: (List[List[float]], np.ndarray, float, float, float) -> List[Optional[List[float]]]
+def dashed_line(line, s, mark_m, gap_m):
+    # type: (List[List[float]], np.ndarray, float, float) -> List[Optional[List[float]]]
     """破線パターンの「切れ目」を None にする."""
     pitch = mark_m + gap_m
     return [p if (s[i] % pitch) < mark_m else None for i, p in enumerate(line)]
@@ -398,7 +389,7 @@ def write_lines_js(geom, path=OUT_LINES):
     total = geom["lengthM"]
     out = {
         "outer": lines["outer"],
-        "center": dashed_line(lines["center"], s, total, DASH_MARK_M, DASH_GAP_M),
+        "center": dashed_line(lines["center"], s, DASH_MARK_M, DASH_GAP_M),
         "inner": gapped_line(lines["inner"], s, total, geom["innerGaps"]),
     }
     with open(path, "w") as f:
@@ -421,8 +412,9 @@ def erase_lines(image, radii, center, n_rays, corridor_px, threshold, fill_bgr):
     回廊外と非白画素には触れないので, 回廊に入り込んだ芝生やアスファルトは残る.
 
     隣り合うレイ間の接線方向の隙間を閉じるために, 各線について隣接する
-    レイペア間で cv2.line で描画する. これにより, 法線方向の回廊幅は
-    corridor_px に保ったまま, 接線方向は連続した帯状になる.
+    レイペア間で thickness = 1.5*corridor_px の cv2.line を描画する. この
+    thickness は線の中心から両側に効くため, 実際の法線方向の消去半幅は
+    0.75*corridor_px であり, corridor_px そのものではない.
     """
     out = image.copy()
     h, w = out.shape[:2]

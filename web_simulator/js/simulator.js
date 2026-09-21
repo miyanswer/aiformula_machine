@@ -179,6 +179,20 @@ let hudOutside = null;
 let hudCount = null;
 let hudContact = null;
 
+// Writes the departure/contact HUD indicators and syncs the write-guard
+// cache above, so applyCollisionAndDeparture() and resetNavigation() (the
+// two sites that touch this HUD) can't drift apart on the literal
+// strings/colours.
+function writeCollisionHud(outside, count, contact) {
+  hudOutside = outside;
+  hudCount = count;
+  hudContact = contact;
+  departureStateEl.textContent = outside ? '逸脱中' : 'コース内';
+  departureStateEl.style.color = outside ? '#ff6b6b' : '#8fd18f';
+  departureCountEl.textContent = String(count);
+  contactStateEl.style.display = contact ? 'inline' : 'none';
+}
+
 // Pushes the vehicle back out of anything it overlaps, applied after
 // integration as a position correction so VehiclePhysics itself stays a
 // clean kinematic model. Sliding falls out of the correction (only the
@@ -212,18 +226,8 @@ function applyCollisionAndDeparture() {
   const { offset } = pathTracker.update(physics.x, physics.y);
   const departure = departureMonitor.update(offset);
 
-  if (departure.outside !== hudOutside) {
-    hudOutside = departure.outside;
-    departureStateEl.textContent = hudOutside ? '逸脱中' : 'コース内';
-    departureStateEl.style.color = hudOutside ? '#ff6b6b' : '#8fd18f';
-  }
-  if (departure.count !== hudCount) {
-    hudCount = departure.count;
-    departureCountEl.textContent = String(hudCount);
-  }
-  if (contactActive !== hudContact) {
-    hudContact = contactActive;
-    contactStateEl.style.display = hudContact ? 'inline' : 'none';
+  if (departure.outside !== hudOutside || departure.count !== hudCount || contactActive !== hudContact) {
+    writeCollisionHud(departure.outside, departure.count, contactActive);
   }
 }
 
@@ -553,7 +557,7 @@ const LANE_DATA_TIMEOUT_MS = 800; // navigation_params.yaml lines_timeout
 // Start pose on the center white line of the outer loop (the lap-1 method
 // drives on top of it). Taken from the generated geometry rather than
 // hand-measured, so it stays on the line whenever the course is rebuilt.
-const SIM_START_POSE = COURSE_GEOMETRY.startPose;
+const SIM_START_POSE = { ...COURSE_GEOMETRY.startPose };
 
 const urlInput = document.getElementById('ros-url');
 const topicInput = document.getElementById('ros-topic');
@@ -865,14 +869,8 @@ function resetNavigation() {
   pathTracker.reset();
   departureMonitor.reset();
   // Reflect the reset in the HUD immediately, rather than waiting for the
-  // next physics step, and reset the write-guard cache to match.
-  hudOutside = false;
-  hudCount = 0;
-  hudContact = false;
-  departureStateEl.textContent = 'コース内';
-  departureStateEl.style.color = '#8fd18f';
-  departureCountEl.textContent = '0';
-  contactStateEl.style.display = 'none';
+  // next physics step.
+  writeCollisionHud(false, 0, false);
 }
 
 function setDetectorMode(mode) {
@@ -1722,9 +1720,13 @@ function animate() {
     physics.step(effectiveKeys, dt);
   }
 
-  applyCollisionAndDeparture();
-
   if (!fastForwarding) {
+    // fastForward() calls this itself, once per physics step in its own
+    // loop; calling it again here too would double up (and, since
+    // contactActive is reset each call, could clear it between
+    // fastForward's own calls and flicker the 接触中 indicator).
+    applyCollisionAndDeparture();
+
     // odom_imu_localizer stand-in: wheel speed + IMU yaw rate dead reckoning.
     integrateLocalizer(physics.v, physics.omega, dt);
     recordLocalizerTrail();

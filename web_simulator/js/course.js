@@ -132,7 +132,7 @@ function solidRanges(s, total, skip) {
   return circularRuns(s.map((value) => !inSkip(value)));
 }
 
-function dashRanges(s, total, markM, gapM) {
+function dashRanges(s, markM, gapM) {
   const pitch = markM + gapM;
   return circularRuns(s.map((value) => value % pitch < markM));
 }
@@ -170,7 +170,7 @@ export function createCourseLines() {
   const group = new THREE.Group();
   group.add(ribbonMesh(outerPath, solidRanges(s, total, []), lineWidthM, material));
   group.add(ribbonMesh(innerPath, solidRanges(s, total, innerGaps), lineWidthM, material));
-  group.add(ribbonMesh(centerPath, dashRanges(s, total, dash.markM, dash.gapM), lineWidthM, material));
+  group.add(ribbonMesh(centerPath, dashRanges(s, dash.markM, dash.gapM), lineWidthM, material));
   group.position.z = 0.02;
   return group;
 }

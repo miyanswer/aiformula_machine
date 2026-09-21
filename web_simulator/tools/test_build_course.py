@@ -12,10 +12,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from build_course import (  # noqa: E402
     ASPHALT_BGR, COURSE_WIDTH_M, DASH_GAP_M, DASH_MARK_M, ERASE_CORRIDOR_M,
-    INNER_PRESENCE_TOL_M, N_RAYS, RAY_CENTER, SRC_IMG, START_YAW, WHITE_THRESHOLD,
-    build_geometry, course_pose, curvature_closed, dashed_line, erase_lines,
-    extract_ray_radii, fill_closed, gap_intervals, gapped_line, lowpass_closed,
-    nearest_distance, normals_closed, offset_closed, resample_closed,
+    INNER_PRESENCE_TOL_M, LANE_WIDTH_M, N_RAYS, RAY_CENTER, SRC_IMG, START_YAW,
+    WHITE_THRESHOLD, build_geometry, course_pose, curvature_closed, dashed_line,
+    erase_lines, extract_ray_radii, fill_closed, gap_intervals, gapped_line,
+    lowpass_closed, nearest_distance, normals_closed, offset_closed, resample_closed,
 )
 
 
@@ -128,7 +128,7 @@ class TestDashAndGapNulls(unittest.TestCase):
     def test_dashed_line_blanks_the_gap_part_of_each_pitch(self):
         line = [[float(i), 0.0] for i in range(10)]
         s = np.arange(10, dtype=float)          # 1 点 = 1 m
-        out = dashed_line(line, s, 10.0, mark_m=3.0, gap_m=2.0)   # pitch 5 m
+        out = dashed_line(line, s, mark_m=3.0, gap_m=2.0)   # pitch 5 m
         drawn = [i for i, p in enumerate(out) if p is not None]
         self.assertEqual(drawn, [0, 1, 2, 5, 6, 7])
 
@@ -151,8 +151,7 @@ class TestGeneratedCourseLinesKeepNulls(unittest.TestCase):
         path_pts = np.array(self.geom["centerPath"])
         seg = np.hypot(*(np.roll(path_pts, -1, axis=0) - path_pts).T)
         s = np.concatenate([[0.0], np.cumsum(seg)[:-1]])
-        out = dashed_line(self.geom["_lines"]["center"], s, self.geom["lengthM"],
-                          DASH_MARK_M, DASH_GAP_M)
+        out = dashed_line(self.geom["_lines"]["center"], s, DASH_MARK_M, DASH_GAP_M)
         drawn = sum(1 for p in out if p is not None)
         ratio = drawn / float(len(out))
         expected = DASH_MARK_M / (DASH_MARK_M + DASH_GAP_M)
@@ -233,8 +232,8 @@ class TestBuildGeometryOnTheRealCourse(unittest.TestCase):
         path = np.array(self.geom["centerPath"])
         sign = self.geom["outerSign"]
         traced_outer = np.array([p for p in self.geom["_traced"]["outer"] if p])
-        d_correct = nearest_distance(traced_outer, offset_closed(path, sign * 3.5))
-        d_flipped = nearest_distance(traced_outer, offset_closed(path, -sign * 3.5))
+        d_correct = nearest_distance(traced_outer, offset_closed(path, sign * LANE_WIDTH_M))
+        d_flipped = nearest_distance(traced_outer, offset_closed(path, -sign * LANE_WIDTH_M))
         self.assertLess(float(d_correct.mean()), float(d_flipped.mean()))
 
     def test_course_pose_maps_traced_lines_back_onto_their_pixels(self):
@@ -314,8 +313,9 @@ class TestErasedCourseImage(unittest.TestCase):
     def test_erasure_stays_within_the_corridor(self):
         """
         Erasure must stay local to the traced line positions, within the corridor
-        plus dilation margin. This ensures that only the outer loop's three lines
-        are removed, not the kerb line, parking bays, or crosswalks.
+        drawn by cv2.line (radially, 0.75*corridor_px around each traced sample).
+        This ensures that only the outer loop's three lines are removed, not the
+        kerb line, parking bays, or crosswalks.
         """
         image = cv2.imread(SRC_IMG)
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
