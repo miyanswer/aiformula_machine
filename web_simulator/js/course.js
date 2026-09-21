@@ -165,7 +165,7 @@ function dashRanges(s, markM, gapM) {
 
 function ribbonMesh(path, ranges, width, material) {
   const vertices = [];
-  ranges.forEach((indices) => vertices.push(...ribbonVertices(path, indices, width)));
+  ranges.forEach((indices) => ribbonVertices(path, indices, width).forEach((v) => vertices.push(v)));
   const geometry = new THREE.BufferGeometry();
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
   return new THREE.Mesh(geometry, material);
