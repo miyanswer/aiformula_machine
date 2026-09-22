@@ -15,6 +15,8 @@ import {
   DEFAULT_CAMERA, projectToGround, fitLine, LineTracker, LINE_TRACKER_PARAMS, LaneNavigator,
   NAVIGATOR_PARAMS, RACELINE_PARAMS, TRACKER_PARAMS, MAPPING, RACING, ROLES, extractMaskLines,
 } from './lane_navigator.js';
+import { ConeDetector } from './cone_detector.js';
+import { reactiveAvoid, ConeRecorder, applyRacelineDeflection, coneLandmarkCorrection } from './cone_avoidance.js';
 
 // ---------------------------------------------------------------------------
 // Geometry taken directly from vehicles/sample_vehicle/xacro/ai_car1.xacro
@@ -819,6 +821,29 @@ const UFLD_META_URL = 'models/ufld.json';
 const MODEL_WASM_DIR = 'vendor/onnxruntime-web/';
 let ufldLoadPromise = null;
 
+// コーン検知 (models/cone.onnx, export_cone_onnx.pyで生成) -- 未生成でも
+// 白線追従・衝突判定など他機能はそのまま動くよう、読込失敗はHUD表示のみで握りつぶす。
+const coneDetector = new ConeDetector();
+const CONE_ONNX_URL = 'models/cone.onnx';
+let coneLoadPromise = null;
+let latestConeDetections = [];
+const coneRecorder = new ConeRecorder();
+let prevReactiveBias = 0;
+let previousNavState = null;
+const coneStatusEl = document.getElementById('oit-cone-status');
+
+function ensureConeDetectorLoading() {
+  if (coneDetector.session || coneLoadPromise) return;
+  coneLoadPromise = coneDetector.load(CONE_ONNX_URL, MODEL_WASM_DIR)
+    .then(() => { coneStatusEl.textContent = 'コーン検知: 読込済'; })
+    .catch((err) => {
+      console.warn('ConeDetector load failed (models/cone.onnx missing?)', err);
+      coneStatusEl.textContent = 'コーン検知: 読込エラー (models/cone.onnx を生成してください)';
+      coneLoadPromise = null;
+    });
+}
+ensureConeDetectorLoading();
+
 const laneCanvas = document.getElementById('lane-canvas');
 const laneCtx = laneCanvas.getContext('2d', { willReadFrequently: true });
 const mapCanvas = document.getElementById('map-canvas');
@@ -889,6 +914,10 @@ function resetNavigation() {
   lastMapPublishTime = 0;
   pathTracker.reset();
   departureMonitor.reset();
+  coneRecorder.cones.length = 0;
+  prevReactiveBias = 0;
+  previousNavState = null;
+  window.__sim.coneMapPoints = [];
   // Reflect the reset in the HUD immediately, rather than waiting for the
   // next physics step.
   writeCollisionHud(false, 0, false);
@@ -1299,7 +1328,24 @@ function stepNavigator(tracked, now = performance.now() / 1000) {
   const dt = lastNavStepTime === null ? 0 : Math.min(now - lastNavStepTime, 0.5);
   lastNavStepTime = now;
   const pose = [localizer.x, localizer.y, localizer.yaw];
-  const cmd = laneNavigator.step(now, dt, pose, localizer.v, localizer.omega, localizer.s, tracked);
+  const rawCmd = laneNavigator.step(now, dt, pose, localizer.v, localizer.omega, localizer.s, tracked);
+  const avoided = reactiveAvoid(rawCmd, latestConeDetections, prevReactiveBias, dt);
+  prevReactiveBias = avoided.bias;
+  const cmd = { v: avoided.v, omega: avoided.omega };
+
+  // MAPPING -> RACING遷移を検知したら、1回だけレーシングラインをコーン回避
+  // 後処理版に差し替え、コーン地図を確定する。
+  if (previousNavState !== RACING && laneNavigator.state === RACING && laneNavigator.raceline) {
+    const finalizedCones = coneRecorder.finalize(laneNavigator.recorder.samples, laneNavigator.yawDrift);
+    applyRacelineDeflection(laneNavigator, finalizedCones, laneNavigator.p.tracker);
+    window.__sim.coneMapPoints = finalizedCones; // デバッグ確認用
+  }
+  previousNavState = laneNavigator.state;
+
+  if (laneNavigator.state === RACING && window.__sim.coneMapPoints && window.__sim.coneMapPoints.length) {
+    coneLandmarkCorrection(laneNavigator, pose, latestConeDetections, window.__sim.coneMapPoints);
+  }
+
   latestAutonomousCmd = { v: cmd.v, omega: cmd.omega };
   twistMux.update('mpc', cmd.v, cmd.omega, performance.now());
   if (autonomousCmdVelTopic) {
@@ -1361,6 +1407,19 @@ async function runPerception(now) {
       fits = toFits(lanes);
     }
     const tracked = lineTracker.update(fits);
+    if (detectorMode !== 'ros2' && coneDetector.session) {
+      try {
+        latestConeDetections = await coneDetector.infer(captureCanvas);
+      } catch (err) {
+        console.error('cone detector inference error', err);
+        latestConeDetections = [];
+      }
+    } else {
+      latestConeDetections = [];
+    }
+    if (laneNavigator.state === MAPPING) {
+      coneRecorder.update(localizer.s, [localizer.x, localizer.y, localizer.yaw], latestConeDetections);
+    }
     latestTracked = tracked;
     // Debug trace (last ~60s) for automated verification from the console.
     laneTrace.push({
@@ -1627,6 +1686,7 @@ window.__sim = {
   idealDetector, laneTrace, localizerTrail, fastForward: (sec) => fastForward(sec),
   setDetectorMode: (m) => setDetectorMode(m), resetNavigation: () => resetNavigation(),
   course, obstacles, mylapsRoot, pathTracker, departureMonitor, coneEditor,
+  coneDetector, coneRecorder, latestConeDetections: () => latestConeDetections, coneMapPoints: [],
 };
 resetLocalizer();
 setDetectorMode('yolop');
@@ -1643,6 +1703,8 @@ const odomYawVal = document.getElementById('odom-yaw');
 const odomVxVal = document.getElementById('odom-vx');
 const odomVyVal = document.getElementById('odom-vy');
 const odomWzVal = document.getElementById('odom-wz');
+const slipLEl = document.getElementById('slip-l');
+const slipREl = document.getElementById('slip-r');
 const canRpmRVal = document.getElementById('can-rpm-r');
 const canRpmLVal = document.getElementById('can-rpm-l');
 const canTargetRpmRVal = document.getElementById('can-target-rpm-r');
@@ -1855,6 +1917,8 @@ function animate() {
   odomVxVal.textContent = `${(physics.v * Math.cos(physics.yaw)).toFixed(2)} m/s`;
   odomVyVal.textContent = `${(physics.v * Math.sin(physics.yaw)).toFixed(2)} m/s`;
   odomWzVal.textContent = `${physics.omega.toFixed(2)} rad/s`;
+  slipLEl.textContent = `${(physics.slipL * 100).toFixed(1)}%`;
+  slipREl.textContent = `${(physics.slipR * 100).toFixed(1)}%`;
 
   const wheelCircumference = CAN_WHEEL_DIAMETER * Math.PI;
   const toRpm = (speedMps) => (speedMps / wheelCircumference) * 60;

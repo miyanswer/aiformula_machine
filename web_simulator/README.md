@@ -391,13 +391,18 @@ web_simulator/
 │   ├── course.js            course.glb の読込と、コース寸法・スタート位置・白線点列・中央線パスの実測
 │   ├── course_props.js      MyLaps ゲート（models/MyLaps.obj）の読込・配置・当たり判定用の円
 │   ├── collision.js         2D 当たり判定ヘルパー（円と障害物、押し戻し、コース逸脱の判定）
+│   ├── cone_props.js               コーンの3Dモデル(models/cone.glb)読み込み・当たり判定
+│   ├── cone_editor.js              コーンのクリック配置・ドラッグ移動・削除 (localStorage永続化)
+│   ├── cone_detector.js            cone.onnx によるコーン検知 (バウンディングボックス -> 地面座標)
+│   ├── cone_avoidance.js           コーン回避 (反応的ナッジ・1周目記憶・2周目レーシングライン回避・ランドマーク補正)
 │   ├── lane_model_detector.js      YOLOP (ONNX) による白線マスク検出（crop_bottom前処理）
 │   ├── ufld_lane_detector.js       UFLD (ONNX) による白線点列検出
 │   ├── ideal_lane_detector.js      理想検出（コースの実際の白線 + ノイズ）
 │   ├── lane_navigator.js           oit_navigation lane_nav の JS 移植（線追跡・境界記録・QP・追従）
 │   ├── hud_ui.js                   HUD のタブ切替・折りたたみ・ドラッグ移動
 │   └── twist_mux.js         WASD/自動運転の優先度＋タイムアウト調停
-├── models/                  course.glb（コース）/ MyLaps.obj・.mtl（ゲート）/ honda_shihou_finetuned.onnx / ufld.onnx（git 管理外）
+├── models/                  course.glb（コース）/ MyLaps.obj・.mtl（ゲート）/ cone.glb（コーン）/
+│                            honda_shihou_finetuned.onnx / ufld.onnx / cone.onnx（git 管理外）
 └── vendor/                  three.js（GLTFLoader を含む）/ roslib.js / onnxruntime-web のローカル同梱コピー
 ```
 
@@ -460,6 +465,51 @@ web_simulator/
 ゲートを有効にすると、マッピング周はゲートの手前 1.43 m（速度 0）で止まります（スタートから 210 m 地点）。一方
 **レーシングラインはゲートを素通りします**（ゲート位置で中央線から約 2.6 m 外側を走り、最接近 2.61 m）。
 ゲートは中央線を走る周回だけを止めます。
+
+## コーン配置・検知・回避
+
+詳細設計は [`docs/superpowers/specs/2026-09-22-cone-avoidance-design.md`](../docs/superpowers/specs/2026-09-22-cone-avoidance-design.md) を参照。ここでは要点のみ。
+
+- **配置**: 「走行」タブの「コーン配置」ボタンを ON にすると、3D ビュー上のクリックでコーンを追加、
+  既存コーンのクリックで削除、ドラッグで移動できます（[`js/cone_editor.js`](js/cone_editor.js)）。本数無制限、
+  レーン内かどうかの制約もありません。状態は `localStorage`（キー `aiformula_cones_v1`）に保存され、
+  リロード後も復元されます。各コーンは [`js/cone_props.js`](js/cone_props.js) が `models/cone.glb` を
+  読み込んで配置し、半径 0.15 m の円として `collision.js` の当たり判定（既存の MyLaps ゲート支柱と同じ扱い）に加えます。
+- **検知**: `models/cone.onnx`（Ultralytics YOLO、`src/oit_navigation/oit_navigation/export_cone_onnx.py` で
+  `models/cone.pt` から書き出し、git 管理外）を [`js/cone_detector.js`](js/cone_detector.js) が
+  `lane_model_detector.js` と同じ WebGPU→WASM 構成でブラウザ推論します。オンボードカメラ画像
+  (`captureCanvas`) を毎パーセプションティック推論し、バウンディングボックス下辺中央を
+  `lane_navigator.js` の `projectToGround()`（白線検知と同じカメラモデル）でそのまま地面に投影するので、
+  信号機検知のような距離逆算式は不要です（有効範囲 `0.3m < x < 8.0m`, `|y| < 3.0m`）。
+  `models/cone.onnx` が無い場合は HUD「コーン検知」欄にエラーを表示するだけで、白線追従・衝突判定など
+  他の機能には影響しません。
+- **回避（[`js/cone_avoidance.js`](js/cone_avoidance.js)）**: 反応的回避と、1 周目終了時の後処理の 2 段構えです。
+  - **反応的ナッジ（毎フレーム、1 周目・2 周目共通）**: `navigator.step()` の出力 `{v, omega}` に、検出中の
+    コーンから離れる旋回バイアスを重ねて `physics` に渡します（`reactiveAvoid()`）。近距離のコーンには減速も
+    かけます。あくまで一時的な補正で、地図やレーシングラインそのものは書き換えません。
+  - **1 周目の記憶と 2 周目の後処理**: 1 周目（MAPPING）走行中、検出したコーンを `ConeRecorder` が
+    「検出時の走行距離 `s` ＋ 車体ローカルオフセット」で記録し、境界点と同じ「補正後の姿勢列から再投影する」
+    方式（`correctedPoseSequence()`、`lane_navigator.js` からの再利用）で世界座標に確定します。
+    1 周目が終わり 2 周目（RACING）に入った瞬間に 1 回だけ、この確定済みコーン座標で
+    `applyRacelineDeflection()` がレーシングラインの点列自体をコーンから遠ざける後処理を行います
+    （反応的ナッジと異なり、経路そのものを恒久的に書き換える）。さらに 2 周目以降は
+    `coneLandmarkCorrection()` が、記憶済みコーンと今の検知位置のズレからオドメトリ推定（`localizer`）の
+    ドリフトを補正します。
+- **既知の制約**: MyLaps ゲートの支柱はコーンと同形状・同寸法の飾りのため、コーン検知器はゲート通過時に
+  これも「コーン」として検知します。支柱間隔（0.46 m、「当たり判定・コース逸脱」節）は車体より狭く、
+  複数本を同時に避ける経路計画は反応的ナッジ（1 本ずつの単純な旋回バイアス）の対象外なので、ゲートに
+  正対したまま足止めされることがあります。単独で離れて置かれたコーンの回避・記憶は正常に動作します。
+
+## スリップ誤差モデル
+
+`js/vehicle_physics.js` の車輪速度に、左右独立の時定数付きランダムウォーク（時定数 2s、±8% でクランプ）で
+スリップ率 `slipL`/`slipR` を持たせています。CAN 配信 (`publishVehicleInfoCan`) とオドメトリ推定
+(`integrateLocalizer`) は `measuredWheelSpeeds()`（スリップ込みの計測値）を使う一方、物理演算・当たり判定・
+3D 描画は従来通り真の `wheelSpeeds()` のままです。これにより、`physics.x/y/yaw`（真の位置）と
+`localizer.x/y/yaw`（`LaneNavigator` に渡る推定位置、HUD「詳細」タブの「速度 X/Y」「角速度 Z」のもと）が
+走行中に少しずつ乖離していきます（`window.__sim.physics` と `window.__sim.localizer` を比べると確認できます）。
+コーンランドマーク補正 (`coneLandmarkCorrection()`) は、この乖離を打ち消す材料として使われます。
+HUD「詳細」タブのスリップ L/R 表示は現在値のデバッグ用です。
 
 ## HUD
 
