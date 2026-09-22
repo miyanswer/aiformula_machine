@@ -1490,11 +1490,17 @@ async function fastForward(seconds, physicsDt = 1 / 60) {
       applyCollisionAndDeparture();
       // odom_imu_localizer stand-in (see animate()'s own call site for the
       // rationale): use measuredWheelSpeeds() so fastForward()-driven runs
-      // also see 8%-slip-induced odometry drift instead of ground truth.
+      // also see 8%-slip-induced odometry drift instead of ground truth for
+      // forward speed. omegaMeas stays physics.omega (not wheel-derived):
+      // the real gyro_odometry_publisher (sensing/odometry_publisher)
+      // derives yaw/yaw rate entirely from IMU orientation/angular-velocity
+      // interpolation, never from wheel differential (see
+      // gyro_odometry_publisher.cpp, odometry_publisher.cpp, wheel.hpp),
+      // and this sim has no separate IMU noise model, so the vehicle's true
+      // omega is the correct stand-in.
       const measured = physics.measuredWheelSpeeds();
-      const halfTrack = VEHICLE.track / 2;
       const vMeas = (measured.left + measured.right) / 2;
-      const omegaMeas = (measured.right - measured.left) / (2 * halfTrack);
+      const omegaMeas = physics.omega;
       integrateLocalizer(vMeas, omegaMeas, physicsDt);
       recordLocalizerTrail();
       simClock += physicsDt;
@@ -1826,14 +1832,20 @@ function animate() {
     // fastForward's own calls and flicker the 接触中 indicator).
     applyCollisionAndDeparture();
 
-    // odom_imu_localizer stand-in: wheel speed + IMU yaw rate dead reckoning.
-    // CAN(RPM)相当のmeasuredWheelSpeeds()から v/omega を再構成する -- 真の
-    // physics.v/omegaではなく、8%スリップが乗った計測値を使うことで、
-    // 実車と同じようにオドメトリ推定(localizer)が真の位置からズレていく。
+    // odom_imu_localizer stand-in: wheel speed (slip-affected) + IMU yaw
+    // rate dead reckoning. CAN(RPM)相当のmeasuredWheelSpeeds()から v を
+    // 再構成する -- 真のphysics.vではなく、8%スリップが乗った計測値を
+    // 使うことで、実車と同じようにオドメトリ推定(localizer)の位置が
+    // 真の位置からズレていく。一方yaw/yaw rateはomegaMeas=physics.omega
+    // とし、真の値をそのまま使う: 実車のgyro_odometry_publisher
+    // (sensing/odometry_publisher)はyaw/yaw rateを完全にIMU由来
+    // (orientation/angular_velocityの補間)で求めており、ホイール差動から
+    // 算出することはない (gyro_odometry_publisher.cpp,
+    // odometry_publisher.cpp, wheel.hpp を参照)。このシムには別途IMUノイズ
+    // モデルが無いため、真のphysics.omegaがIMU相当の代替として妥当。
     const measured = physics.measuredWheelSpeeds();
-    const halfTrack = VEHICLE.track / 2;
     const vMeas = (measured.left + measured.right) / 2;
-    const omegaMeas = (measured.right - measured.left) / (2 * halfTrack);
+    const omegaMeas = physics.omega;
     integrateLocalizer(vMeas, omegaMeas, dt);
     recordLocalizerTrail();
   }
