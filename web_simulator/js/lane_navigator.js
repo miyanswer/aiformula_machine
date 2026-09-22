@@ -367,7 +367,10 @@ export function lapCompleted(samples, pose, sNow, startPose, startS, p) {
   return d <= p.closeRadius && Math.abs(wrap(pose[2] - startPose[2])) <= p.closeHeading;
 }
 
-function correctYawDrift(samples, yawDrift, xRec) {
+// 補正後の姿勢列だけを計算する (境界点の再投影にもコーン記憶の再投影にも
+// 使う共通ロジック)。ヨードリフトを走行距離sに応じて滑らかに配分するのは
+// 元のcorrectYawDriftと完全に同じ計算。
+export function correctedPoseSequence(samples, yawDrift) {
   const s0 = samples[0].s, s1 = samples[samples.length - 1].s;
   const span = Math.max(s1 - s0, 1e-9);
   const poses = [[...samples[0].pose]];
@@ -379,6 +382,11 @@ function correctYawDrift(samples, yawDrift, xRec) {
     const prev = poses[poses.length - 1];
     poses.push([prev[0] + c * dx - s * dy, prev[1] + s * dx + c * dy, b.pose[2] - yawDrift * (b.s - s0) / span]);
   }
+  return poses;
+}
+
+function correctYawDrift(samples, yawDrift, xRec) {
+  const poses = correctedPoseSequence(samples, yawDrift);
   return {
     left: poses.map((ps, i) => vehicleToWorld(ps, xRec, samples[i].yLeft)),
     right: poses.map((ps, i) => vehicleToWorld(ps, xRec, samples[i].yRight)),
@@ -835,6 +843,20 @@ export class LaneNavigator {
     const th = nw[2] - pose[2];
     const ct = Math.cos(th), st = Math.sin(th);
     this.corr = [nw[0] - (ct * pose[0] - st * pose[1]), nw[1] - (st * pose[0] + ct * pose[1]), th];
+  }
+
+  // navigator.py本体にはない外部フック: cone_avoidance.jsのコーンランドマーク
+  // 照合結果をthis.corrに反映する。_mapMatching()と違い、呼び出し側
+  // (coneLandmarkCorrection)が渡すdx/dyは既にmapPose座標系(this.corrを
+  // 適用した後の世界座標系)での差分なので、_mapMatching()のような
+  // 「生のpose座標からの逆算」は不要で、corrへの直接加算でよい。
+  // _mapMatching自体は一切変更しない。
+  applyExternalCorrection(dx, dy, dyaw, damping = 0.15) {
+    this.corr = [
+      this.corr[0] + dx * damping,
+      this.corr[1] + dy * damping,
+      this.corr[2] + dyaw * damping,
+    ];
   }
 
   _stop(dt) {
