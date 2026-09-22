@@ -1533,7 +1533,7 @@ function int32ToLittleEndianBytes(value) {
 function publishVehicleInfoCan() {
   if (!canTopic) return;
 
-  const { left, right } = physics.wheelSpeeds();
+  const { left, right } = physics.measuredWheelSpeeds();
   const wheelCircumference = CAN_WHEEL_DIAMETER * Math.PI;
   const toRpm = (speedMetersPerSecond) => (speedMetersPerSecond / wheelCircumference) * 60;
   const data = [...int32ToLittleEndianBytes(toRpm(right)), ...int32ToLittleEndianBytes(toRpm(left))];
@@ -1723,7 +1723,14 @@ function animate() {
     applyCollisionAndDeparture();
 
     // odom_imu_localizer stand-in: wheel speed + IMU yaw rate dead reckoning.
-    integrateLocalizer(physics.v, physics.omega, dt);
+    // CAN(RPM)相当のmeasuredWheelSpeeds()から v/omega を再構成する -- 真の
+    // physics.v/omegaではなく、8%スリップが乗った計測値を使うことで、
+    // 実車と同じようにオドメトリ推定(localizer)が真の位置からズレていく。
+    const measured = physics.measuredWheelSpeeds();
+    const halfTrack = VEHICLE.track / 2;
+    const vMeas = (measured.left + measured.right) / 2;
+    const omegaMeas = (measured.right - measured.left) / (2 * halfTrack);
+    integrateLocalizer(vMeas, omegaMeas, dt);
     recordLocalizerTrail();
   }
 
