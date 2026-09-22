@@ -33,6 +33,7 @@ setup(
             'export_tensorrt = oit_navigation.export_tensorrt:main',
             'export_onnx_web = oit_navigation.export_onnx_web:main',
             'export_ufld_onnx = oit_navigation.export_ufld_onnx:main',
+            'export_cone_onnx = oit_navigation.export_cone_onnx:main',
             'verification_gui = oit_navigation.verification_gui:main',
         ],
     },

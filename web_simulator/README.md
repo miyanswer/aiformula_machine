@@ -266,6 +266,8 @@ rosbridge 接続中は、右上 PiP と同じ機体カメラ視点を `sensor_ms
     `models/honda_shihou_finetuned.onnx`）の白線マスクを、`extractMaskLines()` で線ごとの点列にする
   - **UFLD**: `models/ufld.onnx`（[`js/ufld_lane_detector.js`](js/ufld_lane_detector.js)）。245MB で git 管理外のため、
     `models/ufld_honda_finetuned_best.pth` を置いて `ros2 run oit_navigation export_ufld_onnx` で生成する
+  - **コーン検知**: `models/cone.onnx`（[`js/cone_detector.js`](js/cone_detector.js)）。git管理外のため、
+    `models/cone.pt` を置いて `ros2 run oit_navigation export_cone_onnx` で生成する。
   - **理想検出**: コースの実際の 3 本線（[`js/course.js`](js/course.js) が `course.glb` の
     メッシュから取り出した外側境界・中央線・内側境界の点列）をノイズ・欠落つきで観測する。
     認識精度と走行方式を切り分けて検証するためのモード
