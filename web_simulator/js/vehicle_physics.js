@@ -28,6 +28,15 @@ const ANGULAR_ACCEL = 2.5; // [rad/s^2] while A/D held
 const ANGULAR_DAMPING = 4.0; // [rad/s^2] while A/D released (coasts back to 0)
 export const MAX_ANGULAR = 1.2; // [rad/s]
 
+// 車輪スリップ誤差モデル (CLAUDE.md: 「機体はスリップ誤差が8%程度ある」)。
+// 左右輪独立に、時定数付きランダムウォークで±8%以内のスリップ率を持たせる。
+// 真の物理位置(this.x/y/yaw)には影響させず、measuredWheelSpeeds()だけに
+// 反映することで、CAN配信・オドメトリ推定(js/simulator.jsのlocalizer)と
+// 真の位置が実車と同じように乖離していくようにする。
+const SLIP_TAU_S = 2.0; // [s] 時定数
+const SLIP_NOISE = 0.05; // [1/sqrt(s)] ノイズ強度
+const SLIP_MAX = 0.08; // ±8%にクランプ
+
 function clamp(value, min, max) {
   return Math.max(min, Math.min(max, value));
 }
@@ -50,6 +59,8 @@ export class VehiclePhysics {
     this.v = 0; // [m/s] forward speed
     this.omega = 0; // [rad/s] yaw rate
     this.linearAccel = 0; // [m/s^2] forward (body x) accel, for IMU simulation
+    this.slipL = 0; // 左輪スリップ率 (-0.08〜0.08、measuredWheelSpeeds()だけに影響)
+    this.slipR = 0; // 右輪スリップ率
   }
 
   reset() {
@@ -59,6 +70,8 @@ export class VehiclePhysics {
     this.v = 0;
     this.omega = 0;
     this.linearAccel = 0;
+    this.slipL = 0;
+    this.slipR = 0;
   }
 
   // keys: { forward, backward, left, right } booleans
@@ -97,6 +110,8 @@ export class VehiclePhysics {
     this.yaw += this.omega * dt;
     // Normalize yaw to [-PI, PI] (REP 103 standard)
     this.yaw = Math.atan2(Math.sin(this.yaw), Math.cos(this.yaw));
+
+    this._stepSlip(dt);
   }
 
   // Drives the vehicle from a commanded (v, omega) instead of WASD key
@@ -137,6 +152,23 @@ export class VehiclePhysics {
     this.y += this.v * Math.sin(this.yaw) * dt;
     this.yaw += this.omega * dt;
     this.yaw = Math.atan2(Math.sin(this.yaw), Math.cos(this.yaw));
+
+    this._stepSlip(dt);
+  }
+
+  // Box-Mullerで標準正規乱数を1つ作る (スリップのランダムウォークのノイズ項)。
+  static _randn() {
+    const u1 = Math.max(Math.random(), 1e-9);
+    const u2 = Math.random();
+    return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
+  }
+
+  // 左右輪のスリップ率を1ステップ進める。step()/stepAutonomous()の末尾から呼ぶ。
+  _stepSlip(dt) {
+    this.slipL += (-this.slipL / SLIP_TAU_S + SLIP_NOISE * VehiclePhysics._randn()) * dt;
+    this.slipR += (-this.slipR / SLIP_TAU_S + SLIP_NOISE * VehiclePhysics._randn()) * dt;
+    this.slipL = clamp(this.slipL, -SLIP_MAX, SLIP_MAX);
+    this.slipR = clamp(this.slipR, -SLIP_MAX, SLIP_MAX);
   }
 
   // Standard differential-drive wheel speed decomposition (actual/measured).
@@ -146,6 +178,14 @@ export class VehiclePhysics {
       left: this.v - this.omega * halfTrack,
       right: this.v + this.omega * halfTrack,
     };
+  }
+
+  // CAN RPM配信・オドメトリ推定(js/simulator.jsのlocalizer)が使う、
+  // スリップ込みの「計測される」車輪速度。wheelSpeeds()(真値、当たり判定
+  // や描画に使う)とは別に用意し、両者の乖離が8%程度のスリップを再現する。
+  measuredWheelSpeeds() {
+    const { left, right } = this.wheelSpeeds();
+    return { left: left * (1 + this.slipL), right: right * (1 + this.slipR) };
   }
 
   // Theoretical / commanded target wheel speeds from active key inputs.
