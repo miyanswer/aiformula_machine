@@ -19,7 +19,7 @@ from oit_navigation.lane_nav.boundary_recorder import BoundarySample  # noqa: E4
 
 
 def test_ground_projection_roundtrip():
-    cam = CameraModel(pitch_down=math.radians(1.8))
+    cam = CameraModel(pitch_down=math.radians(7.3))
     # 地面点 -> 画像 -> 地面 が一致すること
     X, Y = np.array([2.0, 5.0, 8.0]), np.array([1.0, -1.5, 0.3])
     fx, fy, cx, cy = cam.scaled(640, 360)

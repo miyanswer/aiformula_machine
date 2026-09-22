@@ -27,7 +27,7 @@ class CameraModel:
     ref_height: int = 1080
     cam_height: float = 0.56   # 地面からの高さ [m]
     cam_x: float = 0.055       # base_link からの前方オフセット [m]
-    pitch_down: float = np.deg2rad(1.8)
+    pitch_down: float = np.deg2rad(7.3)
 
     def scaled(self, width: int, height: int) -> Tuple[float, float, float, float]:
         sx = width / self.ref_width

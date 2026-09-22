@@ -5,7 +5,7 @@
 
 // Vehicle footprint: two circles along the body axis, in base_link metres.
 // Covers roughly 1.6m x 0.8m -- the xacro body runs from the caster at
-// x = -0.76 to about x = +0.7, and the 0.40 radius matches
+// x = -0.815 to about x = +0.7, and the 0.40 radius matches
 // lane_navigator.js's RACELINE_PARAMS.vehicleHalfWidth.
 export const VEHICLE_HALF_WIDTH = 0.40;
 export const VEHICLE_COLLIDERS = [

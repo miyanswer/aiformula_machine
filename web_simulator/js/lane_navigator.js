@@ -19,7 +19,7 @@
 // ---------------------------------------------------------------------------
 export const DEFAULT_CAMERA = {
   fx: 763.17, fy: 763.17, cx: 960.0, cy: 540.0, refWidth: 1920, refHeight: 1080,
-  camHeight: 0.56, camX: 0.055, pitchDown: (1.8 * Math.PI) / 180,
+  camHeight: 0.56, camX: 0.055, pitchDown: (7.3 * Math.PI) / 180,
 };
 
 export function projectToGround(cam, u, v, width, height, minDepression = Math.PI / 180) {

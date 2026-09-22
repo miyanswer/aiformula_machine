@@ -9,6 +9,8 @@
   <xacro:property name="D2R" value="${PI/180}"/>
   <xacro:property name="WHEEL_RADIUS" value="0.12"/>
   <xacro:property name="CASTER_RADIUS" value="0.10"/>
+  <!-- Front drive-wheel axle to rear caster axle. -->
+  <xacro:property name="WHEELBASE" value="0.815"/>
 
   <xacro:property name="BASE_FOOTPRINT" value="base_footprint"/>
   <xacro:property name="BASE" value="base"/>
@@ -51,7 +53,7 @@
   <!-- caster_back -->
   <xacro:caster_back_joint_macro
     caster_back="${CASTER_BACK}" parent="${BASE}"
-    x="-0.76" y="0.0" z="${CASTER_RADIUS}"
+    x="-${WHEELBASE}" y="0.0" z="${CASTER_RADIUS}"
     roll="${90.0*D2R}" pitch="0.0" yaw="${90.0*D2R}"/>
   <xacro:caster_back_link_macro
     caster_back="${CASTER_BACK}"

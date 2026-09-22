@@ -1,16 +1,24 @@
 // Simple differential-drive physics for the AIFormula sample_vehicle.
 // Values are chosen to match vehicles/sample_vehicle/xacro/*.xacro and
 // config/wheel.yaml (wheel radius / track width), with the overall vehicle
-// mass set to the ~70kg spec given for this simulator.
+// mass and wheel-load values set to the measured vehicle specifications.
 
 export const VEHICLE = {
-  massKg: 70,
+  // Static wheel loads [kg].  Their sum is the vehicle mass used by the
+  // longitudinal dynamics below.
+  wheelLoadsKg: {
+    right: 25.0,
+    left: 23.4,
+    rear: 23.2,
+  },
+  massKg: 71.6,
   wheelRadius: 0.12, // [m] vehicles/sample_vehicle xacro: WHEEL_RADIUS
   track: 0.6, // [m] config/wheel.yaml: tread
+  wheelbase: 0.815, // [m] front drive-wheel axle to rear-wheel axle
 };
 
 // Forces are expressed in Newtons and converted to acceleration through
-// VEHICLE.massKg, so the 70kg body mass genuinely affects how quickly the
+// VEHICLE.massKg, so the 71.6kg vehicle mass genuinely affects how quickly the
 // vehicle speeds up, brakes and coasts to a stop.
 const DRIVE_FORCE_N = 154; // W held -> forward accel ~2.2 m/s^2
 const REVERSE_FORCE_N = 98; // S held while stopped/reversing -> ~1.4 m/s^2

@@ -124,7 +124,7 @@ class LaneDetectorNode(Node):
             cx=float(d("camera_cx", 960.0).value), cy=float(d("camera_cy", 540.0).value),
             ref_width=int(d("camera_ref_width", 1920).value), ref_height=int(d("camera_ref_height", 1080).value),
             cam_height=float(d("camera_height", 0.56).value), cam_x=float(d("camera_x", 0.055).value),
-            pitch_down=np.deg2rad(float(d("camera_pitch_down_deg", 1.8).value)),
+            pitch_down=np.deg2rad(float(d("camera_pitch_down_deg", 7.3).value)),
         )
         self.tracker_params = LineTrackerParams(
             x_ref=float(d("tracker_x_ref", 2.0).value),

@@ -30,7 +30,7 @@ const MESH_DIR = '../vehicles/sample_vehicle/xacro/meshes/';
 const BODY_OFFSET = { x: 0.0, y: 0.0, z: VEHICLE.wheelRadius, roll: 0, pitch: 0, yaw: Math.PI };
 const WHEEL_LEFT_JOINT = { x: 0.0, y: 0.3, z: VEHICLE.wheelRadius, roll: Math.PI / 2, pitch: 0, yaw: Math.PI / 2 };
 const WHEEL_RIGHT_JOINT = { x: 0.0, y: -0.3, z: VEHICLE.wheelRadius, roll: Math.PI / 2, pitch: 0, yaw: Math.PI / 2 };
-const CASTER_JOINT = { x: -0.76, y: 0.0, z: 0.10, roll: Math.PI / 2, pitch: 0, yaw: Math.PI / 2 };
+const CASTER_JOINT = { x: -VEHICLE.wheelbase, y: 0.0, z: 0.10, roll: Math.PI / 2, pitch: 0, yaw: Math.PI / 2 };
 const WHEEL_SCALE = { thickness: 0.05, size: 0.12 }; // wheel_macro.xacro THICKNESS_SCALE/SIZE_SCALE
 const CASTER_SCALE = 0.10; // caster_back_macro.xacro SCALE
 
@@ -1845,8 +1845,8 @@ const clock = new THREE.Clock();
 
 function updateOnboardCameraPose() {
   // Onboard (ZED mount) camera: rigidly attached to the vehicle.
-  // Pitch down angle is 1.8 deg, matching real extrinsic.yaml orientation (r: -88.2 -> ~1.8 deg tilt).
-  const PITCH_DOWN_RAD = (1.8 * Math.PI) / 180;
+  // Pitch down angle is 7.3 deg, matching real extrinsic.yaml orientation (r: -82.7 -> ~7.3 deg tilt).
+  const PITCH_DOWN_RAD = (7.3 * Math.PI) / 180;
   const LOOK_DIST = 5.0;
   const mountRos = {
     x: physics.x + CAMERA_MOUNT.x * Math.cos(physics.yaw) - CAMERA_MOUNT.y * Math.sin(physics.yaw),

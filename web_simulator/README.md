@@ -230,7 +230,7 @@ rosbridge 接続中は、右上 PiP と同じ機体カメラ視点を `sensor_ms
 - **実測値 (Feedback / Measured RPM)**:
   - **topic**: `/aiformula_sensing/vehicle_info`（`topic_list.yaml` の `sensing.input_can_data`）
   - **CAN ID**: `1809` (`0x711`、`odometry_publisher` の `RPM_ID`)
-  - **内容**: 70kg 車体の質量・慣性・走行抵抗を受けた**現在の実際の車輪回転数**。
+  - **内容**: 71.6kg 車体の質量・慣性・走行抵抗を受けた**現在の実際の車輪回転数**。
   - **データ (8バイト)**: `data[0..3]` = 右輪RPM、`data[4..7]` = 左輪RPM（符号付き32bit・リトルエンディアン）
 - **理論値 / 指令値 (Target / Commanded RPM)**:
   - **CAN ID**: `0x210` (`528`、`motor_controller.py` がモーターアンプへ送る指令)
@@ -371,7 +371,8 @@ make sim-nav                   # 3. simulator_test.launch.py (BACKEND=yolop|ufld
 `vehicles/sample_vehicle/xacro/ai_car1.xacro` に準拠した差動2輪駆動（後方キャスター）
 構成です。パラメータは [`js/vehicle_physics.js`](js/vehicle_physics.js) にまとめています。
 
-- 車体質量: **70 kg**（ユーザー指定。加減速・惰性の計算に実際に使用）
+- 車輪荷重: 右 **25.0 kg**、左 **23.4 kg**、後 **23.2 kg**（合計 **71.6 kg**。加減速・惰性の計算に実際に使用）
+- ホイールベース: **0.815 m**（前輪軸から後輪軸まで）
 - 駆動輪半径: 0.12 m（xacro `WHEEL_RADIUS`）
 - トレッド幅: 0.6 m（`config/wheel.yaml` の `tread`）
 - 最高速度: 1.5 m/s、最高後退速度: 0.75 m/s
@@ -387,7 +388,7 @@ web_simulator/
 ├── index.html              HUD と canvas、importmap
 ├── js/
 │   ├── simulator.js         シーン構築・メッシュ読込・入力・rosbridge通信・描画ループ
-│   ├── vehicle_physics.js   差動2輪駆動の物理モデル（質量70kg）
+│   ├── vehicle_physics.js   差動2輪駆動の物理モデル（質量71.6kg）
 │   ├── course.js            course.glb の読込と、コース寸法・スタート位置・白線点列・中央線パスの実測
 │   ├── course_props.js      MyLaps ゲート（models/MyLaps.obj）の読込・配置・当たり判定用の円
 │   ├── collision.js         2D 当たり判定ヘルパー（円と障害物、押し戻し、コース逸脱の判定）
