@@ -71,3 +71,19 @@ web_simulator/models/cone.onnx
 
 # superpowers SDD scratch (ledger, briefs, review packages)
 .superpowers/
+
+# AI tooling & IDE scratch
+.claude/
+
+# 3D raw CAD / interchange formats
+*.fbx
+*.step
+*.stp
+*.f3d
+
+# Generic root pretrained models
+/yolo11n.pt
+
+# Test dataset images
+jpeg/
+
