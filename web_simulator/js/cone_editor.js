@@ -14,7 +14,7 @@ function loadStored() {
     if (!raw) return [];
     const arr = JSON.parse(raw);
     if (!Array.isArray(arr)) return [];
-    return arr.filter((c) => c && typeof c.id === 'string' && Number.isFinite(c.x) && Number.isFinite(c.y));
+    return arr.filter((c) => c && typeof c.id === 'string' && Number.isFinite(c.x) && Number.isFinite(c.y) && Math.abs(c.x) < 100 && Math.abs(c.y) < 100);
   } catch (err) {
     console.warn('cone_editor: failed to load localStorage, starting empty', err);
     return [];
@@ -71,23 +71,24 @@ export function createConeEditor({ raycastTarget, rosRoot, camera, domElement, o
 
   function onPointerDown(evt) {
     if (!enabled) return;
-    const gp = groundPointFromEvent(evt);
-    if (!gp) return;
     downPos = { clientX: evt.clientX, clientY: evt.clientY };
     moved = false;
+    const gp = groundPointFromEvent(evt);
+    if (!gp) return;
     const hit = findNear(gp.x, gp.y);
     dragId = hit ? hit.id : null;
-    if (dragId) {
-      evt.stopPropagation();
-      if (orbitControls) orbitControls.enabled = false;
+    if (dragId && orbitControls) {
+      orbitControls.enabled = false;
     }
   }
 
   function onPointerMove(evt) {
-    if (!enabled || dragId === null || !downPos) return;
+    if (!enabled || !downPos) return;
     const dx = evt.clientX - downPos.clientX, dy = evt.clientY - downPos.clientY;
-    if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
-    moved = true;
+    if (Math.hypot(dx, dy) >= DRAG_THRESHOLD_PX) {
+      moved = true; // マウス移動があったら視点回転でも moved = true にする
+    }
+    if (dragId === null) return; // コーンをつかんでいない場合は視点回転なのでコーン移動はしない
     const gp = groundPointFromEvent(evt);
     if (!gp) return;
     const c = cones.find((k) => k.id === dragId);
@@ -99,18 +100,32 @@ export function createConeEditor({ raycastTarget, rosRoot, camera, domElement, o
     if (!enabled) return;
     const wasDragId = dragId;
     const wasMoved = moved;
+    const dp = downPos;
     dragId = null; downPos = null; moved = false;
-    if (wasDragId && orbitControls) orbitControls.enabled = true;
-    if (wasDragId && !wasMoved) {
-      // クリック(ドラッグなし) = 削除
+    if (orbitControls) orbitControls.enabled = true;
+
+    // マウスが動いた場合 (視点回転やコーン移動ドラッグ) は新規コーン作成・削除を行わない
+    if (dp) {
+      const dist = Math.hypot(evt.clientX - dp.clientX, evt.clientY - dp.clientY);
+      if (dist >= DRAG_THRESHOLD_PX || wasMoved) {
+        return;
+      }
+    }
+
+    if (wasDragId) {
+      // 既存コーンのクリック(ドラッグなし) = 削除
       const idx = cones.findIndex((c) => c.id === wasDragId);
       if (idx >= 0) { cones.splice(idx, 1); emit(); }
       evt.stopPropagation();
       return;
     }
-    if (wasDragId) return; // ドラッグ終了、emitは既にonPointerMoveで済み
+
+    // 何もない地面のクリック(ドラッグなし) = 新規コーン追加
     const gp = groundPointFromEvent(evt);
     if (!gp) return;
+    // 既存コーンの至近距離なら重複配置しない
+    if (findNear(gp.x, gp.y)) return;
+
     cones.push({ id: makeId(), x: gp.x, y: gp.y });
     emit();
     evt.stopPropagation();

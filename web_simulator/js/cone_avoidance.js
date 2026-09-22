@@ -5,23 +5,58 @@
 // 移植)本体は一切変更しない -- ここにある関数はすべて外側から結果を使う/
 // 上書きするだけ。詳細はdocs/superpowers/specs/2026-09-22-cone-avoidance-design.md参照。
 
-import { VEHICLE_HALF_WIDTH } from './collision.js';
-import { CONE_RADIUS } from './cone_props.js';
 import { vehicleToWorld, rateLimit, correctedPoseSequence, RacelineFollower } from './lane_navigator.js';
 
-// --- 7.1: 反応的回避 ---
-const REACT_MARGIN = 0.15;
-export const REACT_CLEARANCE = VEHICLE_HALF_WIDTH + CONE_RADIUS + REACT_MARGIN; // 0.70
-const REACT_LOOKAHEAD_X = 4.0;
-const REACT_MIN_X = 0.3;
-const REACT_GAIN = 1.5;
-const REACT_MAX_OMEGA_BIAS = 0.6;
-const REACT_SLOW_X = 1.5;
-const REACT_SLOW_V = 0.5;
+// --- 7.1: 半径1.0m クラスタ包絡 & 外周円弧トレース回避 ---
+export const KEEP_OUT_RADIUS = 1.0; // [m] 各コーン中心からの侵入禁止半径
+// 回避経路の基準点も、要求どおりコーン中心から半径1.0mに保つ。
+export const REACT_CLEARANCE = KEEP_OUT_RADIUS;
+const REACT_LOOKAHEAD_X = 7.0;
+const REACT_MIN_X = 0.2;
+const REACT_MAX_OMEGA_BIAS = 0.85;
+const REACT_SLOW_X = 1.8;
+const REACT_SLOW_V = 0.6;
+const CLUSTER_LINK_DISTANCE = KEEP_OUT_RADIUS * 2;
+
+// 回避方向のロック (チャタリング防止) & 通過後スムーズ復帰状態
+let lockedAvoidSign = 0; // -1: 右抜け, +1: 左抜け, 0: なし
+let lastThreatTime = 0;
 
 /**
- * navigator.step()が返したcmdに、検出中のコーンを避ける操舵バイアスを
- * 加えて返す。MAPPING/RACING両方で毎フレーム呼ぶ。
+ * 1.0mの禁止円が接するコーンを、連結成分ごとのクラスタにまとめる。
+ * クラスタ内の禁止領域は「円の和集合」であり、回避時には各円の外周を
+ * なぞるため、コーン間を禁止円を横切ってすり抜けることはない。
+ */
+export function clusterConeDetections(cones) {
+  const remaining = new Set(cones.map((_, i) => i));
+  const clusters = [];
+  while (remaining.size) {
+    const seed = remaining.values().next().value;
+    remaining.delete(seed);
+    const indices = [seed];
+    for (let cursor = 0; cursor < indices.length; cursor++) {
+      const a = cones[indices[cursor]];
+      for (const i of [...remaining]) {
+        const b = cones[i];
+        if (Math.hypot(a.x - b.x, a.y - b.y) <= CLUSTER_LINK_DISTANCE) {
+          remaining.delete(i);
+          indices.push(i);
+        }
+      }
+    }
+    const members = indices.map((i) => cones[i]);
+    clusters.push({
+      cones: members,
+      minX: Math.min(...members.map((c) => c.x)),
+      centerY: members.reduce((sum, c) => sum + c.y, 0) / members.length,
+    });
+  }
+  return clusters;
+}
+
+/**
+ * navigator.step()が返したcmdに、コーン群(クラスタ)の半径1.0m侵入禁止円の
+ * 外周円弧を沿うように抜ける操舵バイアスを加えて返す。
  * @param {{v:number, omega:number}} cmd
  * @param {Array<{x:number, y:number, conf:number}>} detections 車体フレーム
  * @param {number} prevBias 前回返したbias (レート制限のため)
@@ -29,23 +64,86 @@ const REACT_SLOW_V = 0.5;
  * @param {number} maxRate [rad/s^2] biasの変化率上限
  */
 export function reactiveAvoid(cmd, detections, prevBias, dt, maxRate = 4.0) {
-  let worstPush = 0, pushSign = 0, worstX = REACT_MIN_X, closeSlow = false;
-  for (const d of detections) {
-    if (d.x < REACT_MIN_X || d.x > REACT_LOOKAHEAD_X) continue;
-    const shortfall = REACT_CLEARANCE - Math.abs(d.y);
-    if (shortfall > worstPush) { worstPush = shortfall; pushSign = d.y >= 0 ? -1 : 1; worstX = d.x; }
-    if (d.x < REACT_SLOW_X && Math.abs(d.y) < REACT_CLEARANCE) closeSlow = true;
+  const now = performance.now() / 1000;
+
+  // 1. 有効範囲内のコーンを収集し、禁止円が接するものをクラスタ化する。
+  const validCones = detections.filter(d => d.x >= REACT_MIN_X && d.x <= REACT_LOOKAHEAD_X && Math.abs(d.y) < 3.0);
+  const clusters = clusterConeDetections(validCones);
+  // 進路と重なるクラスタだけを対象にする。最も手前のものを先に抜ければ、
+  // その後のクラスタについて次の制御周期で改めて正しい側を選べる。
+  const threat = clusters
+    .filter((cluster) => cluster.cones.some((c) => Math.abs(c.y) < REACT_CLEARANCE))
+    .sort((a, b) => a.minX - b.minX)[0];
+
+  if (threat) {
+    lastThreatTime = now;
   }
-  let targetBias = 0;
-  if (worstPush > 0) {
-    targetBias = Math.max(-REACT_MAX_OMEGA_BIAS, Math.min(REACT_MAX_OMEGA_BIAS,
-      pushSign * REACT_GAIN * worstPush / Math.max(worstX, 0.5)));
+
+  // 脅威が無い／通過済みなら、操舵バイアスを滑らかに戻す。
+  if (!threat || (now - lastThreatTime > 0.8)) {
+    lockedAvoidSign = 0;
+    const bias = rateLimit(prevBias, 0, maxRate, dt);
+    return {
+      v: cmd.v,
+      omega: cmd.omega + bias,
+      bias,
+      debug: `回避待機: 有効コーン ${validCones.length} 本 / クラスタ ${clusters.length} 個`,
+    };
   }
+
+  // 2. コース中心線に対して左(y>0)のクラスタは右へ、右(y<0)のクラスタは
+  // 左へ抜ける。通過中はロックし、検出値の揺れで左右を往復しないようにする。
+  // ただし次のクラスタが反対側にある場合は、そのクラスタに合わせて切り替える。
+  const desiredAvoidSign = threat.centerY > 0 ? -1 : 1;
+  if (lockedAvoidSign === 0 || lockedAvoidSign !== desiredAvoidSign) lockedAvoidSign = desiredAvoidSign;
+
+  // 3. 手前クラスタだけに沿って円弧を作る。早めに外側へ寄せ、クラスタの
+  // 円が現在の注視断面を横切るときはその円弧の接線側を目標にする。
+  const minX = threat.minX;
+  const closeSlow = minX < REACT_SLOW_X;
+  const lookaheadX = Math.max(0.9, Math.min(minX, 3.5));
+
+  // 4. クラスタを構成する各 1.0m 禁止円の外周円弧（車体中心に対しては
+  // REACT_CLEARANCE）を計算する。
+  // 注視点 x = lookaheadX における安全な横位置境界 yTarget を求める
+  let requiredOffset = 0;
+  for (const c of threat.cones) {
+    const dx = lookaheadX - c.x;
+    if (Math.abs(dx) < REACT_CLEARANCE) {
+      // 円の方程式: dy = sqrt(R^2 - dx^2)
+      const arcWidth = Math.sqrt(REACT_CLEARANCE * REACT_CLEARANCE - dx * dx);
+      if (lockedAvoidSign > 0) {
+        // 左抜け: コーン中心より左側 (c.y + arcWidth)
+        const targetY = c.y + arcWidth;
+        if (targetY > requiredOffset) requiredOffset = targetY;
+      } else {
+        // 右抜け: コーン中心より右側 (c.y - arcWidth)
+        const targetY = c.y - arcWidth;
+        if (targetY < requiredOffset) requiredOffset = targetY;
+      }
+    } else if (c.x > lookaheadX) {
+      // 先行するコーンに対しても事前に外側へアプローチ
+      const directTarget = lockedAvoidSign > 0 ? (c.y + REACT_CLEARANCE) : (c.y - REACT_CLEARANCE);
+      if (lockedAvoidSign > 0 && directTarget > requiredOffset) requiredOffset = directTarget;
+      if (lockedAvoidSign < 0 && directTarget < requiredOffset) requiredOffset = directTarget;
+    }
+  }
+
+  // 5. 目標円弧点 (lookaheadX, requiredOffset) に向けた円弧追従 (Pure Pursuit)
+  // 曲率: kappa = 2 * y / (x^2 + y^2)
+  const distSq = lookaheadX * lookaheadX + requiredOffset * requiredOffset;
+  const curvature = (2.0 * requiredOffset) / Math.max(distSq, 1.0);
+
+  const v = closeSlow ? Math.min(cmd.v, REACT_SLOW_V) : cmd.v;
+  let targetBias = curvature * Math.max(v, 0.9) * 1.3;
+  targetBias = Math.max(-REACT_MAX_OMEGA_BIAS, Math.min(REACT_MAX_OMEGA_BIAS, targetBias));
+
   const bias = rateLimit(prevBias, targetBias, maxRate, dt);
   return {
-    v: closeSlow ? Math.min(cmd.v, REACT_SLOW_V) : cmd.v,
+    v,
     omega: cmd.omega + bias,
     bias,
+    debug: `回避中: ${threat.cones.length} 本のクラスタを${lockedAvoidSign > 0 ? '左' : '右'}へ回避 | 禁止半径 ${KEEP_OUT_RADIUS.toFixed(1)} m | 横目標 ${requiredOffset.toFixed(2)} m | 操舵補正 ${bias.toFixed(2)} rad/s`,
   };
 }
 
@@ -93,7 +191,7 @@ export class ConeRecorder {
 }
 
 // --- 7.3: 2周目レーシングラインの回避後処理 ---
-export const DEFLECT_CLEARANCE = VEHICLE_HALF_WIDTH + CONE_RADIUS + 0.20; // 0.75
+export const DEFLECT_CLEARANCE = KEEP_OUT_RADIUS; // [m] 1.0m (各コーン中心からの侵入禁止半径)
 
 /**
  * QP出力のレーシングライン点列を、記録済みコーンから離すよう局所的に

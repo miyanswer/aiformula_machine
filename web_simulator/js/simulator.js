@@ -831,6 +831,7 @@ const coneRecorder = new ConeRecorder();
 let prevReactiveBias = 0;
 let previousNavState = null;
 const coneStatusEl = document.getElementById('oit-cone-status');
+const avoidanceDebugEl = document.getElementById('avoidance-debug');
 
 function ensureConeDetectorLoading() {
   if (coneDetector.session || coneLoadPromise) return;
@@ -1001,8 +1002,15 @@ autonomousBtn.addEventListener('click', () => {
 const conePlaceBtn = document.getElementById('cone-place-btn');
 const coneClearBtn = document.getElementById('cone-clear-btn');
 conePlaceBtn.addEventListener('click', () => {
-  if (coneEditor.isEnabled()) { coneEditor.disable(); conePlaceBtn.textContent = 'コーン配置: OFF'; }
-  else { coneEditor.enable(); conePlaceBtn.textContent = 'コーン配置: ON'; }
+  if (coneEditor.isEnabled()) {
+    coneEditor.disable();
+    resetChaseView();
+    conePlaceBtn.textContent = 'コーン配置: OFF';
+  } else {
+    coneEditor.enable();
+    showConePlacementView();
+    conePlaceBtn.textContent = 'コーン配置: ON';
+  }
 });
 coneClearBtn.addEventListener('click', () => coneEditor.clearAll());
 
@@ -1329,8 +1337,9 @@ function stepNavigator(tracked, now = performance.now() / 1000) {
   lastNavStepTime = now;
   const pose = [localizer.x, localizer.y, localizer.yaw];
   const rawCmd = laneNavigator.step(now, dt, pose, localizer.v, localizer.omega, localizer.s, tracked);
-  const avoided = reactiveAvoid(rawCmd, latestConeDetections, prevReactiveBias, dt);
+  const avoided = reactiveAvoid(rawCmd, coneDetectionsForAvoidance(), prevReactiveBias, dt);
   prevReactiveBias = avoided.bias;
+  avoidanceDebugEl.textContent = avoided.debug;
   const cmd = { v: avoided.v, omega: avoided.omega };
 
   // MAPPING -> RACING遷移を検知したら、1回だけレーシングラインをコーン回避
@@ -1357,6 +1366,30 @@ function stepNavigator(tracked, now = performance.now() / 1000) {
   showNavStatus(st);
   if (laneTrackerStatusTopic) laneTrackerStatusTopic.publish(new ROSLIB.Message({ data: JSON.stringify(st) }));
   return cmd;
+}
+
+// エディタで置いたコーンはシミュレータが正確な位置を知っているため、ONNX
+// モデルの有無・検出の一時的な失敗に関係なく回避対象へ渡す。カメラ検出結果も
+// 残し、同じコーンと思われる近接点は重複させない。
+function coneDetectionsForAvoidance() {
+  const c = Math.cos(physics.yaw);
+  const s = Math.sin(physics.yaw);
+  const placed = coneEditor.cones.map((cone) => {
+    const dx = cone.x - physics.x;
+    const dy = cone.y - physics.y;
+    return {
+      x: c * dx + s * dy,
+      y: -s * dx + c * dy,
+      conf: 1,
+    };
+  });
+  const detections = [...placed];
+  for (const detection of latestConeDetections) {
+    if (!detections.some((known) => Math.hypot(known.x - detection.x, known.y - detection.y) < 0.35)) {
+      detections.push(detection);
+    }
+  }
+  return detections;
 }
 
 async function updateLanePipeline() {
@@ -1763,9 +1796,41 @@ function chaseCameraPosition() {
 const followTarget = new THREE.Vector3();
 let cameraInitialized = false;
 
+// コーン配置では、中心線の外接矩形からカメラの高さを求め、コース全体を
+// 収める俯瞰視点にする。真上を避けてわずかに傾けることで、OrbitControlsの
+// 視線とupベクトルが平行になる特異点を回避する。
+function showConePlacementView() {
+  const xs = course.centerPath.map(([x]) => x);
+  const ys = course.centerPath.map(([, y]) => y);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const width = maxX - minX;
+  const depth = maxY - minY;
+  const target = rosToThree((minX + maxX) / 2, (minY + maxY) / 2, 0);
+  const aspect = window.innerWidth / window.innerHeight;
+  const span = Math.max(depth, width / aspect) * 1.25; // 周囲にも少し余白を残す
+  const height = span / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2));
+
+  followTarget.copy(target);
+  controls.maxDistance = Math.max(controls.maxDistance, height * 1.05);
+  camera.position.copy(target).add(new THREE.Vector3(0, height, height * 0.025));
+  controls.target.copy(target);
+  controls.autoRotate = false;
+  rotateViewBtn.classList.remove('active');
+  controls.update();
+}
+
 // --- View controls: rotate (auto-orbit toggle) / reset ---
 const rotateViewBtn = document.getElementById('rotate-view-btn');
 const resetViewBtn = document.getElementById('reset-view-btn');
+
+function resetChaseView() {
+  controls.maxDistance = 40;
+  camera.position.copy(chaseCameraPosition());
+  followTarget.copy(rosToThree(physics.x, physics.y, 0.3));
+  controls.target.copy(followTarget);
+  controls.update();
+}
 
 rotateViewBtn.addEventListener('click', () => {
   controls.autoRotate = !controls.autoRotate;
@@ -1773,10 +1838,7 @@ rotateViewBtn.addEventListener('click', () => {
 });
 
 resetViewBtn.addEventListener('click', () => {
-  camera.position.copy(chaseCameraPosition());
-  followTarget.copy(rosToThree(physics.x, physics.y, 0.3));
-  controls.target.copy(followTarget);
-  controls.update();
+  resetChaseView();
 });
 
 const clock = new THREE.Clock();
@@ -1870,7 +1932,7 @@ function animate() {
     followTarget.copy(targetThree);
     controls.target.copy(followTarget);
     cameraInitialized = true;
-  } else {
+  } else if (!coneEditor.isEnabled()) {
     const smoothing = 1 - Math.pow(0.001, dt);
     const previousTarget = followTarget.clone();
     followTarget.lerp(targetThree, smoothing);

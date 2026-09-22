@@ -1,388 +1,691 @@
 <!DOCTYPE html>
 <html lang="ja">
+
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>AIFormula Web Simulator</title>
-<style>
-  html, body {
-    margin: 0;
-    padding: 0;
-    width: 100%;
-    height: 100%;
-    overflow: hidden;
-    background: #1a1d21;
-    font-family: -apple-system, "Hiragino Kaku Gothic ProN", "Segoe UI", sans-serif;
-  }
-  #scene-container {
-    position: fixed;
-    inset: 0;
-  }
-  #scene-container canvas {
-    display: block;
-  }
-  #pip-frame {
-    position: fixed;
-    top: 12px;
-    right: 12px;
-    width: 320px;
-    height: 180px;
-    border: 2px solid rgba(127, 209, 255, 0.6);
-    border-radius: 6px;
-    pointer-events: none;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
-  }
-  #pip-label, .pip-label {
-    position: absolute;
-    top: -1px;
-    left: -1px;
-    background: rgba(20, 22, 26, 0.82);
-    color: #7fd1ff;
-    font-size: 11px;
-    padding: 2px 6px;
-    border-radius: 0 0 6px 0;
-  }
-  @media (max-width: 700px) {
-    #pip-frame { width: 45vw; height: calc(45vw * 9 / 16); }
-  }
-  .pip-frame-secondary {
-    position: fixed;
-    right: 12px;
-    width: 220px;
-    border: 2px solid rgba(127, 209, 255, 0.6);
-    border-radius: 6px;
-    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
-    background: #000;
-    overflow: hidden;
-  }
-  .pip-frame-secondary canvas {
-    display: block;
-    width: 100%;
-    height: 100%;
-  }
-  #lane-frame { top: 200px; height: 124px; }
-  #map-frame { top: 332px; height: 220px; }
-  @media (max-width: 700px) {
-    .pip-frame-secondary { width: 45vw; }
-    #lane-frame { top: calc(12px + 45vw * 9 / 16 + 8px); height: calc(45vw * 9 / 16); }
-    #map-frame { top: calc(12px + 45vw * 9 / 16 + 8px + 45vw * 9 / 16 + 8px); height: 45vw; }
-  }
-  #hud {
-    position: fixed;
-    top: 12px;
-    left: 12px;
-    width: 300px;
-    max-width: calc(100vw - 24px);
-    max-height: calc(100vh - 24px);
-    display: flex;
-    flex-direction: column;
-    color: #e8e8e8;
-    background: rgba(20, 22, 26, 0.88);
-    border: 1px solid rgba(255, 255, 255, 0.1);
-    border-radius: 10px;
-    font-size: 13px;
-    line-height: 1.5;
-    user-select: none;
-    backdrop-filter: blur(4px);
-    box-shadow: 0 2px 14px rgba(0, 0, 0, 0.5);
-    overflow: hidden;
-    font-variant-numeric: tabular-nums;
-  }
-  #hud-header {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 10px 12px 8px;
-    cursor: grab;
-    flex-shrink: 0;
-  }
-  #hud-header:active { cursor: grabbing; }
-  #hud-drag-handle { color: #666; font-size: 13px; letter-spacing: -1px; }
-  #hud h1 {
-    font-size: 13px;
-    margin: 0;
-    color: #7fd1ff;
-    font-weight: 600;
-    flex: 1;
-    min-width: 0;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-  #hud-collapse-btn {
-    background: transparent;
-    border: none;
-    color: #aab2bd;
-    font-size: 14px;
-    cursor: pointer;
-    padding: 2px 6px;
-    line-height: 1;
-  }
-  #hud-collapse-btn:hover { color: #fff; }
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AIFormula Web Simulator</title>
+  <style>
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      height: 100%;
+      overflow: hidden;
+      background: #1a1d21;
+      font-family: -apple-system, "Hiragino Kaku Gothic ProN", "Segoe UI", sans-serif;
+    }
 
-  /* who is driving */
-  #mode-badge {
-    font-size: 11px;
-    padding: 1px 9px;
-    border-radius: 999px;
-    background: #2b2f36;
-    border: 1px solid #3a3f47;
-    color: #aab2bd;
-    white-space: nowrap;
-  }
-  #mode-badge.manual { background: #2a6f97; border-color: #7fd1ff; color: #fff; }
-  #mode-badge.auto { background: #1f9d55; border-color: #4ade80; color: #fff; }
+    #scene-container {
+      position: fixed;
+      inset: 0;
+    }
 
-  /* always-visible state */
-  #hud-status {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 4px 12px;
-    padding: 2px 14px 10px;
-    flex-shrink: 0;
-  }
-  .stat { display: flex; flex-direction: column; }
-  .stat-val { font-size: 22px; font-weight: 600; color: #7fd1ff; line-height: 1.15; }
-  .stat-unit { font-size: 11px; color: #8b929c; margin-left: 4px; font-weight: 400; }
-  .stat-label { font-size: 11px; color: #8b929c; }
-  #hud-pose, #hud-course {
-    grid-column: 1 / -1;
-    display: flex;
-    align-items: baseline;
-    gap: 5px;
-    font-size: 12px;
-    color: #8b929c;
-  }
-  #hud-pose .k + .k { margin-left: -1px; }
-  #hud-pose span:not(.k) { color: #7fd1ff; font-weight: 600; }
-  #hud-course { padding-top: 4px; border-top: 1px solid rgba(255, 255, 255, 0.1); margin-top: 2px; }
-  #departure-state { font-weight: 700; color: #8fd18f; }
-  #contact-state { display: none; color: #ff6b6b; font-weight: 700; margin-left: auto; }
-  #departure-count { color: #e8e8e8; font-weight: 600; }
+    #scene-container canvas {
+      display: block;
+    }
 
-  #hud-tabs { display: flex; gap: 4px; padding: 0 10px 8px; flex-shrink: 0; }
-  #hud .hud-tab-btn {
-    flex: 1;
-    background: #2b2f36;
-    border: 1px solid #3a3f47;
-    color: #aab2bd;
-    border-radius: 6px;
-    padding: 5px 4px;
-    font-size: 12px;
-    cursor: pointer;
-  }
-  #hud .hud-tab-btn:hover { background: #383e47; }
-  #hud .hud-tab-btn.active { background: #2a6f97; border-color: #7fd1ff; color: #fff; }
-  #hud-body {
-    overflow-y: auto;
-    padding: 0 14px 14px;
-    flex: 1;
-    min-height: 0;
-    scrollbar-width: thin;
-    scrollbar-color: rgba(127, 209, 255, 0.4) transparent;
-  }
-  .hud-tab-panel { display: none; }
-  .hud-tab-panel.active { display: block; }
-  #hud.collapsed #hud-status,
-  #hud.collapsed #hud-tabs,
-  #hud.collapsed #hud-body { display: none; }
+    #pip-frame {
+      position: fixed;
+      top: 12px;
+      right: 12px;
+      width: 320px;
+      height: 180px;
+      border: 2px solid rgba(127, 209, 255, 0.6);
+      border-radius: 6px;
+      pointer-events: none;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+    }
 
-  #hud button {
-    background: #2a6f97;
-    border: none;
-    color: #fff;
-    border-radius: 4px;
-    padding: 6px 10px;
-    font-size: 12px;
-    cursor: pointer;
-  }
-  #hud button:hover { background: #35839c; }
-  #hud button:disabled { background: #444; cursor: default; }
-  #hud .btn-row { display: flex; gap: 6px; margin-top: 8px; }
-  #hud .btn-row button { flex: 1; }
-  #hud .quiet, #hud .detector-mode-btn, #hud #view-controls button {
-    background: #2b2f36;
-    border: 1px solid #3a3f47;
-  }
-  #hud .quiet:hover, #hud .detector-mode-btn:hover, #hud #view-controls button:hover { background: #383e47; }
-  #hud .detector-mode-btn.active { background: #2a6f97; border-color: #7fd1ff; }
-  #hud .detector-mode-btn.active:hover { background: #35839c; }
-  #hud #autonomous-btn { width: 100%; padding: 9px 10px; font-size: 14px; font-weight: 600; background: #2b2f36; border: 1px solid #3a3f47; }
-  #hud #autonomous-btn:hover { background: #383e47; }
-  #hud #autonomous-btn.active { background: #1f9d55; border-color: #4ade80; }
-  #hud #autonomous-btn.active:hover { background: #24b862; }
+    #pip-label,
+    .pip-label {
+      position: absolute;
+      top: -1px;
+      left: -1px;
+      background: rgba(20, 22, 26, 0.82);
+      color: #7fd1ff;
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 0 0 6px 0;
+    }
 
-  #hud .section-title { color: #aab2bd; font-size: 11px; margin: 12px 0 4px; }
-  #hud .section-title:first-child { margin-top: 0; }
-  #hud .row { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
-  #hud label { width: 78px; flex-shrink: 0; color: #aab2bd; }
-  #hud input[type="text"] {
-    flex: 1;
-    min-width: 0;
-    background: #0f1114;
-    border: 1px solid #3a3f47;
-    color: #e8e8e8;
-    border-radius: 4px;
-    padding: 4px 6px;
-    font-size: 12px;
-  }
-  #status-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: #888; margin-right: 6px; }
-  #status-dot.connected { background: #4caf50; }
-  #status-dot.connecting { background: #e0a800; }
-  #status-dot.error { background: #e05353; }
-  .panel-grid { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; font-size: 12px; margin: 0; }
-  .panel-grid dt { color: #8b929c; }
-  .panel-grid dd { margin: 0; color: #7fd1ff; font-weight: 600; text-align: right; overflow-wrap: anywhere; }
-  #detector-mode-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 8px; }
-  #keys { display: flex; gap: 6px; }
-  .key {
-    width: 32px;
-    height: 32px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    border: 1px solid #3a3f47;
-    border-radius: 4px;
-    background: #0f1114;
-    color: #888;
-    font-weight: 600;
-  }
-  .key.active { background: #2a6f97; color: #fff; border-color: #7fd1ff; }
-  #help { margin-top: 10px; color: #8b929c; font-size: 11px; line-height: 1.6; }
-</style>
+    @media (max-width: 700px) {
+      #pip-frame {
+        width: 45vw;
+        height: calc(45vw * 9 / 16);
+      }
+    }
+
+    .pip-frame-secondary {
+      position: fixed;
+      right: 12px;
+      width: 220px;
+      border: 2px solid rgba(127, 209, 255, 0.6);
+      border-radius: 6px;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+      background: #000;
+      overflow: hidden;
+    }
+
+    .pip-frame-secondary canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    #lane-frame {
+      top: 200px;
+      height: 124px;
+    }
+
+    #map-frame {
+      top: 332px;
+      height: 220px;
+    }
+
+    #avoidance-debug {
+      position: fixed;
+      right: 12px;
+      bottom: 12px;
+      width: min(360px, calc(100vw - 24px));
+      padding: 8px 10px;
+      box-sizing: border-box;
+      color: #dbeeff;
+      background: rgba(20, 22, 26, 0.88);
+      border: 1px solid rgba(127, 209, 255, 0.45);
+      border-radius: 6px;
+      font-size: 12px;
+      line-height: 1.45;
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    @media (max-width: 700px) {
+      .pip-frame-secondary {
+        width: 45vw;
+      }
+
+      #lane-frame {
+        top: calc(12px + 45vw * 9 / 16 + 8px);
+        height: calc(45vw * 9 / 16);
+      }
+
+      #map-frame {
+        top: calc(12px + 45vw * 9 / 16 + 8px + 45vw * 9 / 16 + 8px);
+        height: 45vw;
+      }
+    }
+
+    #hud {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      width: 300px;
+      max-width: calc(100vw - 24px);
+      max-height: calc(100vh - 24px);
+      display: flex;
+      flex-direction: column;
+      color: #e8e8e8;
+      background: rgba(20, 22, 26, 0.88);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 10px;
+      font-size: 13px;
+      line-height: 1.5;
+      user-select: none;
+      backdrop-filter: blur(4px);
+      box-shadow: 0 2px 14px rgba(0, 0, 0, 0.5);
+      overflow: hidden;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #hud-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px 8px;
+      cursor: grab;
+      flex-shrink: 0;
+    }
+
+    #hud-header:active {
+      cursor: grabbing;
+    }
+
+    #hud-drag-handle {
+      color: #666;
+      font-size: 13px;
+      letter-spacing: -1px;
+    }
+
+    #hud h1 {
+      font-size: 13px;
+      margin: 0;
+      color: #7fd1ff;
+      font-weight: 600;
+      flex: 1;
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    #hud-collapse-btn {
+      background: transparent;
+      border: none;
+      color: #aab2bd;
+      font-size: 14px;
+      cursor: pointer;
+      padding: 2px 6px;
+      line-height: 1;
+    }
+
+    #hud-collapse-btn:hover {
+      color: #fff;
+    }
+
+    /* who is driving */
+    #mode-badge {
+      font-size: 11px;
+      padding: 1px 9px;
+      border-radius: 999px;
+      background: #2b2f36;
+      border: 1px solid #3a3f47;
+      color: #aab2bd;
+      white-space: nowrap;
+    }
+
+    #mode-badge.manual {
+      background: #2a6f97;
+      border-color: #7fd1ff;
+      color: #fff;
+    }
+
+    #mode-badge.auto {
+      background: #1f9d55;
+      border-color: #4ade80;
+      color: #fff;
+    }
+
+    /* always-visible state */
+    #hud-status {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px 12px;
+      padding: 2px 14px 10px;
+      flex-shrink: 0;
+    }
+
+    .stat {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .stat-val {
+      font-size: 22px;
+      font-weight: 600;
+      color: #7fd1ff;
+      line-height: 1.15;
+    }
+
+    .stat-unit {
+      font-size: 11px;
+      color: #8b929c;
+      margin-left: 4px;
+      font-weight: 400;
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: #8b929c;
+    }
+
+    #hud-pose,
+    #hud-course {
+      grid-column: 1 / -1;
+      display: flex;
+      align-items: baseline;
+      gap: 5px;
+      font-size: 12px;
+      color: #8b929c;
+    }
+
+    #hud-pose .k+.k {
+      margin-left: -1px;
+    }
+
+    #hud-pose span:not(.k) {
+      color: #7fd1ff;
+      font-weight: 600;
+    }
+
+    #hud-course {
+      padding-top: 4px;
+      border-top: 1px solid rgba(255, 255, 255, 0.1);
+      margin-top: 2px;
+    }
+
+    #departure-state {
+      font-weight: 700;
+      color: #8fd18f;
+    }
+
+    #contact-state {
+      display: none;
+      color: #ff6b6b;
+      font-weight: 700;
+      margin-left: auto;
+    }
+
+    #departure-count {
+      color: #e8e8e8;
+      font-weight: 600;
+    }
+
+    #hud-tabs {
+      display: flex;
+      gap: 4px;
+      padding: 0 10px 8px;
+      flex-shrink: 0;
+    }
+
+    #hud .hud-tab-btn {
+      flex: 1;
+      background: #2b2f36;
+      border: 1px solid #3a3f47;
+      color: #aab2bd;
+      border-radius: 6px;
+      padding: 5px 4px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    #hud .hud-tab-btn:hover {
+      background: #383e47;
+    }
+
+    #hud .hud-tab-btn.active {
+      background: #2a6f97;
+      border-color: #7fd1ff;
+      color: #fff;
+    }
+
+    #hud-body {
+      overflow-y: auto;
+      padding: 0 14px 14px;
+      flex: 1;
+      min-height: 0;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(127, 209, 255, 0.4) transparent;
+    }
+
+    .hud-tab-panel {
+      display: none;
+    }
+
+    .hud-tab-panel.active {
+      display: block;
+    }
+
+    #hud.collapsed #hud-status,
+    #hud.collapsed #hud-tabs,
+    #hud.collapsed #hud-body {
+      display: none;
+    }
+
+    #hud button {
+      background: #2a6f97;
+      border: none;
+      color: #fff;
+      border-radius: 4px;
+      padding: 6px 10px;
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    #hud button:hover {
+      background: #35839c;
+    }
+
+    #hud button:disabled {
+      background: #444;
+      cursor: default;
+    }
+
+    #hud .btn-row {
+      display: flex;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    #hud .btn-row button {
+      flex: 1;
+    }
+
+    #hud .quiet,
+    #hud .detector-mode-btn,
+    #hud #view-controls button {
+      background: #2b2f36;
+      border: 1px solid #3a3f47;
+    }
+
+    #hud .quiet:hover,
+    #hud .detector-mode-btn:hover,
+    #hud #view-controls button:hover {
+      background: #383e47;
+    }
+
+    #hud .detector-mode-btn.active {
+      background: #2a6f97;
+      border-color: #7fd1ff;
+    }
+
+    #hud .detector-mode-btn.active:hover {
+      background: #35839c;
+    }
+
+    #hud #autonomous-btn {
+      width: 100%;
+      padding: 9px 10px;
+      font-size: 14px;
+      font-weight: 600;
+      background: #2b2f36;
+      border: 1px solid #3a3f47;
+    }
+
+    #hud #autonomous-btn:hover {
+      background: #383e47;
+    }
+
+    #hud #autonomous-btn.active {
+      background: #1f9d55;
+      border-color: #4ade80;
+    }
+
+    #hud #autonomous-btn.active:hover {
+      background: #24b862;
+    }
+
+    #hud .section-title {
+      color: #aab2bd;
+      font-size: 11px;
+      margin: 12px 0 4px;
+    }
+
+    #hud .section-title:first-child {
+      margin-top: 0;
+    }
+
+    #hud .row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 6px;
+    }
+
+    #hud label {
+      width: 78px;
+      flex-shrink: 0;
+      color: #aab2bd;
+    }
+
+    #hud input[type="text"] {
+      flex: 1;
+      min-width: 0;
+      background: #0f1114;
+      border: 1px solid #3a3f47;
+      color: #e8e8e8;
+      border-radius: 4px;
+      padding: 4px 6px;
+      font-size: 12px;
+    }
+
+    #status-dot {
+      display: inline-block;
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #888;
+      margin-right: 6px;
+    }
+
+    #status-dot.connected {
+      background: #4caf50;
+    }
+
+    #status-dot.connecting {
+      background: #e0a800;
+    }
+
+    #status-dot.error {
+      background: #e05353;
+    }
+
+    .panel-grid {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 2px 10px;
+      font-size: 12px;
+      margin: 0;
+    }
+
+    .panel-grid dt {
+      color: #8b929c;
+    }
+
+    .panel-grid dd {
+      margin: 0;
+      color: #7fd1ff;
+      font-weight: 600;
+      text-align: right;
+      overflow-wrap: anywhere;
+    }
+
+    #detector-mode-controls {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-top: 8px;
+    }
+
+    #keys {
+      display: flex;
+      gap: 6px;
+    }
+
+    .key {
+      width: 32px;
+      height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid #3a3f47;
+      border-radius: 4px;
+      background: #0f1114;
+      color: #888;
+      font-weight: 600;
+    }
+
+    .key.active {
+      background: #2a6f97;
+      color: #fff;
+      border-color: #7fd1ff;
+    }
+
+    #help {
+      margin-top: 10px;
+      color: #8b929c;
+      font-size: 11px;
+      line-height: 1.6;
+    }
+  </style>
 </head>
+
 <body>
-<div id="scene-container"></div>
+  <div id="scene-container"></div>
 
-<div id="pip-frame"><div id="pip-label">機体カメラ</div></div>
-<div id="lane-frame" class="pip-frame-secondary">
-  <div id="lane-label" class="pip-label">白線検知</div>
-  <canvas id="lane-canvas" width="640" height="360"></canvas>
-</div>
-<div id="map-frame" class="pip-frame-secondary">
-  <div id="map-label" class="pip-label">周回マップ</div>
-  <canvas id="map-canvas" width="640" height="640"></canvas>
-</div>
+  <div id="pip-frame">
+    <div id="pip-label">機体カメラ</div>
+  </div>
+  <div id="lane-frame" class="pip-frame-secondary">
+    <div id="lane-label" class="pip-label">白線検知</div>
+    <canvas id="lane-canvas" width="640" height="360"></canvas>
+  </div>
+  <div id="map-frame" class="pip-frame-secondary">
+    <div id="map-label" class="pip-label">周回マップ</div>
+    <canvas id="map-canvas" width="640" height="640"></canvas>
+  </div>
+  <div id="avoidance-debug">回避待機: コーン情報を待っています</div>
 
-<div id="hud">
-  <div id="hud-header">
-    <span id="hud-drag-handle">⠿</span>
-    <h1>AIFormula Simulator</h1>
-    <span id="mode-badge" title="今の指令の出どころ (twist_mux)">待機</span>
-    <button id="hud-collapse-btn" title="折りたたみ">▾</button>
+  <div id="hud">
+    <div id="hud-header">
+      <span id="hud-drag-handle">⠿</span>
+      <h1>AIFormula Simulator</h1>
+      <span id="mode-badge" title="今の指令の出どころ (twist_mux)">待機</span>
+      <button id="hud-collapse-btn" title="折りたたみ">▾</button>
+    </div>
+
+    <div id="hud-status">
+      <div class="stat">
+        <div><span class="stat-val" id="speed-val">0.00</span><span class="stat-unit">m/s</span></div><span
+          class="stat-label">速度</span>
+      </div>
+      <div class="stat">
+        <div><span class="stat-val" id="yaw-rate-val">0.00</span><span class="stat-unit">rad/s</span></div><span
+          class="stat-label">旋回</span>
+      </div>
+      <div id="hud-pose" title="オドメトリ (スタート位置が原点)">
+        <span class="k">位置</span><span class="k">x</span><span id="odom-x">0.00 m</span><span class="k">y</span><span
+          id="odom-y">0.00 m</span>
+        <span class="k">向き</span><span id="odom-yaw">0.0°</span>
+      </div>
+      <div id="hud-course">
+        <span id="departure-state">コース内</span>
+        <span>逸脱 <span id="departure-count">0</span> 回</span>
+        <span id="contact-state">接触中</span>
+      </div>
+    </div>
+
+    <div id="hud-tabs">
+      <button class="hud-tab-btn" data-tab="drive">走行</button>
+      <button class="hud-tab-btn" data-tab="autonomy">自動運転</button>
+      <button class="hud-tab-btn" data-tab="details">詳細</button>
+    </div>
+
+    <div id="hud-body">
+      <div class="hud-tab-panel" data-tab-panel="drive">
+        <div id="keys">
+          <div class="key" data-key="KeyW">W</div>
+          <div class="key" data-key="KeyA">A</div>
+          <div class="key" data-key="KeyS">S</div>
+          <div class="key" data-key="KeyD">D</div>
+        </div>
+        <div class="btn-row">
+          <button id="start-pose-btn" title="車両を中央白線のスタート位置に戻し, 1周目からやり直す">スタート位置へ</button>
+        </div>
+        <div id="view-controls" class="btn-row">
+          <button id="reset-view-btn" title="標準の追従視点に戻す">視点リセット</button>
+          <button id="rotate-view-btn" title="車体を中心に自動で一周">視点回転</button>
+        </div>
+        <div id="cone-editor-controls" class="btn-row">
+          <button id="cone-place-btn" title="ON中はコース上のクリックでコーン追加、既存コーンのクリックで削除、ドラッグで移動">コーン配置: OFF</button>
+          <button id="cone-clear-btn" class="quiet" title="配置したコーンを全消去">コーン全消去</button>
+        </div>
+        <div id="help">
+          W/S 前進・後退　A/D 旋回　R 位置リセット<br>
+          ドラッグ: 視点回転　ホイール: ズーム
+        </div>
+      </div>
+
+      <div class="hud-tab-panel" data-tab-panel="autonomy">
+        <button id="autonomous-btn">自動運転: OFF</button>
+        <dl class="panel-grid" style="margin-top:10px;">
+          <dt>走行状態</dt>
+          <dd id="oit-state">-</dd>
+          <dt>周回</dt>
+          <dd id="oit-lap">-</dd>
+          <dt>検出器</dt>
+          <dd id="oit-detector-status">-</dd>
+          <dt>コーン検知</dt>
+          <dd id="oit-cone-status">-</dd>
+          <dt>メッセージ</dt>
+          <dd id="oit-message">-</dd>
+        </dl>
+        <div class="section-title">白線検出</div>
+        <div id="detector-mode-controls">
+          <button id="detector-ideal-btn" class="detector-mode-btn" title="コースの実際の白線 (ノイズ・欠落つき) を観測する">理想検出</button>
+          <button id="detector-ufld-btn" class="detector-mode-btn"
+            title="UFLD (models/ufld.onnx を export_ufld_onnx で生成)">UFLD</button>
+          <button id="detector-yolop-btn" class="detector-mode-btn"
+            title="実機と同じ YOLOP (models/honda_shihou_finetuned_best.pth)">YOLOP</button>
+          <button id="detector-ros2-btn" class="detector-mode-btn"
+            title="rosbridge 経由で ROS 2 側の lane_detector / lane_navigator を使う">ROS2連携</button>
+        </div>
+        <div class="btn-row">
+          <button id="finish-mapping-btn" class="quiet" title="1周目を手動で終了してQPラインを作る">1周目を終える</button>
+          <button id="nav-reset-btn" class="quiet" title="記録を消して1周目からやり直す">記録リセット</button>
+        </div>
+      </div>
+
+      <div class="hud-tab-panel" data-tab-panel="details">
+        <div class="section-title">Odometry</div>
+        <dl class="panel-grid">
+          <dt>速度 X / Y</dt>
+          <dd><span id="odom-vx">0.00 m/s</span> / <span id="odom-vy">0.00 m/s</span></dd>
+          <dt>角速度 Z</dt>
+          <dd id="odom-wz">0.00 rad/s</dd>
+          <dt>スリップ L/R</dt>
+          <dd><span id="slip-l">0.0%</span> / <span id="slip-r">0.0%</span></dd>
+        </dl>
+
+        <div class="section-title">IMU</div>
+        <dl class="panel-grid">
+          <dt>加速度 前後 / 左右</dt>
+          <dd><span id="imu-ax">0.00</span> / <span id="imu-ay">0.00</span></dd>
+          <dt>加速度 上下</dt>
+          <dd id="imu-az">0.00</dd>
+          <dt>角速度 / Yaw</dt>
+          <dd><span id="imu-gz">0.00</span> / <span id="imu-yaw">0.0°</span></dd>
+        </dl>
+
+        <div class="section-title">CAN 車輪速 (実測 / 理論)</div>
+        <dl class="panel-grid">
+          <dt>右輪</dt>
+          <dd><span id="can-rpm-r">0 rpm</span> / <span id="can-target-rpm-r">0 rpm</span></dd>
+          <dt>左輪</dt>
+          <dd><span id="can-rpm-l">0 rpm</span> / <span id="can-target-rpm-l">0 rpm</span></dd>
+        </dl>
+
+        <div class="section-title">制御の調停 (twist_mux)</div>
+        <dl class="panel-grid">
+          <dt>gamepad (150)</dt>
+          <dd id="twist-mux-gamepad-state">-</dd>
+          <dt>mpc (50)</dt>
+          <dd id="twist-mux-mpc-state">-</dd>
+          <dt>採用中</dt>
+          <dd id="twist-mux-active">-</dd>
+        </dl>
+
+        <div class="section-title">周回マップ</div>
+        <dl class="panel-grid">
+          <dt>境界断面</dt>
+          <dd id="oit-samples">-</dd>
+        </dl>
+
+        <div class="section-title">rosbridge</div>
+        <div class="row">
+          <span id="status-dot"></span>
+          <span id="status-text">未接続</span>
+          <button id="connect-btn" style="margin-left:auto">接続</button>
+        </div>
+        <div class="row"><label>URL</label><input id="ros-url" type="text" value="ws://localhost:9090"></div>
+        <div class="row"><label>cmd_vel</label><input id="ros-topic" type="text"
+            value="/aiformula_control/gamepad/cmd_vel"></div>
+      </div>
+    </div>
   </div>
 
-  <div id="hud-status">
-    <div class="stat"><div><span class="stat-val" id="speed-val">0.00</span><span class="stat-unit">m/s</span></div><span class="stat-label">速度</span></div>
-    <div class="stat"><div><span class="stat-val" id="yaw-rate-val">0.00</span><span class="stat-unit">rad/s</span></div><span class="stat-label">旋回</span></div>
-    <div id="hud-pose" title="オドメトリ (スタート位置が原点)">
-      <span class="k">位置</span><span class="k">x</span><span id="odom-x">0.00 m</span><span class="k">y</span><span id="odom-y">0.00 m</span>
-      <span class="k">向き</span><span id="odom-yaw">0.0°</span>
-    </div>
-    <div id="hud-course">
-      <span id="departure-state">コース内</span>
-      <span>逸脱 <span id="departure-count">0</span> 回</span>
-      <span id="contact-state">接触中</span>
-    </div>
-  </div>
-
-  <div id="hud-tabs">
-    <button class="hud-tab-btn" data-tab="drive">走行</button>
-    <button class="hud-tab-btn" data-tab="autonomy">自動運転</button>
-    <button class="hud-tab-btn" data-tab="details">詳細</button>
-  </div>
-
-  <div id="hud-body">
-    <div class="hud-tab-panel" data-tab-panel="drive">
-      <div id="keys">
-        <div class="key" data-key="KeyW">W</div>
-        <div class="key" data-key="KeyA">A</div>
-        <div class="key" data-key="KeyS">S</div>
-        <div class="key" data-key="KeyD">D</div>
-      </div>
-      <div class="btn-row">
-        <button id="start-pose-btn" title="車両を中央白線のスタート位置に戻し, 1周目からやり直す">スタート位置へ</button>
-      </div>
-      <div id="view-controls" class="btn-row">
-        <button id="reset-view-btn" title="標準の追従視点に戻す">視点リセット</button>
-        <button id="rotate-view-btn" title="車体を中心に自動で一周">視点回転</button>
-      </div>
-      <div id="cone-editor-controls" class="btn-row">
-        <button id="cone-place-btn" title="ON中はコース上のクリックでコーン追加、既存コーンのクリックで削除、ドラッグで移動">コーン配置: OFF</button>
-        <button id="cone-clear-btn" class="quiet" title="配置したコーンを全消去">コーン全消去</button>
-      </div>
-      <div id="help">
-        W/S 前進・後退　A/D 旋回　R 位置リセット<br>
-        ドラッグ: 視点回転　ホイール: ズーム
-      </div>
-    </div>
-
-    <div class="hud-tab-panel" data-tab-panel="autonomy">
-      <button id="autonomous-btn">自動運転: OFF</button>
-      <dl class="panel-grid" style="margin-top:10px;">
-        <dt>走行状態</dt><dd id="oit-state">-</dd>
-        <dt>周回</dt><dd id="oit-lap">-</dd>
-        <dt>検出器</dt><dd id="oit-detector-status">-</dd>
-        <dt>コーン検知</dt><dd id="oit-cone-status">-</dd>
-        <dt>メッセージ</dt><dd id="oit-message">-</dd>
-      </dl>
-      <div class="section-title">白線検出</div>
-      <div id="detector-mode-controls">
-        <button id="detector-ideal-btn" class="detector-mode-btn" title="コースの実際の白線 (ノイズ・欠落つき) を観測する">理想検出</button>
-        <button id="detector-ufld-btn" class="detector-mode-btn" title="UFLD (models/ufld.onnx を export_ufld_onnx で生成)">UFLD</button>
-        <button id="detector-yolop-btn" class="detector-mode-btn" title="実機と同じ YOLOP (models/honda_shihou_finetuned_best.pth)">YOLOP</button>
-        <button id="detector-ros2-btn" class="detector-mode-btn" title="rosbridge 経由で ROS 2 側の lane_detector / lane_navigator を使う">ROS2連携</button>
-      </div>
-      <div class="btn-row">
-        <button id="finish-mapping-btn" class="quiet" title="1周目を手動で終了してQPラインを作る">1周目を終える</button>
-        <button id="nav-reset-btn" class="quiet" title="記録を消して1周目からやり直す">記録リセット</button>
-      </div>
-    </div>
-
-    <div class="hud-tab-panel" data-tab-panel="details">
-      <div class="section-title">Odometry</div>
-      <dl class="panel-grid">
-        <dt>速度 X / Y</dt><dd><span id="odom-vx">0.00 m/s</span> / <span id="odom-vy">0.00 m/s</span></dd>
-        <dt>角速度 Z</dt><dd id="odom-wz">0.00 rad/s</dd>
-        <dt>スリップ L/R</dt><dd><span id="slip-l">0.0%</span> / <span id="slip-r">0.0%</span></dd>
-      </dl>
-
-      <div class="section-title">IMU</div>
-      <dl class="panel-grid">
-        <dt>加速度 前後 / 左右</dt><dd><span id="imu-ax">0.00</span> / <span id="imu-ay">0.00</span></dd>
-        <dt>加速度 上下</dt><dd id="imu-az">0.00</dd>
-        <dt>角速度 / Yaw</dt><dd><span id="imu-gz">0.00</span> / <span id="imu-yaw">0.0°</span></dd>
-      </dl>
-
-      <div class="section-title">CAN 車輪速 (実測 / 理論)</div>
-      <dl class="panel-grid">
-        <dt>右輪</dt><dd><span id="can-rpm-r">0 rpm</span> / <span id="can-target-rpm-r">0 rpm</span></dd>
-        <dt>左輪</dt><dd><span id="can-rpm-l">0 rpm</span> / <span id="can-target-rpm-l">0 rpm</span></dd>
-      </dl>
-
-      <div class="section-title">制御の調停 (twist_mux)</div>
-      <dl class="panel-grid">
-        <dt>gamepad (150)</dt><dd id="twist-mux-gamepad-state">-</dd>
-        <dt>mpc (50)</dt><dd id="twist-mux-mpc-state">-</dd>
-        <dt>採用中</dt><dd id="twist-mux-active">-</dd>
-      </dl>
-
-      <div class="section-title">周回マップ</div>
-      <dl class="panel-grid"><dt>境界断面</dt><dd id="oit-samples">-</dd></dl>
-
-      <div class="section-title">rosbridge</div>
-      <div class="row">
-        <span id="status-dot"></span>
-        <span id="status-text">未接続</span>
-        <button id="connect-btn" style="margin-left:auto">接続</button>
-      </div>
-      <div class="row"><label>URL</label><input id="ros-url" type="text" value="ws://localhost:9090"></div>
-      <div class="row"><label>cmd_vel</label><input id="ros-topic" type="text" value="/aiformula_control/gamepad/cmd_vel"></div>
-    </div>
-  </div>
-</div>
-
-<script type="importmap">
+  <script type="importmap">
 {
   "imports": {
     "three": "./vendor/three/three.module.js",
@@ -390,9 +693,10 @@
   }
 }
 </script>
-<script src="./vendor/roslib.min.js"></script>
-<script src="./vendor/onnxruntime-web/ort.webgpu.min.js"></script>
-<script src="./js/hud_ui.js"></script>
-<script type="module" src="./js/simulator.js"></script>
+  <script src="./vendor/roslib.min.js"></script>
+  <script src="./vendor/onnxruntime-web/ort.webgpu.min.js"></script>
+  <script src="./js/hud_ui.js"></script>
+  <script type="module" src="./js/simulator.js"></script>
 </body>
+
 </html>
