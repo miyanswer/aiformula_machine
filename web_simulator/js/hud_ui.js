@@ -25,7 +25,7 @@
   function clampPosition(left, top) {
     // Clamp against the HUD's actual current size so it can never be dragged
     // (or resized via tab switch) partially or fully off-screen.
-    const width = hud.offsetWidth || 280;
+    const width = hud.offsetWidth || 300;
     const height = hud.offsetHeight || 44;
     const maxLeft = Math.max(0, window.innerWidth - width);
     const maxTop = Math.max(0, window.innerHeight - height);

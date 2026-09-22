@@ -1,5 +1,10 @@
 # web_simulator コース幾何データ化・実寸化と当たり判定 設計書
 
+> **【置き換え済み】** この文書が扱う「PNG から幾何を生成するコース」（`tools/build_course.py`・
+> `js/course_geometry.js` など）は削除し、コースは `web_simulator/models/course.glb` をそのまま読み込む方式に
+> 置き換えました。当たり判定・コース逸脱・MyLaps ゲートの考え方は引き継いでいますが、コース定義の生成に
+> 関する記述は現行の実装とは一致しません。現行の説明は `web_simulator/README.md` の「コース」の節を参照してください。
+
 - 日付: 2026-09-21
 - 対象: `web_simulator/`（実機側 `src/`, `launchers/`, `control/` の変更なし）
 - 要求: 白線幅 15 cm / 車線幅 3.5 m となるようコースを再設計する。障害物とコース逸脱に当たり判定をつける。

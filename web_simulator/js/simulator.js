@@ -2,10 +2,9 @@ import * as THREE from 'three';
 import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { VehiclePhysics, VEHICLE, MAX_SPEED, MAX_ANGULAR } from './vehicle_physics.js';
-import { createCourseTexture, createCourseLines, COURSE_WIDTH_M, COURSE_DEPTH_M } from './course.js';
-import { COURSE_GEOMETRY } from './course_geometry.js';
+import { loadCourse } from './course.js';
 import { resolveCollisions, VEHICLE_COLLIDERS, PathTracker, DepartureMonitor } from './collision.js';
-import { addMyLapsGantry, MYLAPS_COLLIDERS, MYLAPS_POSE, worldColliders } from './course_props.js';
+import { addMyLapsGantry, MYLAPS_COLLIDERS, mylapsPoseOnPath, worldColliders } from './course_props.js';
 import { TwistMux } from './twist_mux.js';
 import { UfldLaneDetector } from './ufld_lane_detector.js';
 import { IdealLaneDetector } from './ideal_lane_detector.js';
@@ -107,9 +106,14 @@ const ground = new THREE.Mesh(
   new THREE.MeshBasicMaterial({ color: 0x050608 })
 );
 ground.rotation.x = -Math.PI / 2;
+// course.glb's asphalt slab occupies z = -0.1 .. 0 (its top face is the z = 0
+// ground plane the vehicle drives on), so the backdrop sits below it: at z = 0
+// it would z-fight with the slab's top face.
+ground.position.y = -0.11;
 scene.add(ground);
 
 const grid = new THREE.GridHelper(200, 200, 0x4a5058, 0x2a2e34);
+grid.position.y = -0.105;
 scene.add(grid);
 
 window.addEventListener('resize', () => {
@@ -130,29 +134,20 @@ scene.add(rosRoot);
 const vehicleRoot = new THREE.Group();
 rosRoot.add(vehicleRoot);
 
-// Course layout plane. Position from tools/build_course.py's COURSE_POSE diagnostic.
-// The tool prints this because the smoothed reference path is anchored to the spawn
-// point, so the plane's translation is not simply the old pose times the scale factor.
-// The tool also uses the spawn point anchor when mapping pixels to world coordinates.
-const COURSE_POSE = { x: 13.2429, y: 37.9944, z: 0.01, roll: 0, pitch: 0, yaw: Math.PI / 2 };
-const course = new THREE.Mesh(
-  new THREE.PlaneGeometry(COURSE_WIDTH_M, COURSE_DEPTH_M),
-  new THREE.MeshBasicMaterial({ map: createCourseTexture() })
-);
-setPose(course, COURSE_POSE); // setPose is defined just below; hoisted, so usable here
-rosRoot.add(course);
+// The course: models/course.glb (js/course.js). It is placed so that the START
+// of the centre white line is the odom origin (0, 0) with +x along the line --
+// which is where VehiclePhysics starts the vehicle (0, 0, 0). So the vehicle's
+// initial position, the odometry's (0, 0) and the start of the centre line are
+// all the same point.
+const course = await loadCourse(rosRoot);
 
-// The outer loop's three white lines, drawn as geometry at the exact
-// 15cm width / 3.5m lane spacing (js/course.js). The texture underneath
-// has those three lines erased, so these are the only ones on the loop.
-rosRoot.add(createCourseLines());
-
-// MyLaps timing gantry on the centre line, 25m past the second corner
-// (js/course_props.js). Its posts and cones are solid -- the vehicle cannot
-// pass between the 0.46m posts, which is intentional: it is the obstacle the
-// planned YOLO cone detector will have to steer around.
-const mylapsRoot = addMyLapsGantry(rosRoot, setPose);
-const obstacles = worldColliders(MYLAPS_POSE, MYLAPS_COLLIDERS);
+// MyLaps timing gantry on the centre line (js/course_props.js). Its posts and
+// cones are solid -- the vehicle cannot pass between the 0.46m posts, which is
+// intentional: it is the obstacle the planned YOLO cone detector will have to
+// steer around.
+const mylapsPose = mylapsPoseOnPath(course.centerPath);
+const mylapsRoot = addMyLapsGantry(rosRoot, setPose, mylapsPose);
+const obstacles = worldColliders(mylapsPose, MYLAPS_COLLIDERS);
 
 // Set by applyCollisionAndDeparture() whenever the vehicle overlaps an
 // obstacle at the most recent physics step, and cleared otherwise -- read by
@@ -164,8 +159,8 @@ let contactActive = false;
 // state against the corrected pose (after obstacle resolution) and are
 // updated from the same call sites as the obstacle correction itself --
 // see applyCollisionAndDeparture() below.
-const pathTracker = new PathTracker();
-const departureMonitor = new DepartureMonitor();
+const pathTracker = new PathTracker(course.centerPath);
+const departureMonitor = new DepartureMonitor(course);
 const departureStateEl = document.getElementById('departure-state');
 const departureCountEl = document.getElementById('departure-count');
 const contactStateEl = document.getElementById('contact-state');
@@ -544,20 +539,19 @@ const TWIST_MUX_SOURCES = [
 // Navigator parameters = navigation_params.yaml defaults, except speed /
 // angular limits: per instruction, those stay the simulator's own WASD
 // limits (MAX_SPEED=1.5, MAX_ANGULAR=1.2) rather than the real vehicle's.
-// lane_width: this course's center line <-> boundary line distance. Now an
-// exact property of the generated geometry rather than a measurement of the
-// texture (it was 3.1 when the traced course averaged 3.27m).
-const SIM_LANE_WIDTH = COURSE_GEOMETRY.laneWidthM;
+// lane_width: this course's center line <-> boundary line distance, measured
+// from course.glb by js/course.js (3.5 m).
+const SIM_LANE_WIDTH = course.laneWidthM;
 const SIM_NAVIGATOR_PARAMS = {
   ...NAVIGATOR_PARAMS,
   raceline: { ...RACELINE_PARAMS, vMax: MAX_SPEED },
   tracker: { ...TRACKER_PARAMS, maxAngularSpeed: MAX_ANGULAR },
 };
 const LANE_DATA_TIMEOUT_MS = 800; // navigation_params.yaml lines_timeout
-// Start pose on the center white line of the outer loop (the lap-1 method
-// drives on top of it). Taken from the generated geometry rather than
-// hand-measured, so it stays on the line whenever the course is rebuilt.
-const SIM_START_POSE = { ...COURSE_GEOMETRY.startPose };
+// Start pose: the start of the centre white line, which course.js made the odom
+// origin, facing along the line (+x). The lap-1 method drives on top of the
+// centre line, so it begins here.
+const SIM_START_POSE = { x: 0, y: 0, yaw: 0 };
 
 const urlInput = document.getElementById('ros-url');
 const topicInput = document.getElementById('ros-topic');
@@ -785,7 +779,7 @@ function publishCompressedImage() {
 // lane_detector / lane_navigator nodes use.
 // ---------------------------------------------------------------------------
 const ufldDetector = new UfldLaneDetector();
-const idealDetector = new IdealLaneDetector();
+const idealDetector = new IdealLaneDetector(course.lines);
 // YOLOP white-line segmentation (same weights as the real vehicle's
 // lane_detector backend=yolop), exported by export_onnx_web.py.
 const yolopDetector = new ModelLaneDetector();
@@ -939,6 +933,7 @@ twistMux.setEnabled('mpc', autonomousMode);
 const twistMuxGamepadStateEl = document.getElementById('twist-mux-gamepad-state');
 const twistMuxMpcStateEl = document.getElementById('twist-mux-mpc-state');
 const twistMuxActiveEl = document.getElementById('twist-mux-active');
+const modeBadgeEl = document.getElementById('mode-badge');
 
 autonomousBtn.addEventListener('click', () => {
   autonomousMode = !autonomousMode;
@@ -1589,7 +1584,7 @@ window.__sim = {
   physics, captureCanvas, renderOnboardCapture, laneNavigator, lineTracker, localizer, ufldDetector,
   idealDetector, laneTrace, localizerTrail, fastForward: (sec) => fastForward(sec),
   setDetectorMode: (m) => setDetectorMode(m), resetNavigation: () => resetNavigation(),
-  obstacles, mylapsRoot, pathTracker, departureMonitor,
+  course, obstacles, mylapsRoot, pathTracker, departureMonitor,
 };
 resetLocalizer();
 setDetectorMode('yolop');
@@ -1792,6 +1787,9 @@ function animate() {
   twistMuxGamepadStateEl.textContent = twistMux.isFresh('gamepad', muxNow) ? '有効' : '-';
   twistMuxMpcStateEl.textContent = twistMux.isFresh('mpc', muxNow) ? '有効' : '-';
   twistMuxActiveEl.textContent = activeSource === 'gamepad' ? 'gamepad (WASD)' : activeSource === 'mpc' ? 'mpc (自動運転)' : 'なし';
+  // Header badge: who is driving right now (the twist_mux winner).
+  modeBadgeEl.textContent = activeSource === 'gamepad' ? '手動' : activeSource === 'mpc' ? '自動運転' : '待機';
+  modeBadgeEl.className = activeSource === 'gamepad' ? 'manual' : activeSource === 'mpc' ? 'auto' : '';
 
   speedVal.textContent = physics.v.toFixed(2);
   yawRateVal.textContent = physics.omega.toFixed(2);

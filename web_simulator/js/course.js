@@ -1,202 +1,267 @@
+// The simulator's course: models/course.glb, loaded as-is.
+//
+// course.glb is authored in ROS convention (ground = xy plane, height = z,
+// metres): its root node carries the +90deg X rotation that cancels rosRoot's
+// -90deg X, so the scene can simply be parented to rosRoot. Nothing in it is
+// scaled or re-oriented here.
+//
+// What this module adds on top of the raw model:
+//   * The course is shifted so that START_POSE (a point on the centre white
+//     line) is the odom origin (0, 0) with the vehicle facing +x -- i.e. the
+//     vehicle's initial pose (VehiclePhysics starts at 0, 0, 0) is the start
+//     position.
+//   * Everything else the simulator needs to know about the course is measured
+//     from the model rather than hand-copied: the line width, the lane width, a
+//     closed centre-line path (course departure), and point sets for the three
+//     white lines the lane detector looks for (ideal-detector mode). Re-export
+//     the GLB and these follow. START_POSE is the one hand-set value.
+//
+// Materials are replaced with unlit MeshBasicMaterial in the model's own base
+// colours: the onboard camera image is what YOLOP/UFLD read, and it must not
+// change with the sun angle.
+
 import * as THREE from 'three';
-import { COURSE_GEOMETRY } from './course_geometry.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
-// Ground texture: the user's own course layout image with the outer loop's
-// three white lines erased (web_simulator/tools/build_course.py). Those three
-// lines are drawn as geometry instead -- see createCourseLines() -- so that
-// the 15cm line width and 3.5m lane width are exact rather than limited by
-// the texture's 10.4cm/px resolution. Everything else in the image (the
-// inner roads, crossings, parking bays and grass islands) is still the
-// texture, scaled so its outer loop lands on the generated geometry.
-const COURSE_IMAGE_URL = 'png/shihou_cource_base.png'; // relative to index.html
-const COURSE_IMAGE_ASPECT = 1024 / 819; // width / height, from the source PNG
+const COURSE_URL = 'models/course.glb'; // relative to index.html
 
-// 100m -> 106.80m: the traced lane width averaged 3.2772m, so scaling by
-// 3.5 / 3.2772 = 1.0680 puts the texture's own loop on top of the generated
-// 3.5m lanes. See tools/build_course.py SCALE_K.
-export const COURSE_WIDTH_M = 106.80;
-export const COURSE_DEPTH_M = COURSE_WIDTH_M / COURSE_IMAGE_ASPECT;
+// Mesh names in course.glb (see the model's outliner).
+const CENTER_SOLID = 'Line_Center_Solid';
+const CENTER_DASH_PREFIX = 'Line_Center_Dash';
+const OUTER_BOUNDARY = 'Line_Outer_Inner'; // 2nd of the double outer line = the lane boundary
+const INNER_PREFIX = 'Line_Block'; // white lines around the grass-less islands
+const INNER_IGNORE_SUFFIX = '_Inner'; // 2nd line of a double pair (outside the lane)
+const IGNORED_NODES = ['Cube']; // Blender's default cube, left at the origin
 
-const LINE_COLOR = 0xdbd4dd; // the source PNG's own white-line colour
+// White paint is a 5mm-high slab on the asphalt; only its top face is measured.
+const LINE_TOP_MIN_Z = 0.004; // [m]
 
-const textureLoader = new THREE.TextureLoader();
+const PATH_STEP_M = 0.1; // spacing of the resampled centre path
+const PATH_BINS = 720; // angular bins used to turn a point cloud into a loop
+const INNER_BAND_M = 0.75; // island lines this close to one lane width from the centre line are the inner boundary
 
-export function createCourseTexture() {
-  const texture = textureLoader.load(COURSE_IMAGE_URL, undefined, undefined, (err) =>
-    console.error(`Failed to load course image ${COURSE_IMAGE_URL}`, err)
-  );
-  texture.colorSpace = THREE.SRGBColorSpace;
-  texture.anisotropy = 4;
-  return texture;
-}
+// Where the vehicle starts, in the course model's own frame (the frame of
+// course.glb, metres / radians): on the left side of the loop, heading south --
+// counter-clockwise travel. It is fitted to the centre white line there: the
+// centre of Line_Center_Solid's ribbon (both edges at +/-7.5 cm) and its
+// direction, from a least-squares fit of the ribbon's top-face vertices within
+// 2 m of the point. Set by hand; if the model is re-exported with the loop
+// moved, refit it.
+const START_POSE = { x: -41.457, y: 15.109, yaw: THREE.MathUtils.degToRad(-91.42) };
 
-// --- White lines, generated from COURSE_GEOMETRY.centerPath ---------------
+// ---------------------------------------------------------------------------
+// Small 2D helpers
+// ---------------------------------------------------------------------------
 
-// Unit left-hand normal at each point of a closed polyline (central
-// difference, so it matches the tangent the build tool used).
-function normalsClosed(path) {
-  const n = path.length;
-  return path.map((_, i) => {
-    const a = path[(i - 1 + n) % n];
-    const b = path[(i + 1) % n];
-    const tx = b[0] - a[0];
-    const ty = b[1] - a[1];
-    const len = Math.hypot(tx, ty) || 1e-12;
-    return [-ty / len, tx / len];
-  });
-}
-
-// Exported so tools/verify_course.js can offset centerPath the same way
-// createCourseLines() does (to rebuild outerPath/innerPath) when measuring
-// the drawn ribbon width -- reusing this instead of re-deriving the offset
-// keeps the check tied to the actual generator, not a parallel copy of it.
-export function offsetClosed(path, distance) {
-  const normals = normalsClosed(path);
-  return path.map((p, i) => [p[0] + normals[i][0] * distance, p[1] + normals[i][1] * distance]);
-}
-
-// Cumulative arc length of a closed polyline, plus its total. Exported so
-// tools/verify_course.js can compute the same `s`/`total` it needs to call
-// solidActiveMask()/dashActiveMask() below.
-export function arcLengths(path) {
-  const s = [0];
-  for (let i = 1; i < path.length; i++) {
-    s.push(s[i - 1] + Math.hypot(path[i][0] - path[i - 1][0], path[i][1] - path[i - 1][1]));
+function distToPolyline(p, poly) {
+  let best = Infinity;
+  for (const q of poly) {
+    const d = Math.hypot(p[0] - q[0], p[1] - q[1]);
+    if (d < best) best = d;
   }
-  const total = s[s.length - 1] + Math.hypot(
-    path[0][0] - path[path.length - 1][0], path[0][1] - path[path.length - 1][1]
-  );
-  return { s, total };
+  return best;
 }
 
-// Builds one flat ribbon of the given width along `path[from..to]`, as a
-// triangle list in the XY plane at z = 0 (the caller lifts the whole group).
-// Exported so tools/verify_course.js can measure the drawn ribbon width from
-// this function's own (full double-precision) output, rather than from the
-// rendered mesh's BufferGeometry -- that stores vertices in a Float32Array,
-// whose rounding at this course's ~120m coordinate range is large enough on
-// its own (~1e-6..1e-5 m) to swamp a sub-micrometre tolerance, regardless of
-// whether the ribbon math itself is correct.
-export function ribbonVertices(path, indices, width) {
-  const half = width / 2;
-  const normals = normalsClosed(path);
+/** Turns an unordered point cloud around `center` into a closed polyline: one mean point per angular bin, empty bins filled by interpolation. */
+function cloudToLoop(points, center) {
+  const sum = new Array(PATH_BINS).fill(null);
+  for (const [x, y] of points) {
+    const a = Math.atan2(y - center[1], x - center[0]);
+    const k = Math.min(PATH_BINS - 1, Math.floor(((a + Math.PI) / (2 * Math.PI)) * PATH_BINS));
+    if (!sum[k]) sum[k] = [0, 0, 0];
+    sum[k][0] += x;
+    sum[k][1] += y;
+    sum[k][2] += 1;
+  }
+  const filled = [];
+  for (let k = 0; k < PATH_BINS; k++) if (sum[k]) filled.push(k);
+  if (filled.length < 8) throw new Error('course: too few line points to form a loop');
+  const loop = new Array(PATH_BINS);
+  for (const k of filled) loop[k] = [sum[k][0] / sum[k][2], sum[k][1] / sum[k][2]];
+  for (let n = 0; n < filled.length; n++) {
+    const a = filled[n];
+    const b = filled[(n + 1) % filled.length];
+    const span = (b - a + PATH_BINS) % PATH_BINS || PATH_BINS;
+    for (let s = 1; s < span; s++) {
+      const t = s / span;
+      loop[(a + s) % PATH_BINS] = [
+        loop[a][0] + t * (loop[b % PATH_BINS][0] - loop[a][0]),
+        loop[a][1] + t * (loop[b % PATH_BINS][1] - loop[a][1]),
+      ];
+    }
+  }
+  return loop;
+}
+
+/** Equal-arc-length resample of a closed polyline. */
+function resampleClosed(loop, step) {
+  const n = loop.length;
+  const cum = [0];
+  for (let i = 0; i < n; i++) {
+    const a = loop[i];
+    const b = loop[(i + 1) % n];
+    cum.push(cum[i] + Math.hypot(b[0] - a[0], b[1] - a[1]));
+  }
+  const total = cum[n];
+  const count = Math.max(8, Math.round(total / step));
   const out = [];
-  for (let k = 0; k + 1 < indices.length; k++) {
-    const i = indices[k];
-    const j = indices[k + 1];
-    const [ax, ay] = path[i];
-    const [bx, by] = path[j];
-    const [anx, any] = normals[i];
-    const [bnx, bny] = normals[j];
-    const a0 = [ax + anx * half, ay + any * half, 0];
-    const a1 = [ax - anx * half, ay - any * half, 0];
-    const b0 = [bx + bnx * half, by + bny * half, 0];
-    const b1 = [bx - bnx * half, by - bny * half, 0];
-    out.push(...a0, ...a1, ...b0);
-    out.push(...a1, ...b1, ...b0);
+  let seg = 0;
+  for (let k = 0; k < count; k++) {
+    const s = (k * total) / count;
+    while (cum[seg + 1] < s) seg++;
+    const a = loop[seg];
+    const b = loop[(seg + 1) % n];
+    const t = (s - cum[seg]) / Math.max(cum[seg + 1] - cum[seg], 1e-9);
+    out.push([a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])]);
   }
   return out;
 }
 
-// centerPath is a closed ring (index 0 follows index length-1), so a run of
-// "active" points can wrap past that seam -- a solid stretch or a dash mark
-// straddling index 0 is one run, not two, and the ring's own last->first
-// segment must be drawn when both its endpoints are active. Groups a
-// per-point boolean into such circular runs; each returned array is the
-// index chain to hand to ribbonVertices, already in wrap-correct order.
-function circularRuns(active) {
-  const n = active.length;
-  if (active.every(Boolean)) {
-    // Nothing skipped anywhere: one run covering the whole ring, explicitly
-    // closed back to index 0 so the seam segment (length-1 -> 0) is drawn.
-    const full = active.map((_, i) => i);
-    full.push(0);
-    return [full];
+function median(values) {
+  const v = [...values].sort((a, b) => a - b);
+  return v[Math.floor(v.length / 2)];
+}
+
+// ---------------------------------------------------------------------------
+// Reading the model
+// ---------------------------------------------------------------------------
+
+/**
+ * Unique top-face vertices of a line mesh, in buffer order, in `frame`
+ * coordinates (metres, z up). The glTF exporter duplicates vertices per face
+ * (flat normals), so positions are de-duplicated at 1mm.
+ */
+function topFaceVertices(mesh, frameInverse) {
+  const pos = mesh.geometry.attributes.position;
+  const m = new THREE.Matrix4().multiplyMatrices(frameInverse, mesh.matrixWorld);
+  const v = new THREE.Vector3();
+  const seen = new Set();
+  const out = [];
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i).applyMatrix4(m);
+    if (v.z < LINE_TOP_MIN_Z) continue;
+    const key = `${Math.round(v.x * 1000)},${Math.round(v.y * 1000)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push([v.x, v.y]);
   }
-  // At least one inactive point exists, so it's safe to start the scan
-  // there: every run is then bounded by inactive points on both sides
-  // within this single pass, with no run left straddling the array's own
-  // start/end (that boundary is now inside an inactive stretch instead).
-  const start = active.findIndex((a) => !a);
-  const runs = [];
-  let current = [];
-  for (let k = 0; k < n; k++) {
-    const i = (start + k) % n;
-    if (active[i]) {
-      current.push(i);
-    } else {
-      if (current.length > 1) runs.push(current);
-      current = [];
-    }
-  }
-  if (current.length > 1) runs.push(current);
-  return runs;
+  return out;
 }
 
-// Per-point "is this index drawn" predicates, factored out of
-// solidRanges()/dashRanges() below and exported so tools/verify_course.js
-// can build the same active-index mask createCourseLines() actually draws
-// and diff it against COURSE_LINES -- instead of re-implementing the
-// skip/dash predicate in the check, which would only ever agree with
-// itself and prove nothing about whether course_lines.js matches.
-export function solidActiveMask(s, total, skip) {
-  const inSkip = (value) => skip.some(([s0, s1]) => {
-    const v0 = value;
-    const v1 = value + total;
-    return (v0 >= s0 && v0 < s1) || (v1 >= s0 && v1 < s1);
-  });
-  return s.map((value) => !inSkip(value));
-}
-
-export function dashActiveMask(s, markM, gapM) {
-  const pitch = markM + gapM;
-  return s.map((value) => value % pitch < markM);
-}
-
-// Index ranges to draw, given arc-length intervals to skip (junction
-// openings) or a dash pattern.
-function solidRanges(s, total, skip) {
-  return circularRuns(solidActiveMask(s, total, skip));
-}
-
-function dashRanges(s, markM, gapM) {
-  return circularRuns(dashActiveMask(s, markM, gapM));
-}
-
-function ribbonMesh(path, ranges, width, material) {
-  const vertices = [];
-  ranges.forEach((indices) => ribbonVertices(path, indices, width).forEach((v) => vertices.push(v)));
-  const geometry = new THREE.BufferGeometry();
-  geometry.setAttribute('position', new THREE.Float32BufferAttribute(vertices, 3));
-  return new THREE.Mesh(geometry, material);
+/** Line width, from the two corners of Line_Center_Solid's start cap (the first two vertices of its buffer). */
+function lineWidthOf(solid) {
+  if (solid.length < 2) throw new Error(`course: ${CENTER_SOLID} has too few vertices`);
+  return Math.hypot(solid[0][0] - solid[1][0], solid[0][1] - solid[1][1]);
 }
 
 /**
- * The outer loop's three white lines, generated from the reference path so
- * they are exactly COURSE_GEOMETRY.lineWidthM wide and exactly
- * COURSE_GEOMETRY.laneWidthM apart. Returns a Group in ROS coordinates,
- * lifted just clear of the course texture plane (z = 0.02).
- *
- * MeshBasicMaterial (unlit), like the texture plane itself, so the lines
- * read the same under any lighting -- what the onboard camera feeds to
- * YOLOP/UFLD must not depend on the sun angle.
+ * Heading of a closed path (direction of travel) at the point of the path
+ * nearest to (x, y), measured over +/-1.5 m of path.
  */
-export function createCourseLines() {
-  const { centerPath, laneWidthM, lineWidthM, dash, innerGaps, outerSign } = COURSE_GEOMETRY;
-  const { s, total } = arcLengths(centerPath);
-  const material = new THREE.MeshBasicMaterial({ color: LINE_COLOR, side: THREE.DoubleSide });
+export function pathHeadingNear(path, x, y) {
+  const n = path.length;
+  let bi = 0;
+  let bd = Infinity;
+  path.forEach((q, i) => {
+    const d = Math.hypot(q[0] - x, q[1] - y);
+    if (d < bd) {
+      bd = d;
+      bi = i;
+    }
+  });
+  const step = Math.max(1, Math.round(1.5 / Math.hypot(path[1][0] - path[0][0], path[1][1] - path[0][1])));
+  const a = path[(bi - step + n) % n];
+  const b = path[(bi + step) % n];
+  return Math.atan2(b[1] - a[1], b[0] - a[0]);
+}
 
-  // Which side of centerPath is "outer" is a decision the generator already
-  // made (build_course.py's sign_outer, exported here as outerSign); this
-  // renderer just follows it rather than guessing, so the two stay in sync
-  // by construction instead of by a sign someone has to eyeball and fix.
-  const outerPath = offsetClosed(centerPath, outerSign * laneWidthM);
-  const innerPath = offsetClosed(centerPath, -outerSign * laneWidthM);
+// ---------------------------------------------------------------------------
 
-  const group = new THREE.Group();
-  group.add(ribbonMesh(outerPath, solidRanges(s, total, []), lineWidthM, material));
-  group.add(ribbonMesh(innerPath, solidRanges(s, total, innerGaps), lineWidthM, material));
-  group.add(ribbonMesh(centerPath, dashRanges(s, dash.markM, dash.gapM), lineWidthM, material));
-  group.position.z = 0.02;
-  return group;
+/**
+ * Loads models/course.glb into `parent` (rosRoot).
+ *
+ * @param {THREE.Object3D} parent expected to be rosRoot, so the model's ROS-convention coordinates need no conversion
+ * @returns {Promise<{
+ *   root: THREE.Group,
+ *   start: {x: number, y: number, yaw: number}, // START_POSE, in the model's own frame
+ *   lineWidthM: number, laneWidthM: number,
+ *   centerPath: number[][],
+ *   lines: {outer: number[][], center: number[][], inner: number[][]},
+ * }>} all coordinates in the odom frame (origin = start of the centre line, +x = its direction)
+ */
+export async function loadCourse(parent) {
+  const gltf = await new GLTFLoader().loadAsync(COURSE_URL);
+  const scene = gltf.scene;
+  for (const name of IGNORED_NODES) scene.getObjectByName(name)?.removeFromParent();
+
+  const unlit = new Map();
+  scene.traverse((obj) => {
+    if (!obj.isMesh) return;
+    if (!unlit.has(obj.material)) {
+      unlit.set(obj.material, new THREE.MeshBasicMaterial({ color: obj.material.color, side: THREE.DoubleSide }));
+    }
+    obj.material = unlit.get(obj.material);
+  });
+
+  const root = new THREE.Group();
+  root.name = 'course';
+  root.add(scene);
+  parent.add(root);
+  parent.updateMatrixWorld(true);
+  const frameInverse = new THREE.Matrix4().copy(parent.matrixWorld).invert();
+
+  const meshes = [];
+  scene.traverse((obj) => obj.isMesh && meshes.push(obj));
+  const verts = (name) => topFaceVertices(meshes.find((m) => m.name === name), frameInverse);
+  const named = (prefix, ignoreSuffix) =>
+    meshes.filter((m) => m.name.startsWith(prefix) && !(ignoreSuffix && m.name.endsWith(ignoreSuffix)));
+  for (const need of [CENTER_SOLID, OUTER_BOUNDARY]) {
+    if (!meshes.some((m) => m.name === need)) throw new Error(`course: ${need} not found in ${COURSE_URL}`);
+  }
+
+  // --- START_POSE -> odom origin -------------------------------------------------
+  const solid = verts(CENTER_SOLID);
+  const start = { ...START_POSE, lineWidthM: lineWidthOf(solid) };
+  const c = Math.cos(-start.yaw);
+  const s = Math.sin(-start.yaw);
+  // course frame -> odom frame: translate the start to (0, 0), rotate its heading to +x.
+  // Every vertex below is read in the course frame (the model as authored), so
+  // this is applied to the extracted points -- and only at the very end to `root`
+  // itself, because topFaceVertices() reads each mesh's current matrixWorld.
+  const toOdom = ([x, y]) => [c * (x - start.x) - s * (y - start.y), s * (x - start.x) + c * (y - start.y)];
+
+  // --- the three white lines, in the odom frame -----------------------------------
+  const center = [...solid, ...named(CENTER_DASH_PREFIX).flatMap((m) => topFaceVertices(m, frameInverse))].map(toOdom);
+  const outer = verts(OUTER_BOUNDARY).map(toOdom);
+
+  const xs = outer.map((p) => p[0]);
+  const ys = outer.map((p) => p[1]);
+  const loopCenter = [(Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2];
+
+  // --- centre path: closed, equally spaced, in the direction of travel starting at the origin ----
+  let path = resampleClosed(cloudToLoop(center, loopCenter), PATH_STEP_M);
+  let i0 = 0;
+  path.forEach((p, i) => {
+    if (Math.hypot(p[0], p[1]) < Math.hypot(path[i0][0], path[i0][1])) i0 = i;
+  });
+  path = [...path.slice(i0), ...path.slice(0, i0)];
+  const heading = Math.atan2(path[5][1] - path[0][1], path[5][0] - path[0][0]);
+  if (Math.cos(heading) < 0) path = [path[0], ...path.slice(1).reverse()]; // travel direction = +x at the start
+
+  // --- lane width: centre line to the outer lane boundary, both as centre-averaged loops ----
+  const outerLoop = resampleClosed(cloudToLoop(outer, loopCenter), PATH_STEP_M);
+  const laneWidthM = median(path.filter((_, i) => i % 5 === 0).map((p) => distToPolyline(p, outerLoop)));
+
+  // --- inner boundary: island lines that lie one lane from the centre line ------------------
+  const inner = named(INNER_PREFIX, INNER_IGNORE_SUFFIX)
+    .flatMap((m) => topFaceVertices(m, frameInverse))
+    .map(toOdom)
+    .filter((p) => Math.abs(distToPolyline(p, path) - laneWidthM) < INNER_BAND_M);
+
+  // --- finally move the model itself, so the drawn course matches the odom-frame data above ----
+  root.rotation.z = -start.yaw;
+  root.position.set(-(c * start.x - s * start.y), -(s * start.x + c * start.y), 0);
+  parent.updateMatrixWorld(true);
+
+  return { root, start, lineWidthM: start.lineWidthM, laneWidthM, centerPath: path, lines: { outer, center, inner } };
 }

@@ -1,8 +1,7 @@
 // 2D collision helpers for the simulator. Pure geometry -- no three.js, no
-// scene access -- so the same functions back both the runtime checks in
-// js/simulator.js and the verification script in tools/verify_course.js.
-
-import { COURSE_GEOMETRY } from './course_geometry.js';
+// scene access -- so the same functions back the runtime checks in
+// js/simulator.js. Course dimensions are passed in (measured from course.glb
+// by js/course.js), not imported.
 
 // Vehicle footprint: two circles along the body axis, in base_link metres.
 // Covers roughly 1.6m x 0.8m -- the xacro body runs from the caster at
@@ -72,14 +71,16 @@ const RELOCK_DISTANCE_M = 5.0;
  * Tracks where the vehicle is along the closed reference path and how far it
  * sits to the side of it. Searches only near the previous index (the path is
  * 0.10m-sampled, so +/-400 points is 40m of travel between frames) instead of
- * scanning all ~2470 points every frame -- except when that windowed search
+ * scanning the whole loop every frame -- except when that windowed search
  * comes back implausibly far away, in which case update() falls back to a
  * full scan so the tracker can relock instead of staying latched onto a
  * stale index forever (reset(0) doesn't help: index 0 is an arbitrary point
- * on a 247m loop, not a safe default).
+ * on the loop, not a safe default).
+ *
+ * @param {number[][]} path closed, equally spaced centre-line path
  */
 export class PathTracker {
-  constructor(path = COURSE_GEOMETRY.centerPath, window = 400) {
+  constructor(path, window = 400) {
     this.path = path;
     this.window = window;
     this.index = 0;
@@ -132,11 +133,13 @@ export class PathTracker {
  * `returnM`. Driving is never blocked -- this only reports.
  */
 export class DepartureMonitor {
-  constructor({ leaveM, returnM } = {}) {
-    const lane = COURSE_GEOMETRY.laneWidthM;
-    const line = COURSE_GEOMETRY.lineWidthM;
+  /**
+   * @param {{laneWidthM: number, lineWidthM: number, leaveM?: number, returnM?: number}} course
+   *   lane width (centre line to boundary line) and line width, from js/course.js
+   */
+  constructor({ laneWidthM, lineWidthM, leaveM, returnM }) {
     // Any part of the vehicle past the outer edge of the boundary line.
-    this.leaveM = leaveM !== undefined ? leaveM : lane + line / 2 - VEHICLE_HALF_WIDTH;
+    this.leaveM = leaveM !== undefined ? leaveM : laneWidthM + lineWidthM / 2 - VEHICLE_HALF_WIDTH;
     this.returnM = returnM !== undefined ? returnM : this.leaveM - 0.175;
     this.count = 0;
     this.outside = false;

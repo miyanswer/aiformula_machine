@@ -10,6 +10,7 @@
 // ~60-line parser covers it without adding two more vendored addon files.
 
 import * as THREE from 'three';
+import { pathHeadingNear } from './course.js';
 
 const MODEL_DIR = 'models/'; // relative to index.html
 
@@ -126,25 +127,32 @@ async function loadObj(objUrl, mtlUrl) {
 // at 1.13m tall with 0.46m between the post centres.
 const MYLAPS_SCALE = 0.01; // cm -> m
 
-// Placement: on the course centre line (js/course_geometry.js centerPath),
-// 25m past the exit of the second corner, measured along the centre line in
-// the driving direction.
-//
-//   corner 2 (the long left-hander onto the top straight) exits at
-//   s=119.0m; +25m along the centre line lands on s=144.0m.
-//
-// yaw: the arch spans the track and its LED panel (model +y) faces oncoming
-// traffic. The top straight is driven in -x, so model +y must point to world
-// +x, i.e. yaw = track heading + 90deg. The track heading at s=144.0m is
-// 180.5°, so yaw = 180.5 + 90 = 270.5° ≈ -1.56229 rad. Square the gantry
-// to the track heading, not the world axes.
-//
-// z is lifted just clear of the course texture plane (COURSE_POSE.z = 0.01)
-// so the base bars don't z-fight with it.
-export const MYLAPS_POSE = { x: -1.011, y: 73.225, z: 0.02, roll: 0, pitch: 0, yaw: -1.56229 };
+// Placement: the gantry (the timing signal) stands at MYLAPS_POSITION, given in
+// the odom frame -- the frame whose origin is the vehicle's start (see START_POSE
+// in course.js), so it moves with the course if that start changes. The point
+// is on the dashed centre line, 5cm off the centre path, on a straight
+// heading west (about 150m into the lap).
+export const MYLAPS_POSITION = { x: 0.65, y: 78.6 }; // [m]
+
+// Height of the base bars' underside. The white paint is a 5mm slab on the
+// asphalt, so lift the gantry just above it instead of burying the bars in it.
+const MYLAPS_Z = 0.005; // [m]
+
+/**
+ * Pose of the gantry at MYLAPS_POSITION. The arch spans the track and its LED
+ * panel (model +y) faces oncoming traffic, so yaw = the track's direction of
+ * travel there + 90deg; the gantry is squared to the track rather than to the
+ * world axes.
+ *
+ * @param {number[][]} centerPath course.js's closed centre-line path (odom frame)
+ */
+export function mylapsPoseOnPath(centerPath) {
+  const heading = pathHeadingNear(centerPath, MYLAPS_POSITION.x, MYLAPS_POSITION.y);
+  return { x: MYLAPS_POSITION.x, y: MYLAPS_POSITION.y, z: MYLAPS_Z, roll: 0, pitch: 0, yaw: heading + Math.PI / 2 };
+}
 
 // Collision footprint, as circles in the model's own XY plane (metres,
-// relative to MYLAPS_POSE). Listed explicitly rather than derived from the
+// relative to the gantry's pose). Listed explicitly rather than derived from the
 // .obj's group bounding boxes, so swapping the model out cannot silently
 // change what the vehicle can hit. Values are the group extents of
 // MyLaps.obj scaled by MYLAPS_SCALE:
@@ -176,15 +184,16 @@ export function worldColliders(pose, colliders) {
 
 /**
  * Loads models/MyLaps.obj and adds it to `parent` (expected to be rosRoot, so
- * the pose above is plain ROS x/y/z + rpy).
+ * `pose` is plain ROS x/y/z + rpy).
  *
  * @param {THREE.Object3D} parent
  * @param {(object3d: THREE.Object3D, pose: object) => void} setPose simulator.js's URDF-convention pose helper
+ * @param {{x:number, y:number, z:number, roll:number, pitch:number, yaw:number}} pose from mylapsPoseOnPath()
  * @returns {THREE.Group} the root group, positioned with the given pose
  */
-export function addMyLapsGantry(parent, setPose) {
+export function addMyLapsGantry(parent, setPose, pose) {
   const root = new THREE.Group();
-  setPose(root, MYLAPS_POSE);
+  setPose(root, pose);
   parent.add(root);
   loadObj(MODEL_DIR + 'MyLaps.obj', MODEL_DIR + 'MyLaps.mtl')
     .then((gantry) => {

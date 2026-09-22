@@ -1,5 +1,10 @@
 # web_simulator コース幾何データ化・実寸化と当たり判定 実装計画
 
+> **【置き換え済み】** この文書が扱う「PNG から幾何を生成するコース」（`tools/build_course.py`・
+> `js/course_geometry.js` など）は削除し、コースは `web_simulator/models/course.glb` をそのまま読み込む方式に
+> 置き換えました。当たり判定・コース逸脱・MyLaps ゲートの考え方は引き継いでいますが、コース定義の生成に
+> 関する記述は現行の実装とは一致しません。現行の説明は `web_simulator/README.md` の「コース」の節を参照してください。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** web_simulator の外周コースを「白線幅 15 cm・車線幅 3.5 m」の幾何定義から生成し、障害物衝突（物理的に阻止）とコース逸脱（警告のみ）の当たり判定を追加する。
