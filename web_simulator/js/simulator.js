@@ -172,6 +172,7 @@ const coneEditor = createConeEditor({
   camera,
   domElement: renderer.domElement,
   onChange: rebuildConeInstances,
+  orbitControls: controls,
 });
 rebuildConeInstances(coneEditor.cones); // ページ読み込み時、保存済みコーンを復元
 

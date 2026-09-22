@@ -34,9 +34,10 @@ function makeId() { return `cone_${Date.now().toString(36)}_${(nextId++).toStrin
 
 /**
  * @param {{raycastTarget: THREE.Object3D, rosRoot: THREE.Object3D, camera: THREE.Camera,
- *   domElement: HTMLElement, onChange: (cones: Array<{id:string,x:number,y:number}>) => void}} opts
+ *   domElement: HTMLElement, onChange: (cones: Array<{id:string,x:number,y:number}>) => void,
+ *   orbitControls?: {enabled: boolean}}} opts
  */
-export function createConeEditor({ raycastTarget, rosRoot, camera, domElement, onChange }) {
+export function createConeEditor({ raycastTarget, rosRoot, camera, domElement, onChange, orbitControls }) {
   const cones = loadStored();
   let enabled = false;
   let dragId = null;
@@ -76,7 +77,10 @@ export function createConeEditor({ raycastTarget, rosRoot, camera, domElement, o
     moved = false;
     const hit = findNear(gp.x, gp.y);
     dragId = hit ? hit.id : null;
-    if (dragId) evt.stopPropagation();
+    if (dragId) {
+      evt.stopPropagation();
+      if (orbitControls) orbitControls.enabled = false;
+    }
   }
 
   function onPointerMove(evt) {
@@ -96,6 +100,7 @@ export function createConeEditor({ raycastTarget, rosRoot, camera, domElement, o
     const wasDragId = dragId;
     const wasMoved = moved;
     dragId = null; downPos = null; moved = false;
+    if (wasDragId && orbitControls) orbitControls.enabled = true;
     if (wasDragId && !wasMoved) {
       // クリック(ドラッグなし) = 削除
       const idx = cones.findIndex((c) => c.id === wasDragId);
