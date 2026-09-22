@@ -5,6 +5,8 @@ import { VehiclePhysics, VEHICLE, MAX_SPEED, MAX_ANGULAR } from './vehicle_physi
 import { loadCourse } from './course.js';
 import { resolveCollisions, VEHICLE_COLLIDERS, PathTracker, DepartureMonitor } from './collision.js';
 import { addMyLapsGantry, MYLAPS_COLLIDERS, mylapsPoseOnPath, worldColliders } from './course_props.js';
+import { createConeEditor } from './cone_editor.js';
+import { loadConeTemplate, addCone, coneWorldColliders } from './cone_props.js';
 import { TwistMux } from './twist_mux.js';
 import { UfldLaneDetector } from './ufld_lane_detector.js';
 import { IdealLaneDetector } from './ideal_lane_detector.js';
@@ -149,6 +151,30 @@ const mylapsPose = mylapsPoseOnPath(course.centerPath);
 const mylapsRoot = addMyLapsGantry(rosRoot, setPose, mylapsPose);
 const obstacles = worldColliders(mylapsPose, MYLAPS_COLLIDERS);
 
+// Free-placement cones (js/cone_editor.js): click to add, drag to move,
+// click-without-drag to remove, persisted to localStorage. The 3D instances
+// are rebuilt from scratch on every change (rebuildConeInstances) and their
+// circular colliders are merged into applyCollisionAndDeparture()'s obstacle
+// list below, alongside the MyLaps gantry's.
+const coneTemplate = await loadConeTemplate();
+let coneInstances = []; // three.jsオブジェクト、コーン変更のたびに作り直す
+let coneColliders = []; // collision.jsに渡す円コライダー
+
+function rebuildConeInstances(cones) {
+  for (const inst of coneInstances) rosRoot.remove(inst);
+  coneInstances = cones.map((c) => addCone(rosRoot, coneTemplate, c));
+  coneColliders = coneWorldColliders(cones);
+}
+
+const coneEditor = createConeEditor({
+  raycastTarget: ground, // simulator.js既存の200x200背景プレーン(104行目付近)、sceneの直接の子
+  rosRoot, // ground自体はrosRootの子ではないので、ヒット点をROS座標に戻すために渡す
+  camera,
+  domElement: renderer.domElement,
+  onChange: rebuildConeInstances,
+});
+rebuildConeInstances(coneEditor.cones); // ページ読み込み時、保存済みコーンを復元
+
 // Set by applyCollisionAndDeparture() whenever the vehicle overlaps an
 // obstacle at the most recent physics step, and cleared otherwise -- read by
 // Task 9's HUD indicator, so it must never latch.
@@ -209,7 +235,7 @@ function applyCollisionAndDeparture() {
   if (mylapsRoot.userData.collisionDisabled) {
     contactActive = false;
   } else {
-    const hit = resolveCollisions(physics, obstacles, VEHICLE_COLLIDERS);
+    const hit = resolveCollisions(physics, [...obstacles, ...coneColliders], VEHICLE_COLLIDERS);
     if (hit.maxPenetration > 0) {
       physics.x += hit.dx;
       physics.y += hit.dy;
@@ -942,6 +968,14 @@ autonomousBtn.addEventListener('click', () => {
   twistMux.setEnabled('mpc', autonomousMode);
 });
 
+const conePlaceBtn = document.getElementById('cone-place-btn');
+const coneClearBtn = document.getElementById('cone-clear-btn');
+conePlaceBtn.addEventListener('click', () => {
+  if (coneEditor.isEnabled()) { coneEditor.disable(); conePlaceBtn.textContent = 'コーン配置: OFF'; }
+  else { coneEditor.enable(); conePlaceBtn.textContent = 'コーン配置: ON'; }
+});
+coneClearBtn.addEventListener('click', () => coneEditor.clearAll());
+
 // Same as the real lane_navigator's ~/finish_mapping service: closes lap 1
 // by hand (e.g. when odometry drift keeps the automatic lap detection from
 // firing) and builds the map + QP raceline from what was recorded so far.
@@ -1591,7 +1625,7 @@ window.__sim = {
   physics, captureCanvas, renderOnboardCapture, laneNavigator, lineTracker, localizer, ufldDetector,
   idealDetector, laneTrace, localizerTrail, fastForward: (sec) => fastForward(sec),
   setDetectorMode: (m) => setDetectorMode(m), resetNavigation: () => resetNavigation(),
-  course, obstacles, mylapsRoot, pathTracker, departureMonitor,
+  course, obstacles, mylapsRoot, pathTracker, departureMonitor, coneEditor,
 };
 resetLocalizer();
 setDetectorMode('yolop');
