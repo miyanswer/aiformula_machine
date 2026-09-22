@@ -1394,7 +1394,14 @@ async function fastForward(seconds, physicsDt = 1 / 60) {
       const cmd = autonomousMode ? latestAutonomousCmd : { v: 0, omega: 0 };
       physics.stepAutonomous(cmd.v, cmd.omega, physicsDt);
       applyCollisionAndDeparture();
-      integrateLocalizer(physics.v, physics.omega, physicsDt);
+      // odom_imu_localizer stand-in (see animate()'s own call site for the
+      // rationale): use measuredWheelSpeeds() so fastForward()-driven runs
+      // also see 8%-slip-induced odometry drift instead of ground truth.
+      const measured = physics.measuredWheelSpeeds();
+      const halfTrack = VEHICLE.track / 2;
+      const vMeas = (measured.left + measured.right) / 2;
+      const omegaMeas = (measured.right - measured.left) / (2 * halfTrack);
+      integrateLocalizer(vMeas, omegaMeas, physicsDt);
       recordLocalizerTrail();
       simClock += physicsDt;
     }
