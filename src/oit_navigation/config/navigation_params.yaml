@@ -50,6 +50,33 @@ lane_detector:
     tracker_anchor_heading_diff: 0.1 # 根拠にする線どうしの向きの差の上限 [rad]
     lane_reseed_topic: "/aiformula_control/six_lane_planner/lane_reseed"   # 6レーン走行からの横位置 (空で無効)
 
+cone_detector:
+  ros__parameters:
+    # コーン検出 (models/cone.pt) + バウンディングボックス下辺中央の地面投影 (web_simulator/js/cone_detector.js と同じ)
+    image_topic: "/aiformula_sensing/zed_node/left_image/undistorted"
+    device: "cpu"                    # "cpu" / "0" (CUDA)
+    conf_threshold: 0.4
+    max_inference_hz: 10.0
+    frame_id: "base_link"
+    cones_topic: "/aiformula_perception/cone_detector/cones"             # PoseArray -> six_lane_planner の回避
+    status_topic: "/aiformula_perception/cone_detector/status"           # JSON (x, y, 距離, 信頼度, bbox)
+    markers_topic: "/aiformula_visualization/cone_detector/markers"      # RViz: 円柱 + 距離
+    annotated_image_topic: "/aiformula_visualization/cone_detector/annotated_image"
+    annotated_image_scale: 0.5       # rosbag を軽くするため縮小して出す
+    valid_x_min: 0.3
+    valid_x_max: 8.0
+    valid_y_abs_max: 3.0
+    # カメラ: lane_detector と同じ値にすること (同じ ZED X)
+    camera_fx: 763.17
+    camera_fy: 763.17
+    camera_cx: 990.04
+    camera_cy: 543.45
+    camera_ref_width: 1920
+    camera_ref_height: 1080
+    camera_height: 0.56
+    camera_x: 0.055
+    camera_pitch_down_deg: 7.3
+
 odom_imu_localizer:
   ros__parameters:
     can_topic: "/aiformula_sensing/vehicle_info"
@@ -77,6 +104,18 @@ lane_navigator:
     control_rate: 20.0
     map_save_path: ""                # 例: "~/aiformula_maps/course_map.json" (1 周目完了時に保存)
     map_load_path: ""                # 指定すると保存済みマップで 2 周目 (RACING) から開始
+    # RViz 用の可視化 (走行後に rosbag を再生して判断を確認する)
+    panel_topic: "/aiformula_visualization/lane_navigator/panel"       # 判断パネル画像 (日本語)
+    markers_topic: "/aiformula_visualization/lane_navigator/markers"   # 車の上の要約テキスト
+    panel_rate: 5.0                  # [Hz] 0 で出さない
+    panel_font_path: ""              # 空なら Noto CJK 等を自動で探す (sudo apt install fonts-noto-cjk)
+    # コーン回避 (lane_nav/cone_avoidance.py = web_simulator/js/cone_avoidance.js. 禁止半径 1.0m)
+    cone_avoidance.cones_topic: "/aiformula_perception/cone_detector/cones"   # 空でコーン入力なし
+    cone_avoidance.cones_timeout: 0.5        # [s] これより古い検出は使わない
+    cone_avoidance.reactive: true            # 毎周期: 前方のコーン群を外周に沿って抜ける操舵を足す
+    cone_avoidance.deflect_raceline: true    # 2 周目: 1 周目に記憶したコーンからレーシングラインを押し出す
+    cone_avoidance.landmark_correction: true # 2 周目: 見えたコーンと地図のコーンの照合で自己位置を補正
+    cone_avoidance.landmark_gate: 1.0        # [m] これより離れた照合は捨てる
 
     lines_timeout: 0.8               # 1 周目: 中央線がこれ以上見えなければ減速停止 [s]
     stop_decel: 1.5
@@ -125,3 +164,18 @@ lane_navigator:
     tracker.cross_track_lookahead_gain: 2.0
     tracker.max_angular_speed: 1.5
     tracker.max_angular_accel: 4.0
+
+    # 赤信号停止 (utils/traffic_light_stop.py, six_lane_planner と共通. web_simulator/js/traffic_light_stop.js と同じ既定値)
+    # traffic_light_distance_node の赤/青信号までの距離から, 信号機の stop_distance 手前 (許容 5〜10m) で止まる
+    traffic_light_stop.enabled: true
+    traffic_light_stop.red_distance_topic: "/aiformula_perception/traffic_light/red_distance"
+    traffic_light_stop.green_distance_topic: "/aiformula_perception/traffic_light/green_distance"
+    traffic_light_stop.status_topic: "/aiformula_control/traffic_light_stop/status"
+    traffic_light_stop.stop_distance: 7.0          # [m] 止まる目標 (カメラ -> 信号機). 距離は横ずれで短めに出るので中央 7.5 より近め
+    traffic_light_stop.detect_range: 25.0          # [m] これより遠い赤は無視
+    traffic_light_stop.min_trigger_distance: 5.0   # [m] 赤を初めて見たのがこれより近ければ止まらず通過
+    traffic_light_stop.decel: 0.6                  # [m/s^2] 計画減速度
+    traffic_light_stop.red_confirm_frames: 2       # 赤を連続何回で減速開始 (誤検出対策)
+    traffic_light_stop.green_confirm_frames: 2     # 青を連続何回で発進
+    traffic_light_stop.red_release_time: 3.0       # [s] 停止中に赤がこれだけ見えなければ発進
+    traffic_light_stop.markers_topic: "/aiformula_visualization/traffic_light_stop/markers"   # RViz: 信号・停止予定位置

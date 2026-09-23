@@ -6,6 +6,7 @@
     lane_navigator      1 周目: 中央線トラッキング + 境界記録 -> QP -> 2 周目以降: レーシングライン
                         cmd_vel は twist_mux の "mpc" 入力 (/aiformula_control/extremum_seeking_mpc/cmd_vel)
     traffic_light_distance_node / image_compressor_node / RViz2
+    cone_detector       cone.pt でコーンを検出し位置 (距離) を推定 (RViz 確認用. QP 走行はまだコーン回避しない)
 
 例 (Jetson):
     ros2 launch oit_navigation navigation.launch.py use_device:=0 use_tensorrt:=true
@@ -31,7 +32,7 @@ def _cleanup_old_processes():
     try:
         subprocess.run(
             ["pkill", "-9", "-f",
-             "lane_detector|lane_navigator|odom_imu_localizer|traffic_light_distance_node|image_compressor_node|"
+             "lane_detector|lane_navigator|odom_imu_localizer|traffic_light_distance_node|image_compressor_node|cone_detector|"
              "rviz2|robot_state_publisher|joint_state_publisher"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
         )
@@ -76,6 +77,8 @@ def generate_launch_description():
                               default_value=default_workspace_asset("models", "traffic_light.pt")),
         DeclareLaunchArgument("traffic_light_params_file",
                               default_value=osp.join(pkg, "config", "traffic_light_params.yaml")),
+        DeclareLaunchArgument("cone_detector", default_value="true", description="コーン検出ノードを起動する"),
+        DeclareLaunchArgument("cone_model_path", default_value=default_workspace_asset("models", "cone.pt")),
         DeclareLaunchArgument("image_compressor", default_value="true",
                               description="観客向け aiformula_pilot 圧縮映像を配信する"),
     ]
@@ -116,6 +119,15 @@ def generate_launch_description():
             "publish_annotated_image": True,
         }],
     )
+    cone_detector = Node(
+        package="oit_navigation", executable="cone_detector", name="cone_detector", output="screen",
+        condition=IfCondition(LaunchConfiguration("cone_detector")),
+        parameters=[LaunchConfiguration("params_file"), {
+            "image_topic": LaunchConfiguration("input_image_topic"),
+            "model_path": LaunchConfiguration("cone_model_path"),
+            "device": LaunchConfiguration("use_device"),
+        }],
+    )
     image_compressor = Node(
         package="oit_navigation", executable="image_compressor_node", name="image_compressor_node",
         output="screen", condition=IfCondition(LaunchConfiguration("image_compressor")),
@@ -126,4 +138,5 @@ def generate_launch_description():
         arguments=["-d", osp.join(pkg, "config", "oit_navigation.rviz")],
         condition=IfCondition(LaunchConfiguration("rviz")), on_exit=Shutdown(),
     )
-    return LaunchDescription(args + [lane_detector, localizer, navigator, traffic_light, image_compressor, rviz])
+    return LaunchDescription(args + [lane_detector, localizer, navigator, traffic_light, cone_detector,
+                                     image_compressor, rviz])

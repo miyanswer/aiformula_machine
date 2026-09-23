@@ -16,7 +16,7 @@ setup(
         (os.path.join('share', package_name, 'config'), glob('config/*.*')),
         # 6レーン動的選択走行 (oit_navigation/6lane/): 起動ファイル・パラメータ・NN の重み
         (os.path.join('share', package_name, 'launch'), glob('oit_navigation/6lane/launch/*.py')),
-        (os.path.join('share', package_name, 'config'), glob('oit_navigation/6lane/config/*.yaml')),
+        (os.path.join('share', package_name, 'config'), glob('oit_navigation/6lane/config/*.yaml') + glob('oit_navigation/6lane/config/*.rviz')),
         (os.path.join('share', package_name, '6lane'), ['oit_navigation/6lane/six_lane_policy.json']),
     ],
     install_requires=['setuptools'],
@@ -35,6 +35,7 @@ setup(
             # フォルダ名が数字始まりなので import 文では書けないが, entry point は importlib で読むので可
             'six_lane_planner = oit_navigation.6lane.six_lane_planner_node:main',
             'traffic_light_distance_node = oit_navigation.traffic_light_distance_node:main',
+            'cone_detector = oit_navigation.cone_detector_node:main',
             'image_compressor_node = oit_navigation.image_compressor_node:main',
             'export_tensorrt = oit_navigation.export_tensorrt:main',
             'export_onnx_web = oit_navigation.export_onnx_web:main',

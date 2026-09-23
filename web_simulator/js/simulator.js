@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { VehiclePhysics, VEHICLE, MAX_SPEED, MAX_ANGULAR } from './vehicle_physics.js';
 import { loadCourse } from './course.js';
 import { resolveCollisions, VEHICLE_COLLIDERS, PathTracker, DepartureMonitor } from './collision.js';
-import { addMyLapsGantry, MYLAPS_COLLIDERS, mylapsPoseOnPath, worldColliders } from './course_props.js';
+import { addMyLapsGantry, MYLAPS_COLLIDERS, mylapsPoseOnPath, worldColliders, setSignalLight } from './course_props.js';
 import { createConeEditor } from './cone_editor.js';
 import { loadConeTemplate, addCone, coneWorldColliders } from './cone_props.js';
 import { TwistMux } from './twist_mux.js';
@@ -18,6 +18,8 @@ import {
 import { ConeDetector } from './cone_detector.js';
 import { reactiveAvoid, ConeRecorder, applyRacelineDeflection, coneLandmarkCorrection } from './cone_avoidance.js';
 import { SixLanePlanner, LanePolicyNet, SIX_LANE_PARAMS, N_LANES, laneY, explainJa } from './six_lane_planner.js';
+import { TrafficLightDetector } from './traffic_light_detector.js';
+import { TrafficLightStop, TL_STATE_JA } from './traffic_light_stop.js';
 
 // ---------------------------------------------------------------------------
 // Geometry taken directly from vehicles/sample_vehicle/xacro/ai_car1.xacro
@@ -502,6 +504,11 @@ let sixLaneStatusTopic = null;
 let sixLaneTargetPathTopic = null;
 let sixLaneReseedTopic = null;
 let rosSixLaneStatusSub = null;
+let redDistanceTopic = null;
+let conesTopic = null;
+let greenDistanceTopic = null;
+let trafficLightStopStatusTopic = null;
+let rosTrafficLightStopStatusSub = null;
 // "ROS2連携" detector mode subscriptions: when selected, UFLD inference +
 // the lap-mapping/QP navigator run on the ROS 2 side (see
 // src/oit_navigation/launch/simulator_test.launch.py) instead of in the
@@ -565,6 +572,15 @@ const SIX_LANE_TARGET_PATH_TOPIC = '/aiformula_visualization/six_lane_planner/ta
 const SIX_LANE_RESEED_TOPIC = '/aiformula_control/six_lane_planner/lane_reseed';
 // twist_mux's arbitrated output (topic_list.yaml control.speed_command.multiplexed).
 const MUXED_CMD_VEL_TOPIC = '/aiformula_control/twist_mux/cmd_vel';
+// 信号機: traffic_light_distance_node (traffic_light_params.yaml base_topic) の出力と、
+// 赤信号停止 (utils/traffic_light_stop_ros.py, lane_navigator / six_lane_planner 共通) の状態。
+// ブラウザ内の検出モードではシミュレータ自身が同じトピックを出す。
+const RED_DISTANCE_TOPIC = '/aiformula_perception/traffic_light/red_distance';
+const GREEN_DISTANCE_TOPIC = '/aiformula_perception/traffic_light/green_distance';
+const TRAFFIC_LIGHT_STOP_STATUS_TOPIC = '/aiformula_control/traffic_light_stop/status';
+// 実機の cone_detector ノード (oit_navigation/cone_detector_node.py) と同じトピック: 検出コーンの位置 (base_link)。
+// ブラウザ内の検出モードではシミュレータの cone_detector.js の結果を出す (RViz で確認できるように)。
+const CONES_TOPIC = '/aiformula_perception/cone_detector/cones';
 
 // Priorities/timeouts copied verbatim from
 // launchers/sample_launchers/config/twist_mux.yaml -- gamepad (150) always
@@ -626,6 +642,11 @@ function clearRosTopics() {
   sixLaneTargetPathTopic = null;
   sixLaneReseedTopic = null;
   rosSixLaneStatusSub = null;
+  redDistanceTopic = null;
+  conesTopic = null;
+  greenDistanceTopic = null;
+  trafficLightStopStatusTopic = null;
+  rosTrafficLightStopStatusSub = null;
   rosLaneDetectorAnnotatedImageSub = null;
   rosAutonomousCmdVelSub = null;
   rosLaneTrackerStatusSub = null;
@@ -692,6 +713,12 @@ function connect() {
     sixLaneReseedTopic = new ROSLIB.Topic({ ros, name: SIX_LANE_RESEED_TOPIC, messageType: 'std_msgs/msg/Float64' });
     rosSixLaneStatusSub = new ROSLIB.Topic({ ros, name: SIX_LANE_STATUS_TOPIC, messageType: 'std_msgs/msg/String' });
     rosSixLaneStatusSub.subscribe(onRosSixLaneStatus);
+    redDistanceTopic = new ROSLIB.Topic({ ros, name: RED_DISTANCE_TOPIC, messageType: 'std_msgs/msg/Float32' });
+    conesTopic = new ROSLIB.Topic({ ros, name: CONES_TOPIC, messageType: 'geometry_msgs/msg/PoseArray' });
+    greenDistanceTopic = new ROSLIB.Topic({ ros, name: GREEN_DISTANCE_TOPIC, messageType: 'std_msgs/msg/Float32' });
+    trafficLightStopStatusTopic = new ROSLIB.Topic({ ros, name: TRAFFIC_LIGHT_STOP_STATUS_TOPIC, messageType: 'std_msgs/msg/String' });
+    rosTrafficLightStopStatusSub = new ROSLIB.Topic({ ros, name: TRAFFIC_LIGHT_STOP_STATUS_TOPIC, messageType: 'std_msgs/msg/String' });
+    rosTrafficLightStopStatusSub.subscribe(onRosTrafficLightStopStatus);
 
     // "ROS2連携" mode subscriptions (see onRos*() callbacks below) -- always
     // subscribed once connected, regardless of the current detectorMode;
@@ -867,6 +894,100 @@ function ensureConeDetectorLoading() {
 }
 ensureConeDetectorLoading();
 
+// 信号機検知 (models/traffic_light.onnx = models/traffic_light.pt を export_cone_onnx.py で変換)。
+// 実機の traffic_light_distance_node と同じく、赤/青信号までの距離をバウンディングボックスの
+// 縦の画面占有率から逆算し、TrafficLightStop (実機の utils/traffic_light_stop.py と同一) が
+// 走行方式によらず最終 cmd_vel に速度上限を掛ける。未生成でも他機能は動く。
+const trafficLightDetector = new TrafficLightDetector();
+const TRAFFIC_LIGHT_ONNX_URL = 'models/traffic_light.onnx';
+let trafficLightLoadError = null;
+const trafficStop = new TrafficLightStop();
+let latestTrafficLight = { red: null, green: null, detections: [] };
+let rosTrafficLightStopStatus = null;
+const trafficLightStatusEl = document.getElementById('oit-traffic-light-status');
+trafficLightDetector.load(TRAFFIC_LIGHT_ONNX_URL, MODEL_WASM_DIR).catch((err) => {
+  console.warn('TrafficLightDetector load failed (models/traffic_light.onnx missing?)', err);
+  trafficLightLoadError = '読込エラー (models/traffic_light.onnx を生成してください)';
+});
+
+// コース上の信号 (MyLaps パネルの LED 面)。'cycle' は SIGNAL_PERIOD 秒ごとに赤 <-> 緑、'red' は赤のまま。
+// 時計はシミュレーション時間 (animate / fastForward の dt の積算) で進める。
+const SIGNAL_PERIOD = 10.0; // [s]
+let signalMode = 'cycle';
+let signalClock = 0;
+function currentSignal() {
+  if (signalMode === 'red') return 'red';
+  return Math.floor(signalClock / SIGNAL_PERIOD) % 2 === 0 ? 'red' : 'green';
+}
+function advanceSignal(dt) {
+  signalClock += dt;
+  const color = currentSignal();
+  if (mylapsRoot.userData.signal !== color) setSignalLight(mylapsRoot, color);
+}
+function setSignalMode(mode) {
+  signalMode = mode;
+  signalClock = 0;
+  document.getElementById('signal-cycle-btn').classList.toggle('active', mode === 'cycle');
+  document.getElementById('signal-red-btn').classList.toggle('active', mode === 'red');
+  advanceSignal(0);
+}
+document.getElementById('signal-cycle-btn').addEventListener('click', () => setSignalMode('cycle'));
+document.getElementById('signal-red-btn').addEventListener('click', () => setSignalMode('red'));
+setSignalLight(mylapsRoot, currentSignal());
+
+function trafficLightStatusText(st) {
+  const sig = currentSignal() === 'red' ? '赤' : '緑';
+  const left = signalMode === 'cycle' ? ` (切替まで ${(SIGNAL_PERIOD - (signalClock % SIGNAL_PERIOD)).toFixed(0)}秒)` : ' (固定)';
+  const head = `コースの信号: ${sig}${left}`;
+  if (!st) return `${head} / 検出器 ${trafficLightLoadError ?? (trafficLightDetector.session ? '読込済' : '読込中...')}`;
+  const det = [st.red_distance !== null && st.red_count > 0 ? `赤 ${st.red_distance.toFixed(1)}m` : null,
+    st.green_distance !== null && st.green_count > 0 ? `青 ${st.green_distance.toFixed(1)}m` : null].filter(Boolean).join(' ');
+  return `${head}\n停止制御: ${TL_STATE_JA[st.state] ?? st.state}${det ? ` / 検出 ${det}` : ''}\n${st.reason}`;
+}
+
+// 1 フレームの信号機検出 -> TrafficLightStop へ観測を渡し, 実機と同じトピックに距離を出す。
+async function runTrafficLightDetection(now) {
+  if (detectorMode === 'ros2' || !trafficLightDetector.session) {
+    latestTrafficLight = { red: null, green: null, detections: [] };
+    return;
+  }
+  try {
+    latestTrafficLight = await trafficLightDetector.infer(captureCanvas);
+  } catch (err) {
+    console.error('traffic light detector inference error', err);
+    latestTrafficLight = { red: null, green: null, detections: [] };
+    return;
+  }
+  trafficStop.observe(now, latestTrafficLight.red, latestTrafficLight.green);
+  if (redDistanceTopic && latestTrafficLight.red !== null) redDistanceTopic.publish(new ROSLIB.Message({ data: latestTrafficLight.red }));
+  if (greenDistanceTopic && latestTrafficLight.green !== null) greenDistanceTopic.publish(new ROSLIB.Message({ data: latestTrafficLight.green }));
+}
+
+// 走行方式の最終指令に赤信号の速度上限を掛ける (実機は lane_navigator / six_lane_planner の中で同じことをする)。
+function applyTrafficLightStop(now, dt, vMeas, cmd) {
+  const out = trafficStop.apply(now, dt, vMeas, cmd.v, cmd.omega);
+  const st = trafficStop.status();
+  if (trafficLightStopStatusTopic) trafficLightStopStatusTopic.publish(new ROSLIB.Message({ data: JSON.stringify(st) }));
+  return out;
+}
+
+// HUD の信号表示 (コースの信号の色・残り秒数 + 停止制御の状態)。ROS2連携では実機ノードの状態を出す。
+setInterval(() => {
+  if (!trafficLightStatusEl || fastForwarding) return;
+  const st = detectorMode === 'ros2' ? rosTrafficLightStopStatus : (trafficLightDetector.session ? trafficStop.status() : null);
+  trafficLightStatusEl.textContent = trafficLightStatusText(st);
+}, 250);
+
+// "ROS2連携": 実機ノードの停止状態を表示する。
+function onRosTrafficLightStopStatus(msg) {
+  if (detectorMode !== 'ros2') return;
+  try {
+    rosTrafficLightStopStatus = JSON.parse(msg.data);
+  } catch (err) {
+    console.warn('traffic_light_stop status parse error', err);
+  }
+}
+
 const laneCanvas = document.getElementById('lane-canvas');
 const laneCtx = laneCanvas.getContext('2d', { willReadFrequently: true });
 const mapCanvas = document.getElementById('map-canvas');
@@ -972,6 +1093,7 @@ function resetNavigation() {
   previousNavState = null;
   window.__sim.coneMapPoints = [];
   latestSixLaneLines = null;
+  trafficStop.reset();
   // Reflect the reset in the HUD immediately, rather than waiting for the
   // next physics step.
   writeCollisionHud(false, 0, false);
@@ -1522,12 +1644,13 @@ function stepNavigator(tracked, now = performance.now() / 1000, sixLaneLines = n
   const avoided = reactiveAvoid(rawCmd, coneDetectionsForAvoidance(), prevReactiveBias, dt);
   prevReactiveBias = avoided.bias;
   avoidanceDebugEl.textContent = avoided.debug;
-  const cmd = { v: avoided.v, omega: avoided.omega };
+  const cmd = applyTrafficLightStop(now, dt, localizer.v, { v: avoided.v, omega: avoided.omega });
 
   // MAPPING -> RACING遷移を検知したら、1回だけレーシングラインをコーン回避
   // 後処理版に差し替え、コーン地図を確定する。
   if (previousNavState !== RACING && laneNavigator.state === RACING && laneNavigator.raceline) {
-    const finalizedCones = coneRecorder.finalize(laneNavigator.recorder.samples, laneNavigator.yawDrift);
+    const finalizedCones = coneRecorder.finalize(laneNavigator.recorder.samples, laneNavigator.yawDrift,
+      laneNavigator.courseMap, laneNavigator.p.lap);
     applyRacelineDeflection(laneNavigator, finalizedCones, laneNavigator.p.tracker);
     window.__sim.coneMapPoints = finalizedCones; // デバッグ確認用
   }
@@ -1573,7 +1696,7 @@ function stepSixLane(lines, now) {
   const avoided = reactiveAvoid({ v: st.v, omega: st.omega }, cones, prevReactiveBias, dt);
   prevReactiveBias = avoided.bias;
   if (!fastForwarding) avoidanceDebugEl.textContent = avoided.debug;
-  const cmd = { v: avoided.v, omega: avoided.omega };
+  const cmd = applyTrafficLightStop(now, dt, vMeas, { v: avoided.v, omega: avoided.omega });
   latestAutonomousCmd = cmd;
   twistMux.update('mpc', cmd.v, cmd.omega, performance.now());
   if (autonomousCmdVelTopic) {
@@ -1610,7 +1733,10 @@ function showSixLaneDebug(st) {
   const header = st.currentLane
     ? `<b>現在 レーン${st.currentLane}</b> (横位置 F=${st.F.toFixed(2)}) → <b>目標 レーン${st.targetLane}</b>`
     : '<b>現在レーン: 不明</b>';
-  sixLaneDebugTextEl.innerHTML = [header, ...explainJa(st, sixLanePlanner.p)].map((l) => `<div>${l}</div>`).join('');
+  // 赤信号の停止制御が効いているときは, その判断も並べる (速度は NN ではなく信号で決まっている)
+  const tl = detectorMode === 'ros2' ? rosTrafficLightStopStatus : trafficStop.status();
+  const tlLine = tl && tl.state !== 'NORMAL' ? [`<b>信号: ${tl.reason}</b>`] : [];
+  sixLaneDebugTextEl.innerHTML = [header, ...tlLine, ...explainJa(st, sixLanePlanner.p)].map((l) => `<div>${l}</div>`).join('');
   const probs = st.probs || new Array(N_LANES).fill(0);
   const nn = st.nnProbs || probs;
   sixLaneDebugBarsEl.innerHTML = probs.map((q, i) => {
@@ -1728,7 +1854,8 @@ async function runPerception(now) {
     }
     const sixLaneLinesOk = ROLES.every((r) => sixLaneLines[r]) ? sixLaneLines : null;
     if (sixLaneLinesOk) sixLaneLinesOk.reanchored = !!tracked.reanchored;
-    latestSixLaneLines = sixLaneLinesOk;    if (detectorMode !== 'ros2' && coneDetector.session) {
+    latestSixLaneLines = sixLaneLinesOk;
+    if (detectorMode !== 'ros2' && coneDetector.session) {
       try {
         latestConeDetections = await coneDetector.infer(captureCanvas);
       } catch (err) {
@@ -1738,6 +1865,15 @@ async function runPerception(now) {
     } else {
       latestConeDetections = [];
     }
+    if (conesTopic && detectorMode !== 'ros2') {
+      const nowMs = Date.now();
+      conesTopic.publish(new ROSLIB.Message({
+        header: { stamp: { sec: Math.floor(nowMs / 1000), nanosec: (nowMs % 1000) * 1e6 }, frame_id: ROBOT_FRAME_ID },
+        poses: latestConeDetections.map((c) => ({ position: { x: c.x, y: c.y, z: 0 }, orientation: { x: 0, y: 0, z: 0, w: 1 } })),
+      }));
+    }
+    // ONNX Runtime Web はセッションをまたいでも同時に 1 推論しか走らせられないので、コーンの後に順番に推論する
+    await runTrafficLightDetection(now);
     if (navMethod === 'qp' && laneNavigator.state === MAPPING) {
       coneRecorder.update(localizer.s, [localizer.x, localizer.y, localizer.yaw], latestConeDetections);
     }
@@ -1804,7 +1940,8 @@ async function fastForward(seconds, physicsDt = 1 / 60) {
     while (simClock < end) {
       if (simClock >= nextPerception) {
         nextPerception += 1 / IMAGE_PUBLISH_HZ;
-        if (detectorMode === 'ufld' || detectorMode === 'yolop') {
+        // カメラ画像を使う検出 (白線モデル・コーン・信号機) があれば、その時点の姿勢で描画し直す
+        if (detectorMode === 'ufld' || detectorMode === 'yolop' || coneDetector.session || trafficLightDetector.session) {
           updateOnboardCameraPose();
           renderOnboardCapture();
         }
@@ -1812,6 +1949,7 @@ async function fastForward(seconds, physicsDt = 1 / 60) {
       }
       const cmd = autonomousMode ? latestAutonomousCmd : { v: 0, omega: 0 };
       physics.stepAutonomous(cmd.v, cmd.omega, physicsDt);
+      advanceSignal(physicsDt);
       applyCollisionAndDeparture();
       // odom_imu_localizer stand-in (see animate()'s own call site for the
       // rationale): use measuredWheelSpeeds() so fastForward()-driven runs
@@ -2018,13 +2156,16 @@ setInterval(() => {
 const physics = new VehiclePhysics();
 // Debug hook for automated verification (browser console / test harness).
 window.__sim = {
-  physics, captureCanvas, renderOnboardCapture, laneNavigator, lineTracker, localizer, ufldDetector,
+  physics, captureCanvas, renderOnboardCapture, updateOnboardCameraPose, laneNavigator, lineTracker, localizer, ufldDetector,
   idealDetector, laneTrace, localizerTrail, fastForward: (sec) => fastForward(sec),
   setDetectorMode: (m) => setDetectorMode(m), resetNavigation: () => resetNavigation(),
   course, obstacles, mylapsRoot, pathTracker, departureMonitor, coneEditor,
   coneDetector, coneRecorder, latestConeDetections: () => latestConeDetections, coneMapPoints: [],
   setNavMethod: (m) => setNavMethod(m), sixLane: () => sixLanePlanner, sixLaneReady,
   seedLineTrackerFromLane: (F) => lineTracker.seedLanePosition(F),
+  trafficLightDetector, trafficStop, latestTrafficLight: () => latestTrafficLight,
+  setSignalMode: (m) => setSignalMode(m), currentSignal: () => currentSignal(),
+  signalClock: () => signalClock, setSignalClock: (t) => { signalClock = t; advanceSignal(0); },
 };
 resetLocalizer();
 setDetectorMode('yolop');
@@ -2185,6 +2326,8 @@ function animate() {
   } else {
     physics.step(effectiveKeys, dt);
   }
+
+  if (!fastForwarding) advanceSignal(dt);
 
   if (!fastForwarding) {
     // fastForward() calls this itself, once per physics step in its own

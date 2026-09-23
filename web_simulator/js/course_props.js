@@ -100,7 +100,9 @@ function parseObj(text, materials) {
     // Lambert (not Standard/Phong): matches how the vehicle meshes are styled
     // -- lit, but with no specular highlight to blow out under the sun light.
     const color = materials.get(name) ?? new THREE.Color(0xcccccc);
-    group.add(new THREE.Mesh(geometry, new THREE.MeshLambertMaterial({ color })));
+    const mesh = new THREE.Mesh(geometry, new THREE.MeshLambertMaterial({ color }));
+    mesh.name = name; // .mtl の材質名 (信号の LED 面を setSignalLight() で探す)
+    group.add(mesh);
   }
   return group;
 }
@@ -199,7 +201,37 @@ export function addMyLapsGantry(parent, setPose, pose) {
     .then((gantry) => {
       gantry.scale.setScalar(MYLAPS_SCALE);
       root.add(gantry);
+      if (root.userData.signal) setSignalLight(root, root.userData.signal);
     })
     .catch((err) => console.error('Failed to load models/MyLaps.obj', err));
   return root;
+}
+
+// ---------------------------------------------------------------------------
+// 信号 (MyLaps パネルの LED 面)
+// ---------------------------------------------------------------------------
+
+// LED 面の色。赤は MyLaps.mtl の "LED_赤" の Kd そのまま。緑は traffic_light.pt が
+// traffic_light_green と判定する程度の明るい緑。
+const SIGNAL_COLORS = {
+  red: [0.894118, 0.164706, 0.215686],
+  green: [0.1, 0.85, 0.35],
+};
+
+/**
+ * MyLaps パネルの LED 面 (材質 "LED_赤" の Mesh) の色を変える。モデルの読込前に呼ばれたら
+ * 読込後に反映する (root.userData.signal に覚えておく)。
+ * @param {THREE.Object3D} root addMyLapsGantry() の戻り値
+ * @param {'red'|'green'} color
+ */
+export function setSignalLight(root, color) {
+  root.userData.signal = color;
+  const rgb = SIGNAL_COLORS[color];
+  root.traverse((o) => {
+    if (o.isMesh && o.name.startsWith('LED')) {
+      o.material.color.setRGB(rgb[0], rgb[1], rgb[2], THREE.SRGBColorSpace);
+      // 自発光を少し足して, 照明の向きによらず信号らしく見せる
+      o.material.emissive.setRGB(rgb[0] * 0.35, rgb[1] * 0.35, rgb[2] * 0.35, THREE.SRGBColorSpace);
+    }
+  });
 }

@@ -450,3 +450,60 @@ class SixLanePlanner:
                 if abs(lane_y(lines, cx, k - 0.5 + shift) - cy) < p.cone_clearance:
                     hold[k] = max(hold.get(k, 0.0), cx + p.cone_pass_margin)
         return set(hold)
+
+
+# ---------------------------------------------------------------------------
+# 判断の説明 (日本語). web_simulator/js/six_lane_planner.js の explainJa() と同じ文面.
+# 実機では six_lane_planner の status JSON ('explain') と判断パネル画像 (RViz) に出す.
+# ---------------------------------------------------------------------------
+PHASE_JA = {STRAIGHT: '直線', ENTRY: 'カーブ進入前', APEX: 'カーブ旋回中', EXIT: 'カーブ脱出', LOST: '白線ロスト'}
+
+
+def required_switch_frames(p: SixLaneParams, from_lane: int, to_lane: int) -> int:
+    return p.switch_frames + p.switch_frames_per_lane * (abs(to_lane - from_lane) - 1)
+
+
+def _js_round(v: float) -> int:
+    """JS の Math.round (0.5 は切り上げ). Python の round() は偶数丸めなので表示がずれる."""
+    return int(math.floor(v + 0.5))
+
+
+def explain_ja(st: Dict, p: SixLaneParams) -> List[str]:
+    """思考結果を日本語の説明文 (行のリスト) にする."""
+    if not st or st.get('phase') == LOST or st.get('current_lane') is None:
+        t = (st or {}).get('lost_time', 0.0) or 0.0
+        return [f'白線を見失っています ({t:.1f}s)', '→ 減速して停止します' if t >= p.lost_timeout else '→ 直前の指令を維持']
+    sign = st.get('sign', 0)
+    d = '左' if sign > 0 else '右' if sign < 0 else ''
+    k = lambda v: f"{'+' if v >= 0 else ''}{v:.3f}"  # noqa: E731
+    ks = st['kappas']
+    lines = [f"速度 {st['v']:.2f} m/s ／ 曲率 近{k(ks[0])} 中{k(ks[1])} 遠{k(ks[2])} [1/m]"]
+    phase, tt = st['phase'], st['teacher_target']
+    if phase == STRAIGHT:
+        why = f'前方は直線 → 外側のレーン{p.home_lane}で次のカーブに備える'
+    elif phase == ENTRY:
+        why = f'前方に{d}カーブを検知 → アウト側(レーン{_js_round(tt)})に寄せて進入準備'
+    elif phase == APEX:
+        why = f"{d}カーブ旋回中 (強さ{st['intensity'] * 100:.0f}%) → イン側へ切り込む (目安レーン{tt:.1f})"
+    elif phase == EXIT:
+        why = f'{d}カーブの出口が見えた → アウト側(レーン{_js_round(tt)})へ膨らんで加速'
+    else:
+        why = ''
+    lines.append(f'局面: {PHASE_JA[phase]}　{why}')
+    if st['blocked']:
+        lines.append(f"コーン: レーン{','.join(str(b) for b in st['blocked'])} が塞がれているため除外")
+    nn = st['nn_probs']
+    best = int(np.argmax(nn)) + 1
+    decision = f'NN推奨 レーン{best} ({nn[best - 1] * 100:.0f}%)'
+    if st.get('pending_lane'):
+        decision += (f" → レーン{st['pending_lane']}へ切替待ち {st['pending_count']}/"
+                     f"{required_switch_frames(p, st['target_lane'], st['pending_lane'])}")
+    elif st['current_lane'] != st['target_lane']:
+        decision += f" → レーン{st['current_lane']}からレーン{st['target_lane']}へ移動中"
+    else:
+        decision += ' → 目標レーンを維持'
+    lines.append(decision)
+    lines.append(f"白線検出の信頼度 {st['confidence'] * 100:.0f}% (3本中{_js_round(st['confidence'] * 3)}本)")
+    if st.get('lateral_rejected'):
+        lines.append(f"白線の割り当てが急に変化 (観測F={st['F_meas']:.2f}) → 取り違えとみなし横位置は予測値を使用")
+    return lines

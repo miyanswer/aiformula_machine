@@ -15,7 +15,7 @@
 import json
 import math
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 
@@ -46,6 +46,8 @@ class CourseMap:
     right_detected: np.ndarray
     start_pose: tuple         # 1 周目開始時の (x, y, yaw)
     closure_error: float = 0.0
+    # 各断面に掛けたループ閉じ込みの補正量 (N, 2). 1 周目に記憶したコーンを境界と同じ座標に載せるのに使う
+    closure_offsets: Optional[np.ndarray] = None
 
     def to_json(self) -> str:
         return json.dumps({
@@ -54,6 +56,7 @@ class CourseMap:
             "left_detected": self.left_detected.astype(int).tolist(),
             "right_detected": self.right_detected.astype(int).tolist(),
             "start_pose": list(self.start_pose), "closure_error": self.closure_error,
+            **({"closure_offsets": self.closure_offsets.tolist()} if self.closure_offsets is not None else {}),
         })
 
     @staticmethod
@@ -64,6 +67,7 @@ class CourseMap:
             np.asarray(d["center"], float), np.asarray(d["s"], float),
             np.asarray(d["left_detected"], bool), np.asarray(d["right_detected"], bool),
             tuple(d["start_pose"]), float(d.get("closure_error", 0.0)),
+            np.asarray(d["closure_offsets"], float) if "closure_offsets" in d else None,
         )
 
 
@@ -77,8 +81,14 @@ def lap_completed(samples: List[BoundarySample], pose, s_now: float, start_pose,
     return math.hypot(dx, dy) <= p.close_radius and dyaw <= p.close_heading
 
 
-def correct_yaw_drift(samples: List[BoundarySample], yaw_drift: float, x_rec: float):
-    """方位ドリフト yaw_drift [rad] (1 周分) を走行距離比例で取り除いた左右境界点を返す."""
+def yaw_drift_applied(p: LapDetectorParams, yaw_drift: float) -> bool:
+    """build_course_map が方位ドリフト補正を掛けるか (コーン記憶も同じ条件で合わせる)."""
+    return p.yaw_drift_correction and yaw_drift != 0.0 and abs(yaw_drift) <= p.max_yaw_drift_correction
+
+
+def corrected_poses(samples: List[BoundarySample], yaw_drift: float) -> List[np.ndarray]:
+    """方位ドリフト yaw_drift [rad] (1 周分) を走行距離比例で取り除いた記録時の姿勢列.
+    web_simulator/js/lane_navigator.js の correctedPoseSequence() と同じ計算."""
     s0, s1 = samples[0].s, samples[-1].s
     poses = [np.array(samples[0].pose, float)]
     for a, b in zip(samples[:-1], samples[1:]):
@@ -89,6 +99,12 @@ def correct_yaw_drift(samples: List[BoundarySample], yaw_drift: float, x_rec: fl
         prev = poses[-1]
         yaw = b.pose[2] - yaw_drift * (b.s - s0) / max(s1 - s0, 1e-9)
         poses.append(np.array([prev[0] + c * d[0] - s * d[1], prev[1] + s * d[0] + c * d[1], yaw]))
+    return poses
+
+
+def correct_yaw_drift(samples: List[BoundarySample], yaw_drift: float, x_rec: float):
+    """方位ドリフト yaw_drift [rad] (1 周分) を走行距離比例で取り除いた左右境界点を返す."""
+    poses = corrected_poses(samples, yaw_drift)
     left = np.array([vehicle_to_world(ps, x_rec, sm.y_left) for ps, sm in zip(poses, samples)])
     right = np.array([vehicle_to_world(ps, x_rec, sm.y_right) for ps, sm in zip(poses, samples)])
     return left, right
@@ -98,7 +114,7 @@ def build_course_map(samples: List[BoundarySample], start_pose, p: LapDetectorPa
                      yaw_drift: float = 0.0, x_rec: float = 2.0) -> CourseMap:
     left = np.array([s.left for s in samples], float)
     right = np.array([s.right for s in samples], float)
-    if p.yaw_drift_correction and yaw_drift != 0.0 and abs(yaw_drift) <= p.max_yaw_drift_correction:
+    if yaw_drift_applied(p, yaw_drift):
         left, right = correct_yaw_drift(samples, yaw_drift, x_rec)
     center = 0.5 * (left + right)
     ss = np.array([s.s for s in samples], float)
@@ -119,6 +135,7 @@ def build_course_map(samples: List[BoundarySample], start_pose, p: LapDetectorPa
     rd = np.array([s.right_detected for s in samples[:keep]], bool)
 
     closure = 0.0
+    offsets = np.zeros_like(center)
     if p.loop_closure and len(center) >= 5:
         # 最後の断面 -> 最初の断面 のベクトルを, 最後の区間の進行方向 t とその法線に分解する.
         # 進行方向成分は「最後の記録から 1 周完了までの隙間」なので誤差ではない.
@@ -134,5 +151,6 @@ def build_course_map(samples: List[BoundarySample], start_pose, p: LapDetectorPa
             w = (ss - ss[0]) / max(ss[-1] - ss[0] + gap, 1e-9)
             corr = -w[:, None] * err[None, :]
             left, right, center = left + corr, right + corr, center + corr
+            offsets = corr
 
-    return CourseMap(left, right, center, ss, ld, rd, tuple(start_pose), closure)
+    return CourseMap(left, right, center, ss, ld, rd, tuple(start_pose), closure, offsets)

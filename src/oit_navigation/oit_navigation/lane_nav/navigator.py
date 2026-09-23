@@ -294,6 +294,10 @@ class LaneNavigator:
         self.corr = np.array([new[0] - (ct * pose[0] - st * pose[1]),
                               new[1] - (st * pose[0] + ct * pose[1]), th])
 
+    def apply_external_correction(self, dx: float, dy: float, dyaw: float, damping: float = 0.15):
+        """外部 (コーンのランドマーク照合など) からの自己位置補正を少しずつ足す (js applyExternalCorrection)."""
+        self.corr = self.corr + damping * np.array([dx, dy, dyaw], float)
+
     def _stop(self, dt) -> Command:
         v = max(0.0, self.cmd.v - self.p.stop_decel * dt)
         return Command(v, 0.0 if v == 0.0 else self.cmd.omega * 0.9)

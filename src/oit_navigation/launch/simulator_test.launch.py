@@ -7,6 +7,7 @@ Web シミュレータ (web_simulator/) と rosbridge_server 経由で連携す�
     ブラウザ --rosbridge--> /aiformula_sensing/vehicle_info (CAN), /aiformula_sensing/vectornav/imu
                             -> odom_imu_localizer -> odom
     lane_navigator -> .../extremum_seeking_mpc/cmd_vel --rosbridge--> ブラウザ (twist_mux "mpc")
+    traffic_light_distance_node -> 赤/青信号までの距離 -> lane_navigator (赤なら 5〜10m 手前で停止)
                    -> status / 境界 / レーシングライン --rosbridge--> ブラウザの周回マップ表示
 
 手順: `make rosbridge` -> ブラウザで http://localhost:8000/web_simulator/ を開き「接続」
@@ -35,7 +36,7 @@ def _cleanup_old_processes():
     try:
         subprocess.run(
             ["pkill", "-9", "-f",
-             "lane_detector|lane_navigator|odom_imu_localizer|traffic_light_distance_node|rviz2|"
+             "lane_detector|lane_navigator|odom_imu_localizer|traffic_light_distance_node|cone_detector|rviz2|"
              "robot_state_publisher|joint_state_publisher"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
         )
@@ -66,8 +67,10 @@ def generate_launch_description():
         DeclareLaunchArgument("map_save_path", default_value=""),
         DeclareLaunchArgument("map_load_path", default_value=""),
         DeclareLaunchArgument("rviz", default_value="true"),
-        DeclareLaunchArgument("traffic_light", default_value="false",
-                              description="シミュレータのコースには信号機が無いので既定は無効"),
+        DeclareLaunchArgument("traffic_light", default_value="true",
+                              description="MyLaps パネル (赤/緑に切り替わる) を信号機として検出し, 赤なら停止する"),
+        DeclareLaunchArgument("cone_detector", default_value="true", description="コーン検出ノードを起動する"),
+        DeclareLaunchArgument("cone_model_path", default_value=default_workspace_asset("models", "cone.pt")),
         DeclareLaunchArgument("traffic_light_model_path",
                               default_value=default_workspace_asset("models", "traffic_light.pt")),
         DeclareLaunchArgument("traffic_light_params_file",
@@ -119,6 +122,22 @@ def generate_launch_description():
             "device": LaunchConfiguration("use_device"),
             "real_height_m": 0.32,
             "publish_annotated_image": True,
+            # シミュレータのカメラ用に実測校正した焦点距離 (幾何的には 763.17px だが, 小さい物体の YOLO ボックスは
+            # 大きめに出るので停止帯 4〜8m で合うよう校正. web_simulator/js/traffic_light_detector.js と同じ)
+            "focal_length_y": 900.0,
+            "reference_image_height": 1080,
+        }],
+    )
+    cone_detector = Node(
+        package="oit_navigation", executable="cone_detector", name="cone_detector", output="screen",
+        condition=IfCondition(LaunchConfiguration("cone_detector")),
+        parameters=[LaunchConfiguration("params_file"), {
+            "image_topic": LaunchConfiguration("input_image_topic"),
+            "model_path": LaunchConfiguration("cone_model_path"),
+            "device": LaunchConfiguration("use_device"),
+            # シミュレータのカメラ: 理想ピンホール (光軸 = 画像中心). lane_detector と同じ
+            "camera_cx": 960.0,
+            "camera_cy": 540.0,
         }],
     )
     rviz = Node(
@@ -126,4 +145,4 @@ def generate_launch_description():
         arguments=["-d", osp.join(pkg, "config", "oit_navigation.rviz")],
         condition=IfCondition(LaunchConfiguration("rviz")), on_exit=Shutdown(),
     )
-    return LaunchDescription(args + [vehicle_tf, lane_detector, localizer, navigator, traffic_light, rviz])
+    return LaunchDescription(args + [vehicle_tf, lane_detector, localizer, navigator, traffic_light, cone_detector, rviz])

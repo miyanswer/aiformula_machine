@@ -693,6 +693,8 @@
           <dd id="oit-detector-status">-</dd>
           <dt>コーン検知</dt>
           <dd id="oit-cone-status">-</dd>
+          <dt>信号機</dt>
+          <dd id="oit-traffic-light-status" style="white-space: pre-line;">-</dd>
           <dt>メッセージ</dt>
           <dd id="oit-message">-</dd>
         </dl>
@@ -702,6 +704,12 @@
             title="1周目で地図を作り, 2周目は二次計画法 (QP) のレーシングラインを追従">周回マップ+QP</button>
           <button id="nav-method-6lane-btn" class="detector-mode-btn"
             title="地図・オドメトリなし. 白線から仮想6レーンを作り, NNがカメラ入力だけでレーンを選ぶ (アウト・イン・アウト)">6レーン (地図なし)</button>
+        </div>
+        <div class="section-title">コースの信号 (MyLaps パネル)</div>
+        <div id="signal-mode-controls" class="btn-row">
+          <button id="signal-cycle-btn" class="detector-mode-btn active"
+            title="10秒ごとに赤と緑を交互に切り替える. 赤を traffic_light.pt で検出したら信号機の 5〜10m 手前で停止, 緑で発進">赤⇔緑 (10秒)</button>
+          <button id="signal-red-btn" class="detector-mode-btn" title="赤のまま (止まり続ける)">赤固定</button>
         </div>
         <div class="section-title">白線検出</div>
         <div id="detector-mode-controls">

@@ -5,7 +5,9 @@
 // 移植)本体は一切変更しない -- ここにある関数はすべて外側から結果を使う/
 // 上書きするだけ。詳細はdocs/superpowers/specs/2026-09-22-cone-avoidance-design.md参照。
 
-import { vehicleToWorld, rateLimit, correctedPoseSequence, RacelineFollower } from './lane_navigator.js';
+import {
+  vehicleToWorld, rateLimit, correctedPoseSequence, RacelineFollower, yawDriftApplied, densifyClosed,
+} from './lane_navigator.js';
 
 // --- 7.1: 半径1.0m クラスタ包絡 & 外周円弧トレース回避 ---
 export const KEEP_OUT_RADIUS = 1.0; // [m] 各コーン中心からの侵入禁止半径
@@ -169,73 +171,131 @@ export class ConeRecorder {
   }
 
   /**
-   * ラップ終了時に1回呼ぶ。境界点と同じ「補正後姿勢列 + 記録時ローカル
-   * オフセット」で再投影する。
+   * ラップ終了時に1回呼ぶ。境界点とまったく同じ補正 (方位ドリフト補正は地図が
+   * 掛けたときだけ + ループ閉じ込み) で記録時の姿勢から再投影し、コースマップ
+   * (= レーシングライン) と同じ座標にする。実機の lane_nav/cone_avoidance.py と同じ。
    * @param {Array<{s:number, pose:[number,number,number]}>} samples navigator.recorder.samples
    * @param {number} yawDrift navigator.yawDrift
+   * @param {object|null} courseMap navigator.courseMap (closureOffsets を使う)
+   * @param {object} lapParams navigator.p.lap
    * @returns {Array<{x:number, y:number}>}
    */
-  finalize(samples, yawDrift) {
+  finalize(samples, yawDrift, courseMap = null, lapParams = null) {
     if (samples.length === 0) return [];
-    const poses = correctedPoseSequence(samples, yawDrift);
+    const poses = lapParams && !yawDriftApplied(lapParams, yawDrift)
+      ? samples.map((sm) => [...sm.pose])
+      : correctedPoseSequence(samples, yawDrift);
     return this.cones.map((c) => {
       let bi = 0, bd = Infinity;
       for (let i = 0; i < samples.length; i++) {
         const d = Math.abs(samples[i].s - c.s);
         if (d < bd) { bd = d; bi = i; }
       }
-      const [x, y] = vehicleToWorld(poses[bi], c.localX, c.localY);
+      let [x, y] = vehicleToWorld(poses[bi], c.localX, c.localY);
+      if (courseMap && courseMap.closureOffsets && courseMap.s.length) {
+        let k = 0, kd = Infinity;
+        for (let i = 0; i < courseMap.s.length; i++) {
+          const d = Math.abs(courseMap.s[i] - c.s);
+          if (d < kd) { kd = d; k = i; }
+        }
+        x += courseMap.closureOffsets[k][0];
+        y += courseMap.closureOffsets[k][1];
+      }
       return { x, y };
     });
   }
 }
 
 // --- 7.3: 2周目レーシングラインの回避後処理 ---
-export const DEFLECT_CLEARANCE = KEEP_OUT_RADIUS; // [m] 1.0m (各コーン中心からの侵入禁止半径)
+// 実機の lane_nav/cone_avoidance.py deflect_raceline_around_cones() と同じ (定数・計算も同一)。
+// 2 周目のラインはコーン中心から 1.3m 離す (反応的回避の禁止半径 1.0m より広い): 地図の誤差 (~0.3m) と
+// 追従のショートカット (~0.2m) が重なっても車体がコーンに触れない余裕を持たせる。
+export const DEFLECT_CLEARANCE = 1.3; // [m]
+const DEFLECT_STEP = 0.2; // [m] 押し出す前に細かくする間隔 (RacelineFollower と同じ)
+const DEFLECT_WINDOW = 4.5; // [m] コーンの前後この範囲に押し出しを配る
+const DEFLECT_ITERATIONS = 4;
+const DEFLECT_EDGE_MARGIN = 0.5; // [m] コース境界からこれだけ内側に保つ (車体半幅 0.4 + 0.1)
 
 /**
- * QP出力のレーシングライン点列を、記録済みコーンから離すよう局所的に
- * 押し出す。optimizeRaceline自体は変更しない後処理。
+ * QP のレーシングライン (閉曲線) を, 記憶したコーンから DEFLECT_CLEARANCE 離れるよう滑らかに押し出す。
+ * ウェイポイントは直線部で数 m おきしかないので、先に細かくしてから最も近い点を横に押し、前後
+ * DEFLECT_WINDOW に raised cosine の重みで配る (山形のこぶ)。left/right (コースマップの境界) があれば、
+ * コーンの左右のうちコースに収まる側 (今のラインに近い方) へ押す。optimizeRaceline 自体は変更しない後処理。
  * @param {Array<[number,number]>} points 閉曲線、順序あり
  * @param {number[]} speeds pointsと同じ長さ
  * @param {Array<{x:number, y:number}>} cones finalize()の出力
- * @returns {{points: Array<[number,number]>, speeds: number[]}}
+ * @param {Array<[number,number]>|null} left コースマップの左境界
+ * @param {Array<[number,number]>|null} right コースマップの右境界
+ * @returns {{points: Array<[number,number]>, speeds: number[]}} 細かくした点列 (RacelineFollower にそのまま渡せる)
  */
-export function deflectRacelineAroundCones(points, speeds, cones) {
-  const out = points.map((p) => [...p]);
+export function deflectRacelineAroundCones(points, speeds, cones, left = null, right = null) {
+  const { path, speed } = densifyClosed(points, speeds, DEFLECT_STEP);
+  const out = path.map((p) => [...p]);
   const n = out.length;
-  for (const cone of cones) {
-    let bestI = -1, bestD = Infinity;
-    for (let i = 0; i < n; i++) {
-      const d = Math.hypot(out[i][0] - cone.x, out[i][1] - cone.y);
-      if (d < bestD) { bestD = d; bestI = i; }
+  const half = Math.max(1, Math.round(DEFLECT_WINDOW / DEFLECT_STEP));
+  const weights = [];
+  for (let k = -half; k <= half; k++) weights.push(0.5 * (1 + Math.cos((Math.PI * k) / (half + 1))));
+  const haveBounds = left && right && left.length >= 2;
+  const mids = haveBounds ? left.map((l, i) => [(l[0] + right[i][0]) / 2, (l[1] + right[i][1]) / 2]) : null;
+  for (let it = 0; it < DEFLECT_ITERATIONS; it++) {
+    let moved = false;
+    for (const cone of cones) {
+      let i = -1, di = Infinity;
+      for (let q = 0; q < n; q++) {
+        const d = Math.hypot(out[q][0] - cone.x, out[q][1] - cone.y);
+        if (d < di) { di = d; i = q; }
+      }
+      if (di >= DEFLECT_CLEARANCE - 1e-3) continue;
+      let push;
+      if (haveBounds) {
+        let j = 0, dj = Infinity;
+        for (let q = 0; q < mids.length; q++) {
+          const d = Math.hypot(mids[q][0] - cone.x, mids[q][1] - cone.y);
+          if (d < dj) { dj = d; j = q; }
+        }
+        const ax = left[j][0] - right[j][0], ay = left[j][1] - right[j][1];
+        const width = Math.hypot(ax, ay);
+        const nx = ax / Math.max(width, 1e-9), ny = ay / Math.max(width, 1e-9); // 右境界 -> 左境界
+        const cLat = (cone.x - right[j][0]) * nx + (cone.y - right[j][1]) * ny;
+        const pLat = (out[i][0] - right[j][0]) * nx + (out[i][1] - right[j][1]) * ny;
+        const lo = DEFLECT_EDGE_MARGIN, hi = width - DEFLECT_EDGE_MARGIN;
+        const sides = [cLat + DEFLECT_CLEARANCE, cLat - DEFLECT_CLEARANCE].filter((t) => t >= lo && t <= hi);
+        let target;
+        if (sides.length) target = sides.reduce((a, b) => (Math.abs(b - pLat) < Math.abs(a - pLat) ? b : a));
+        else target = hi - cLat >= cLat - lo ? hi : lo; // どちらにも入れない: 広い側の限界まで
+        if (Math.abs(target - pLat) < 1e-3) continue;
+        push = [(target - pLat) * nx, (target - pLat) * ny];
+      } else {
+        const ux = (out[i][0] - cone.x) / Math.max(di, 1e-6), uy = (out[i][1] - cone.y) / Math.max(di, 1e-6);
+        push = [(DEFLECT_CLEARANCE - di) * ux, (DEFLECT_CLEARANCE - di) * uy];
+      }
+      for (let k = -half; k <= half; k++) {
+        const q = (((i + k) % n) + n) % n;
+        const w = weights[k + half];
+        out[q][0] += w * push[0];
+        out[q][1] += w * push[1];
+      }
+      moved = true;
     }
-    if (bestD >= DEFLECT_CLEARANCE) continue;
-    for (let k = -8; k <= 8; k++) {
-      const i = ((bestI + k) % n + n) % n;
-      const dx = out[i][0] - cone.x, dy = out[i][1] - cone.y;
-      const dist = Math.max(Math.hypot(dx, dy), 1e-6);
-      if (dist >= DEFLECT_CLEARANCE) continue;
-      const push = (DEFLECT_CLEARANCE - dist) * (1 - Math.abs(k) / 9);
-      out[i][0] += (dx / dist) * push;
-      out[i][1] += (dy / dist) * push;
-    }
+    if (!moved) break;
   }
-  return { points: out, speeds };
+  return { points: out, speeds: speed };
 }
 
 /**
  * navigator.raceline/navigator.followerを、コーン回避済みのfollowerに
  * 差し替える。navigator.state === RACINGへの遷移直後に1回だけ呼ぶ。
- * followerもracelineもLaneNavigatorの公開プロパティ (private化されて
- * いない) なので、外部から代入するだけでよい。
  * @param {import('./lane_navigator.js').LaneNavigator} navigator
  * @param {Array<{x:number, y:number}>} cones
  * @param {object} trackerParams navigator.p.tracker
+ * @returns {Array<[number,number]>} 押し出した (細かくした) ライン
  */
 export function applyRacelineDeflection(navigator, cones, trackerParams) {
-  const { points, speeds } = deflectRacelineAroundCones(navigator.raceline.points, navigator.raceline.speed, cones);
+  const m = navigator.courseMap;
+  const { points, speeds } = deflectRacelineAroundCones(navigator.raceline.points, navigator.raceline.speed, cones,
+    m ? m.left : null, m ? m.right : null);
   navigator.follower = new RacelineFollower(points, speeds, trackerParams);
+  return points;
 }
 
 // --- 7.4: 2周目、コーンランドマークによるオドメトリ補正 ---

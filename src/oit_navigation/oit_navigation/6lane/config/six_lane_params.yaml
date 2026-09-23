@@ -4,11 +4,17 @@ six_lane_planner:
   ros__parameters:
     lane_lines_topic: "/aiformula_perception/lane_detector/lane_lines"
     can_topic: "/aiformula_sensing/vehicle_info"          # 速度だけ使う (自己位置は使わない)
-    cones_topic: ""                                      # geometry_msgs/PoseArray (base_link). 空 = コーン入力なし
+    cones_topic: "/aiformula_perception/cone_detector/cones"   # cone_detector の PoseArray (base_link). 空 = コーン入力なし
     cmd_vel_topic: "/aiformula_control/extremum_seeking_mpc/cmd_vel"   # twist_mux "mpc" (lane_navigator と同じ)
     status_topic: "/aiformula_control/six_lane_planner/status"
     target_path_topic: "/aiformula_visualization/six_lane_planner/target_path"
     lane_reseed_topic: "/aiformula_control/six_lane_planner/lane_reseed"   # 取り違え検出時に lane_detector へ横位置を送る
+    # RViz 用の可視化 (走行後に rosbag を再生して判断を確認する)
+    markers_topic: "/aiformula_visualization/six_lane_planner/markers"   # 仮想6レーン・現在/目標・確率・注視点
+    panel_topic: "/aiformula_visualization/six_lane_planner/panel"       # 判断パネル画像 (俯瞰図 + 確率 + 日本語の理由)
+    panel_rate: 5.0             # [Hz] 0 で出さない
+    panel_font_path: ""         # 空なら Noto CJK 等を自動で探す (sudo apt install fonts-noto-cjk)
+    cone_avoidance.reactive: true   # レーン除外の上に, コーン群を外周に沿って抜ける操舵を重ねる (シミュレータと同じ)
     control_rate: 20.0
     lines_timeout: 0.3
     x_pos: 1.5                  # [m] 現在の横位置 (レーン) を評価する前方距離
@@ -29,3 +35,18 @@ six_lane_planner:
     accel: 0.8
     decel: 1.5
     lost_timeout: 0.8
+
+    # 赤信号停止 (utils/traffic_light_stop.py, lane_navigator と共通. web_simulator/js/traffic_light_stop.js と同じ既定値)
+    # traffic_light_distance_node の赤/青信号までの距離から, 信号機の stop_distance 手前 (許容 5〜10m) で止まる
+    traffic_light_stop.enabled: true
+    traffic_light_stop.red_distance_topic: "/aiformula_perception/traffic_light/red_distance"
+    traffic_light_stop.green_distance_topic: "/aiformula_perception/traffic_light/green_distance"
+    traffic_light_stop.status_topic: "/aiformula_control/traffic_light_stop/status"
+    traffic_light_stop.stop_distance: 7.0          # [m] 止まる目標 (カメラ -> 信号機). 距離は横ずれで短めに出るので中央 7.5 より近め
+    traffic_light_stop.detect_range: 25.0          # [m] これより遠い赤は無視
+    traffic_light_stop.min_trigger_distance: 5.0   # [m] 赤を初めて見たのがこれより近ければ止まらず通過
+    traffic_light_stop.decel: 0.6                  # [m/s^2] 計画減速度
+    traffic_light_stop.red_confirm_frames: 2       # 赤を連続何回で減速開始 (誤検出対策)
+    traffic_light_stop.green_confirm_frames: 2     # 青を連続何回で発進
+    traffic_light_stop.red_release_time: 3.0       # [s] 停止中に赤がこれだけ見えなければ発進
+    traffic_light_stop.markers_topic: "/aiformula_visualization/traffic_light_stop/markers"   # RViz: 信号・停止予定位置

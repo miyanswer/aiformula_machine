@@ -79,11 +79,23 @@ python3 src/oit_navigation/oit_navigation/6lane/train_policy.py   # numpy だけ
 |---|---|---|
 | 入力 | `/aiformula_perception/lane_detector/lane_lines` | `aiformula_interfaces/LaneLines` |
 | 入力 | `/aiformula_sensing/vehicle_info` (速度のみ) | `can_msgs/Frame` |
-| 入力 (任意) | `cones_topic` (既定は空 = なし) | `geometry_msgs/PoseArray` (base_link) |
+| 入力 | `cones_topic` = `/aiformula_perception/cone_detector/cones` (cone_detector) | `geometry_msgs/PoseArray` (base_link) |
 | 出力 | `/aiformula_control/extremum_seeking_mpc/cmd_vel` (twist_mux "mpc") | `geometry_msgs/Twist` |
 | 出力 | `/aiformula_control/six_lane_planner/status` | `std_msgs/String` (JSON) |
 | 出力 | `/aiformula_visualization/six_lane_planner/target_path` | `nav_msgs/Path` (base_link) |
 | 出力 | `/aiformula_control/six_lane_planner/lane_reseed` (取り違え検出時の横位置 → lane_detector) | `std_msgs/Float64` |
+| 入力 | `/aiformula_perception/traffic_light/{red,green}_distance` (traffic_light_distance_node) | `std_msgs/Float32` |
+| 出力 | `/aiformula_control/traffic_light_stop/status` (赤信号停止の状態) | `std_msgs/String` (JSON) |
+| 出力 | `/aiformula_visualization/six_lane_planner/markers` (仮想6レーン・現在/目標・確率・注視点) | `visualization_msgs/MarkerArray` |
+| 出力 | `/aiformula_visualization/six_lane_planner/panel` (俯瞰図 + 確率バー + 日本語の判断理由, 5Hz) | `sensor_msgs/Image` |
+| 出力 | `/aiformula_visualization/traffic_light_stop/markers` (信号と距離・停止予定位置) | `visualization_msgs/MarkerArray` |
+
+status JSON には日本語の判断理由 `explain` (シミュレータ右下と同じ文面) も入る。`six_lane.launch.py` は
+`cone_detector` (コーン検出) と RViz2 (`config/six_lane.rviz`) も起動する (`cone_detector:=false` / `rviz:=false` で無効)。
+走行後の確認手順は `oit_navigation/README.md` の「走行後に判断を確認する」。
+
+赤信号を検出したら信号機の 7.0m 手前 (許容 5〜10m) で止まり、青で発進する (`oit_navigation/utils/traffic_light_stop.py`,
+`lane_navigator` と共通)。`six_lane.launch.py` は `traffic_light_distance_node` も起動する (`traffic_light:=false` で無効)。
 
 cmd_vel は `lane_navigator` と同じ twist_mux 入力なので、**2つの走行方式を同時に起動しないこと**。
 

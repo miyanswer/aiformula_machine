@@ -138,3 +138,42 @@ def test_reanchored_jump_is_accepted(planner):
     st = planner.step(1 / 15, make_lines(offset=-2.9), 1.2, reanchored=True)   # 付け直し -> 実は右端
     assert not st['lateral_rejected'] and st['current_lane'] == 6
     assert st['F'] == pytest.approx(st['F_meas'])
+
+
+def test_explain_ja_matches_simulator_text():
+    """判断の説明 (実機の status 'explain' / 判断パネル) が web_simulator の explainJa() と同じ文面になる.
+    期待値は同じ状態を six_lane_planner.js の explainJa() に入れた出力."""
+    st = {'phase': 'APEX', 'sign': 1, 'teacher_target': 2.768311858567773, 'intensity': 0.555668007976305,
+          'current_lane': 3, 'target_lane': 1, 'pending_lane': 3, 'pending_count': 2,
+          'kappas': [0.03791818449401534, 0.04313537415631128, 0.046101998035306326], 'confidence': 2 / 3,
+          'nn_probs': [0.0458, 0.3371, 0.5308, 0.0617, 0.0085, 0.0161], 'blocked': [], 'v': 1.3982620035341973,
+          'lateral_rejected': False, 'F_meas': 2.38, 'lost_time': 0}
+    assert core.explain_ja(st, core.SixLaneParams()) == [
+        '速度 1.40 m/s ／ 曲率 近+0.038 中+0.043 遠+0.046 [1/m]',
+        '局面: カーブ旋回中　左カーブ旋回中 (強さ56%) → イン側へ切り込む (目安レーン2.8)',
+        'NN推奨 レーン3 (53%) → レーン3へ切替待ち 2/7',
+        '白線検出の信頼度 67% (3本中2本)',
+    ]
+    assert core.explain_ja({'phase': core.LOST, 'lost_time': 1.2}, core.SixLaneParams()) == [
+        '白線を見失っています (1.2s)', '→ 減速して停止します']
+
+
+def test_decision_panel_renders(planner):
+    """判断パネル画像 (RViz 用) が白線・コーン・信号つきで描ける (日本語フォントの有無によらず)."""
+    import importlib.util
+    path = os.path.join(os.path.dirname(__file__), '..', 'oit_navigation', 'utils', 'debug_panel.py')
+    spec = importlib.util.spec_from_file_location('debug_panel', path)
+    dp = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dp)
+    lines = make_lines(offset=-2.9)
+    for _ in range(10):
+        st = planner.step(1 / 15, lines, 1.2, [(4.0, -0.5)])
+    tl = dp.traffic_light_summary({'state': 'APPROACH', 'distance': 9.0, 'stop_distance': 7.0, 'reason': '減速'}, 9.0, None)
+    for font in ('', '/nonexistent.ttf'):
+        jt = dp.JapaneseText(font)
+        if font:
+            jt.path = None   # フォントなしの経路も通す
+        img = dp.six_lane_panel(jt, lines, st, core.explain_ja(st, planner.p), core.lane_y, cones=[(4.0, -0.5)], tl=tl)
+        assert img.ndim == 3 and img.shape[2] == 3 and img.mean() > 10
+        img = dp.text_panel(jt, '周回マップ + QP 走行の判断', ['状態: 1周目', ('信号: 減速', dp.YELLOW)])
+        assert img.shape[:2] == (260, 620)

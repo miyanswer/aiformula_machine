@@ -118,61 +118,16 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /aiformula_perception/lane_line_publisher/lane_lines/right
       Value: true
-    - Alpha: 1
-      Buffer Length: 1
-      Class: rviz_default_plugins/Path
-      Color: 53; 208; 255
+    - Class: rviz_default_plugins/MarkerArray
       Enabled: true
-      Head Diameter: 0.3
-      Head Length: 0.2
-      Length: 0.3
-      Line Style: Points
-      Line Width: 0.15
-      Name: Recorded Left Boundary (odom)
-      Offset:
-        X: 0
-        Y: 0
-        Z: 0.02
-      Pose Color: 255; 85; 255
-      Pose Style: Points
-      Radius: 0.03
-      Shaft Diameter: 0.1
-      Shaft Length: 0.1
+      Name: Six Lane (lanes / target / probs)
+      Namespaces: {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
-        Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /aiformula_visualization/lane_navigator/left_boundary
-      Value: true
-    - Alpha: 1
-      Buffer Length: 1
-      Class: rviz_default_plugins/Path
-      Color: 255; 90; 216
-      Enabled: true
-      Head Diameter: 0.3
-      Head Length: 0.2
-      Length: 0.3
-      Line Style: Points
-      Line Width: 0.15
-      Name: Recorded Right Boundary (odom)
-      Offset:
-        X: 0
-        Y: 0
-        Z: 0.02
-      Pose Color: 255; 85; 255
-      Pose Style: Points
-      Radius: 0.03
-      Shaft Diameter: 0.1
-      Shaft Length: 0.1
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        Filter size: 10
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /aiformula_visualization/lane_navigator/right_boundary
+        Value: /aiformula_visualization/six_lane_planner/markers
       Value: true
     - Alpha: 1
       Buffer Length: 1
@@ -183,12 +138,12 @@ Visualization Manager:
       Head Length: 0.2
       Length: 0.3
       Line Style: Billboards
-      Line Width: 0.1
-      Name: QP Raceline (odom)
+      Line Width: 0.12
+      Name: Six Lane Target Path
       Offset:
         X: 0
         Y: 0
-        Z: 0.02
+        Z: 0.03
       Pose Color: 255; 85; 255
       Pose Style: None
       Radius: 0.03
@@ -197,21 +152,9 @@ Visualization Manager:
       Topic:
         Depth: 5
         Durability Policy: Volatile
-        Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /aiformula_visualization/target_trajectory
-      Value: true
-    - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
-      Name: Lane Navigator (summary)
-      Namespaces: {}
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /aiformula_visualization/lane_navigator/markers
+        Value: /aiformula_visualization/six_lane_planner/target_path
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
@@ -240,14 +183,14 @@ Visualization Manager:
       Max Value: 1
       Median window: 5
       Min Value: 0
-      Name: Decision Panel (lane_navigator)
+      Name: Decision Panel (six_lane_planner)
       Normalize Range: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /aiformula_visualization/lane_navigator/panel
+        Value: /aiformula_visualization/six_lane_planner/panel
       Value: true
     - Class: rviz_default_plugins/Image
       Enabled: true
@@ -308,7 +251,7 @@ Visualization Manager:
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: base_footprint
+    Fixed Frame: base_link
     Frame Rate: 30
   Name: root
   Tools:

@@ -268,6 +268,9 @@ rosbridge 接続中は、右上 PiP と同じ機体カメラ視点を `sensor_ms
     `models/ufld_honda_finetuned_best.pth` を置いて `ros2 run oit_navigation export_ufld_onnx` で生成する
   - **コーン検知**: `models/cone.onnx`（[`js/cone_detector.js`](js/cone_detector.js)）。git管理外のため、
     `models/cone.pt` を置いて `ros2 run oit_navigation export_cone_onnx` で生成する。
+  - **信号機検知**: `models/traffic_light.onnx`（[`js/traffic_light_detector.js`](js/traffic_light_detector.js)）。git管理外のため、
+    `python3 src/oit_navigation/oit_navigation/export_cone_onnx.py --weights models/traffic_light.pt --output web_simulator/models/traffic_light.onnx`
+    で生成する（下記「赤信号停止」）。
   - **理想検出**: コースの実際の 3 本線（[`js/course.js`](js/course.js) が `course.glb` の
     メッシュから取り出した外側境界・中央線・内側境界の点列）をノイズ・欠落つきで観測する。
     認識精度と走行方式を切り分けて検証するためのモード
@@ -392,6 +395,37 @@ NN の重み `six_lane_policy.json` は実機ノードと共用で、シミュ�
 白線の追跡（LineTracker）は「車両は中央線の上」と仮定しない: 見失っても横位置を保ち、3本揃い・二重線を根拠に
 取り違えを付け直す（YOLOP で右端に何も伝えずに置いても 0.2 秒で正しい横位置に戻る）。詳細は 6lane/README.md。
 
+## 赤信号停止（両方の走行方式）
+
+MyLaps ゲートのパネルが信号です。**実機と同じ `traffic_light.pt`**（ONNX に変換）でオンボードカメラ画像から
+赤/青信号を検出し、バウンディングボックスの縦の画面占有率から距離を逆算します（実機の `traffic_light_distance_node` と同じ式）。
+赤を連続 2 フレーム見たら、**信号機の 7.0m 手前（許容 5〜10m）** で止まるよう `v <= sqrt(2·0.6·(d − 7.0))` で減速し、
+検出の合間は車輪速で距離を補間します。停止中に青を 2 フレーム見るか、赤が 3 秒見えなくなったら発進します。
+赤を初めて見た距離が 5m より近い（直前で赤に変わった）ときは、止まらずに通過します。
+走行方式（周回マップ+QP / 6レーン）の最終指令に掛かるので、どちらでも同じように止まります。
+
+- 「自動運転」タブの **コースの信号** で「赤⇔緑 (10秒)」（既定: 10 秒ごとに赤と緑を交互に切替）/「赤固定」を選ぶ
+- 「信号機」欄にコースの信号の色・切替までの秒数、停止制御の状態（通常/減速中/停止中/発進中）と検出距離を表示。
+  6レーン方式では右下の判断パネルにも「信号: 赤信号で停止中 (信号機まで 6.7m)」のように出る
+- 距離の焦点距離は **900px @1080 に実測校正**しています（シミュレータのカメラの幾何的な値は 763px）。YOLO のボックスは
+  小さい物体ほど実物より数 px 大きく出るため、幾何的な値のままだと距離を 1〜2m 短く見積もります。3〜18m に置いた
+  赤/緑パネル 120 枚で合わせ、停止帯 4〜8m で誤差平均 ±0.1m。12m より遠いとボックスが頭打ちになり短めに出ます
+  （= 早めに減速し始めるだけ）
+- 検証（`__sim.fastForward`）: 理想検出で 6レーン×4 開始位置 + QP の停止位置は信号機まで **7.0〜7.7m**、
+  YOLOP では 7.1〜8.0m。赤⇔緑では減速中に緑になれば止まらずに通過し、停止後は緑で発進してゲートを通過
+- 実装: [`js/traffic_light_stop.js`](js/traffic_light_stop.js) ≡ `src/oit_navigation/oit_navigation/utils/traffic_light_stop.py`
+  （同じ入力列で状態遷移・速度とも一致を確認済み）
+- ROS2連携モードでは実機ノード（`traffic_light_distance_node` + `lane_navigator` / `six_lane_planner`）が止め、
+  シミュレータは `/aiformula_control/traffic_light_stop/status` を表示するだけ。ブラウザ内の検出モードでは
+  シミュレータ自身が `/aiformula_perception/traffic_light/{red,green}_distance` と同じ status を出す
+- コーン回避 (js/cone_avoidance.js) は実機の `lane_nav/cone_avoidance.py` と同一。2 周目のライン押し出しは
+  ラインを細かくしてからコースに収まる側へ 1.3m 離す (以前は疎なウェイポイントを 1 点押すだけで, 間のスプラインが
+  コーンの脇を通っていた)。1 周目のコーン記憶はコースマップと同じ補正で地図に載せる (以前は方位ドリフト補正を常に掛け,
+  ループ閉じ込みを掛けていなかったため, 境界地図とずれることがあった)
+- コーン検知の結果もブラウザ内の検出モードでは実機の `cone_detector` と同じ `/aiformula_perception/cone_detector/cones`
+  (PoseArray, base_link) に出す。RViz 用のマーカー・判断パネル画像は実機ノードだけが出すので、シミュレータで RViz 確認するときは
+  ROS2連携モード（`simulator_test.launch.py` / `six_lane.launch.py simulator:=true`）を使う
+
 ## 車体モデル・物理パラメータ
 
 `vehicles/sample_vehicle/xacro/ai_car1.xacro` に準拠した差動2輪駆動（後方キャスター）
@@ -422,6 +456,8 @@ web_simulator/
 │   ├── cone_editor.js              コーンのクリック配置・ドラッグ移動・削除 (localStorage永続化)
 │   ├── cone_detector.js            cone.onnx によるコーン検知 (バウンディングボックス -> 地面座標)
 │   ├── cone_avoidance.js           コーン回避 (反応的ナッジ・1周目記憶・2周目レーシングライン回避・ランドマーク補正)
+│   ├── traffic_light_detector.js   traffic_light.onnx による信号機検知 (赤/青 + 画面占有率から距離)
+│   ├── traffic_light_stop.js       赤信号停止 (oit_navigation/utils/traffic_light_stop.py の JS 移植)
 │   ├── lane_model_detector.js      YOLOP (ONNX) による白線マスク検出（crop_bottom前処理）
 │   ├── ufld_lane_detector.js       UFLD (ONNX) による白線点列検出
 │   ├── ideal_lane_detector.js      理想検出（コースの実際の白線 + ノイズ）
@@ -430,7 +466,7 @@ web_simulator/
 │   ├── hud_ui.js                   HUD のタブ切替・折りたたみ・ドラッグ移動
 │   └── twist_mux.js         WASD/自動運転の優先度＋タイムアウト調停
 ├── models/                  course.glb（コース）/ MyLaps.obj・.mtl（ゲート）/ cone.glb（コーン）/
-│                            honda_shihou_finetuned.onnx / ufld.onnx / cone.onnx（git 管理外）
+│                            honda_shihou_finetuned.onnx / ufld.onnx / cone.onnx / traffic_light.onnx（git 管理外）
 └── vendor/                  three.js（GLTFLoader を含む）/ roslib.js / onnxruntime-web のローカル同梱コピー
 ```
 

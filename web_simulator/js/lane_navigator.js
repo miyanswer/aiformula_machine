@@ -474,10 +474,15 @@ function correctYawDrift(samples, yawDrift, xRec) {
   };
 }
 
+/** buildCourseMap が方位ドリフト補正を掛けるか (コーン記憶も同じ条件で合わせる)。course_map.py yaw_drift_applied。 */
+export function yawDriftApplied(p, yawDrift) {
+  return p.yawDriftCorrection && yawDrift !== 0 && Math.abs(yawDrift) <= p.maxYawDriftCorrection;
+}
+
 export function buildCourseMap(samples, startPose, p, yawDrift = 0, xRec = 2.0) {
   let left = samples.map((s) => [...s.left]);
   let right = samples.map((s) => [...s.right]);
-  if (p.yawDriftCorrection && yawDrift !== 0 && Math.abs(yawDrift) <= p.maxYawDriftCorrection) {
+  if (yawDriftApplied(p, yawDrift)) {
     ({ left, right } = correctYawDrift(samples, yawDrift, xRec));
   }
   let center = left.map((l, i) => [(l[0] + right[i][0]) / 2, (l[1] + right[i][1]) / 2]);
@@ -499,6 +504,8 @@ export function buildCourseMap(samples, startPose, p, yawDrift = 0, xRec = 2.0) 
 
   let closure = 0;
   const n = center.length;
+  // 各断面に掛けたループ閉じ込みの補正量 (1 周目に記憶したコーンを境界と同じ座標に載せるのに使う)
+  let closureOffsets = center.map(() => [0, 0]);
   if (p.loopClosure && n >= 5) {
     let t = [center[n - 1][0] - center[n - 2][0], center[n - 1][1] - center[n - 2][1]];
     const tn = Math.max(Math.hypot(...t), 1e-9);
@@ -515,9 +522,10 @@ export function buildCourseMap(samples, startPose, p, yawDrift = 0, xRec = 2.0) 
         return [q[0] - w * err[0], q[1] - w * err[1]];
       });
       left = fix(left); right = fix(right); center = fix(center);
+      closureOffsets = fix(closureOffsets);
     }
   }
-  return { left, right, center, s: ss, leftDetected, rightDetected, startPose: [...startPose], closureError: closure };
+  return { left, right, center, s: ss, leftDetected, rightDetected, startPose: [...startPose], closureError: closure, closureOffsets };
 }
 
 // ---------------------------------------------------------------------------

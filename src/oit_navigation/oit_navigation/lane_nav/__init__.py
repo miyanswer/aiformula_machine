@@ -7,3 +7,5 @@ from .course_map import CourseMap, LapDetectorParams, build_course_map
 from .raceline_qp import Raceline, RacelineParams, optimize_raceline
 from .path_tracker import RacelineFollower, TrackerParams
 from .navigator import LaneNavigator, NavigatorParams, MAPPING, OPTIMIZING, RACING, STOPPED
+from .cone_avoidance import (ConeRecorder, ReactiveAvoider, cone_landmark_correction,
+                             deflect_raceline_around_cones)

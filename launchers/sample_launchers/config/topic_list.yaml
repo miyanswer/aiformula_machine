@@ -33,6 +33,9 @@ perception:
     red_distance: "/aiformula_perception/traffic_light/red_distance"
     green_distance: "/aiformula_perception/traffic_light/green_distance"
     status: "/aiformula_perception/traffic_light/status"
+  cone_detector:
+    cones: "/aiformula_perception/cone_detector/cones"     # geometry_msgs/PoseArray (base_link)
+    status: "/aiformula_perception/cone_detector/status"   # JSON (x, y, 距離, 信頼度, bbox)
 
 control:
   joy:
@@ -50,6 +53,10 @@ control:
     gamepad: "/aiformula_control/twist_mux/gamepad/lock"
   output_can_data: "/aiformula_control/motor_controller/reference_signal"
   lane_navigator_status: "/aiformula_control/lane_tracker/status"   # JSON (LaneNavigator.status())
+  six_lane_planner:
+    status: "/aiformula_control/six_lane_planner/status"              # JSON (判断 + 日本語の理由 'explain')
+    lane_reseed: "/aiformula_control/six_lane_planner/lane_reseed"
+  traffic_light_stop_status: "/aiformula_control/traffic_light_stop/status"   # JSON (赤信号停止の状態)
 
 visualization:
   annotated_image: "/aiformula_visualization/object_road_detector/annotated_image"
@@ -61,3 +68,13 @@ visualization:
     left_boundary: "/aiformula_visualization/lane_navigator/left_boundary"
     right_boundary: "/aiformula_visualization/lane_navigator/right_boundary"
     target_trajectory: "/aiformula_visualization/target_trajectory"
+    panel: "/aiformula_visualization/lane_navigator/panel"            # 判断パネル画像 (日本語)
+    markers: "/aiformula_visualization/lane_navigator/markers"
+  six_lane_planner:
+    target_path: "/aiformula_visualization/six_lane_planner/target_path"
+    markers: "/aiformula_visualization/six_lane_planner/markers"       # 仮想6レーン・目標レーン・確率
+    panel: "/aiformula_visualization/six_lane_planner/panel"           # 判断パネル画像 (俯瞰図 + 日本語の理由)
+  cone_detector:
+    markers: "/aiformula_visualization/cone_detector/markers"
+    annotated_image: "/aiformula_visualization/cone_detector/annotated_image"
+  traffic_light_stop_markers: "/aiformula_visualization/traffic_light_stop/markers"
