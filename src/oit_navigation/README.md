@@ -95,9 +95,17 @@ ros2 launch oit_navigation video_test.launch.py backend:=yolop traffic_light:=fa
 ros2 run oit_navigation verification_gui   # http://localhost:8090
 ```
 
+### 6レーン動的選択走行 (地図なし・オドメトリなし)
+周回マップ + QP とは別の走行方式. 白線から仮想6レーンを作り, NN がアウト・イン・アウトになるレーンを選ぶ.
+詳細は [`oit_navigation/6lane/README.md`](oit_navigation/6lane/README.md).
+```bash
+ros2 launch oit_navigation six_lane.launch.py use_device:=0 use_tensorrt:=true   # lane_navigator とは同時起動しない
+```
+
 ### テスト
 ```bash
 python3 -m pytest src/oit_navigation/test/test_lane_nav.py      # ROS 不要
+python3 -m pytest src/oit_navigation/test/test_six_lane.py      # 6レーン (ROS 不要)
 python3 src/oit_navigation/test/lane_nav_sim.py --plot /tmp/sim.png   # オフライン 2D シミュレーション
 ```
 

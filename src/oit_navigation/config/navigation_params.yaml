@@ -43,6 +43,12 @@ lane_detector:
     tracker_gate_ratio: 0.4
     tracker_width_tolerance: 0.3
     tracker_max_heading_diff: 0.3
+    tracker_init_offset: 0.0         # 起動時の車両位置: 中央線からの横ずれ [m] (左正). 右端レーンから発進なら約 -2.9
+    tracker_anchor_tolerance: 0.15   # 3本 (または左右境界2本) が揃って見えたら付け直す: 間隔の許容誤差 (道幅比)
+    tracker_anchor_frames: 3         # その状態がこのフレーム数続いたら付け直す
+    tracker_anchor_max_x_min: 6.0    # 根拠にする線は手前 (この距離 [m] 以内) から見えているものだけ
+    tracker_anchor_heading_diff: 0.1 # 根拠にする線どうしの向きの差の上限 [rad]
+    lane_reseed_topic: "/aiformula_control/six_lane_planner/lane_reseed"   # 6レーン走行からの横位置 (空で無効)
 
 odom_imu_localizer:
   ros__parameters:

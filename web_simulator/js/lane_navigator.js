@@ -160,9 +160,15 @@ export function extractMaskLines(mask, w, h, p = MASK_LINES_PARAMS) {
 // ---------------------------------------------------------------------------
 export const ROLES = ['left', 'center', 'right'];
 
+// 「車両は中央線の上」とは仮定しない (line_tracker.py の docstring 参照): 起動時の横位置は initOffset
+// (中央線からの横ずれ, 左正)、見失い続けたら最後の横位置を保って並びと道幅だけ戻す、3本 (または
+// 左右の境界2本) が道幅どおりに揃って見え続けたら付け直す (再アンカー)、2本しか見えないときは二重線
+// (境界線) を手掛かりにする (車に近い方が境界)、外部から seedLanePosition() で置き直せる。
 export const LINE_TRACKER_PARAMS = {
   xRef: 2.0, laneWidthInit: 3.5, laneWidthMin: 1.0, laneWidthMax: 5.0,
   widthAlpha: 0.1, gateRatio: 0.4, widthTolerance: 0.3, maxHeadingDiff: 0.3, lostResetFrames: 30,
+  initOffset: 0.0, anchorTolerance: 0.15, anchorFrames: 3, anchorMaxXMin: 6.0, anchorHeadingDiff: 0.1,
+  useDoubleLine: true, doubleLineGapMin: 0.4, doubleLineGapMax: 1.1,
 };
 
 export class LineTracker {
@@ -170,10 +176,23 @@ export class LineTracker {
 
   reset() {
     const w = this.p.laneWidthInit;
-    // Initial assumption: the vehicle is on the center white line.
-    this.offsets = { left: w, center: 0, right: -w };
     this.laneW = { left: w, right: w };
+    this._setCenter(-this.p.initOffset); // 中央線は車両から見て -initOffset の位置
     this.lostFrames = 0;
+    this.anchorShift = null;
+    this.anchorCount = 0;
+  }
+
+  _setCenter(center) {
+    this.offsets = { left: center + this.laneW.left, center, right: center - this.laneW.right };
+  }
+
+  /** 車両のレーン座標 F (左白線=0, 中央線=3, 右白線=6; 6レーン走行の横位置) から線の位置を置き直す。 */
+  seedLanePosition(F) {
+    const w = F <= 3 ? this.laneW.left : this.laneW.right;
+    this._setCenter(((F - 3) * w) / 3);
+    this.anchorShift = null;
+    this.anchorCount = 0;
   }
 
   update(fitsIn) {
@@ -181,14 +200,22 @@ export class LineTracker {
     const fits = fitsIn.filter(Boolean);
     const meas = fits.map((f) => f.yAt(p.xRef));
     const heads = fits.map((f) => f.headingAt(p.xRef));
-    const assign = this._assign(meas, heads);
+    let assign = this._assign(meas, heads);
+    const anchored = this._reanchor(meas, heads, fits.map((f) => f.xMin));
+    if (anchored) assign = anchored;
     this._preferInnerBoundaries(assign, meas, heads);
     const detected = {};
     for (const r of ROLES) detected[r] = assign[r] !== null && assign[r] !== undefined;
 
     if (!ROLES.some((r) => detected[r])) {
       this.lostFrames++;
-      if (this.lostFrames >= p.lostResetFrames) this.reset();
+      if (this.lostFrames >= p.lostResetFrames) {
+        // 中央線の上とは仮定しない: 最後の横位置 (中央線の位置) を保って並びと道幅だけ戻す
+        const center = this.offsets.center;
+        this.laneW = { left: p.laneWidthInit, right: p.laneWidthInit };
+        this._setCenter(center);
+        this.lostFrames = 0;
+      }
       return { lines: { left: null, center: null, right: null }, detected, offsets: { ...this.offsets }, laneWidths: { ...this.laneW } };
     }
     this.lostFrames = 0;
@@ -211,7 +238,7 @@ export class LineTracker {
     if (!lines.left && lines.center) lines.left = lines.center.shifted(+wl);
     if (!lines.right && lines.center) lines.right = lines.center.shifted(-wr);
     for (const r of ROLES) if (!detected[r] && lines[r]) this.offsets[r] = lines[r].yAt(p.xRef);
-    return { lines, detected, offsets: { ...this.offsets }, laneWidths: { ...this.laneW } };
+    return { lines, detected, offsets: { ...this.offsets }, laneWidths: { ...this.laneW }, reanchored: !!anchored };
   }
 
   // Boundary = first line outside the center line: if an unused line with a
@@ -243,6 +270,67 @@ export class LineTracker {
     }
   }
 
+  // 3本 (または左右の境界2本) が道幅どおりに揃って見えるのに追跡中の位置とゲート以上ずれていれば
+  // (= 割り当てが線1本ぶんずれている)、それが anchorFrames 続いた時点でその割り当てを返す。
+  _reanchor(meas, heads, xMins) {
+    const p = this.p;
+    const gate = Math.min(this.laneW.left, this.laneW.right) * p.gateRatio;
+    const spacing = { '0,1': this.laneW.left, '1,2': this.laneW.right, '0,2': this.laneW.left + this.laneW.right };
+    const opts = [null, ...meas.map((_, i) => i)];
+    const candidates = []; // {prio, assign, shift}
+    for (const a of opts) for (const b of opts) for (const c of opts) {
+      if (a === null || c === null) continue; // 左右の境界が両方あるときだけ役割が一意に決まる
+      const combo = [a, b, c];
+      const used = combo.filter((v) => v !== null);
+      if (new Set(used).size !== used.length || used.some((i) => xMins[i] > p.anchorMaxXMin)) continue;
+      const ys = used.map((i) => meas[i]);
+      let ordered = true;
+      for (let k = 0; k + 1 < ys.length; k++) if (ys[k] <= ys[k + 1]) ordered = false;
+      if (!ordered || !this._consistent(combo, meas, heads, spacing, p.anchorTolerance, p.anchorHeadingDiff)) continue;
+      const cNew = b !== null ? meas[b] : meas[a] - this.laneW.left;
+      candidates.push({ prio: b !== null ? 0 : 1, assign: { left: a, center: b, right: c }, shift: cNew - this.offsets.center });
+    }
+    if (!candidates.length && p.useDoubleLine) {
+      for (let i = 0; i < meas.length; i++) for (let k = 0; k < meas.length; k++) {
+        const near = meas[i], far = meas[k];
+        // 同じ側 (車をまたがない) に平行に並び、i の方が車に近い
+        if (near * far <= 0 || Math.abs(near) < 0.2 || !(Math.abs(near) < Math.abs(far))
+          || Math.abs(far - near) < p.doubleLineGapMin || Math.abs(far - near) > p.doubleLineGapMax
+          || Math.max(xMins[i], xMins[k]) > p.anchorMaxXMin
+          || Math.abs(heads[i] - heads[k]) > p.anchorHeadingDiff) continue;
+        const role = near < 0 ? 'right' : 'left';
+        const cNew = role === 'right' ? near + this.laneW.right : near - this.laneW.left;
+        candidates.push({ prio: 2, assign: { left: null, center: null, right: null, [role]: i }, shift: cNew - this.offsets.center });
+      }
+    }
+    let best = null; // 3本 > 左右境界 > 二重線、次に今の追跡に近いもの
+    for (const cand of candidates) {
+      if (!best || cand.prio < best.prio || (cand.prio === best.prio && Math.abs(cand.shift) < Math.abs(best.shift))) best = cand;
+    }
+    if (!best || Math.abs(best.shift) <= gate) {
+      this.anchorShift = null;
+      this.anchorCount = 0;
+      return null;
+    }
+    this.anchorCount = this.anchorShift !== null && Math.abs(best.shift - this.anchorShift) <= gate ? this.anchorCount + 1 : 1;
+    this.anchorShift = best.shift;
+    if (this.anchorCount < p.anchorFrames) return null;
+    this.anchorShift = null;
+    this.anchorCount = 0;
+    return best.assign;
+  }
+
+  // 同時に割り当てる線どうしの間隔が道幅と整合し、向きが揃っているか。
+  _consistent(combo, meas, heads, spacing, tolerance = this.p.widthTolerance, headingDiff = this.p.maxHeadingDiff) {
+    for (let ra = 0; ra < 3; ra++) for (let rb = ra + 1; rb < 3; rb++) {
+      if (combo[ra] === null || combo[rb] === null) continue;
+      const expected = spacing[`${ra},${rb}`];
+      if (Math.abs(meas[combo[ra]] - meas[combo[rb]] - expected) > tolerance * expected
+        || Math.abs(heads[combo[ra]] - heads[combo[rb]]) > headingDiff) return false;
+    }
+    return true;
+  }
+
   _assign(meas, heads) {
     const p = this.p;
     const gate = Math.min(this.laneW.left, this.laneW.right) * p.gateRatio;
@@ -268,14 +356,7 @@ export class LineTracker {
       if (!ordered) continue;
       // Lines assigned together must be spaced like the tracked lane widths
       // and roughly parallel (rejects junction/branch lines).
-      let consistent = true;
-      for (let ra = 0; ra < 3 && consistent; ra++) for (let rb = ra + 1; rb < 3; rb++) {
-        if (combo[ra] === null || combo[rb] === null) continue;
-        const expected = spacing[`${ra},${rb}`];
-        if (Math.abs(meas[combo[ra]] - meas[combo[rb]] - expected) > p.widthTolerance * expected
-          || Math.abs(heads[combo[ra]] - heads[combo[rb]]) > p.maxHeadingDiff) { consistent = false; break; }
-      }
-      if (!consistent) continue;
+      if (!this._consistent(combo, meas, heads, spacing)) continue;
       const score = [used.length, -cost];
       if (score[0] > bestScore[0] || (score[0] === bestScore[0] && score[1] > bestScore[1])) {
         bestScore = score;

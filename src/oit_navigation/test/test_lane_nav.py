@@ -91,6 +91,86 @@ def test_tracker_prefers_inner_line_of_double_boundary():
     assert abs(out.offsets["right"] + 3.1) < 0.05
 
 
+def _lane6_tracker():
+    """右端 (中央線から 2.9m 右) を走っている状態を追跡済みの tracker. 左白線は視野外."""
+    tr = LineTracker(LineTrackerParams(lane_width_init=3.5, init_offset=-2.9))
+    for _ in range(3):
+        tr.update([_line(2.9), _line(-0.6)])
+    return tr
+
+
+def test_tracker_keeps_lateral_position_when_lost():
+    """見失い続けても「中央線の上」に戻さない: 右に寄った状態で右白線だけ再び見えたら右白線のまま."""
+    tr = _lane6_tracker()
+    for _ in range(LineTrackerParams().lost_reset_frames + 5):
+        tr.update([])
+    out = tr.update([_line(-0.6)])
+    assert out.detected["right"] and not out.detected["center"]
+    assert abs(out.offsets["center"] - 2.9) < 0.05
+
+
+def test_tracker_init_offset():
+    """起動時の横位置を指定できる (右端から発進: 右白線を中央線と取り違えない)."""
+    tr = LineTracker(LineTrackerParams(lane_width_init=3.5, init_offset=-2.9))
+    out = tr.update([_line(-0.6)])
+    assert out.detected["right"] and not out.detected["center"]
+    tr.reset()
+    assert abs(tr.offsets["center"] - 2.9) < 1e-9
+
+
+def test_tracker_reanchors_when_three_lines_line_up():
+    """割り当てが1本ずれていても, 3本が道幅どおりに揃って見え続けたら正しく付け直す."""
+    tr = LineTracker(LineTrackerParams(lane_width_init=3.5))
+    tr.offsets = {"left": 0.6, "center": -2.9, "right": -6.4}   # 右白線を中央線と取り違えた状態
+    lines = [_line(4.1), _line(0.6), _line(-2.9)]                # 実際: 中央線の 0.6m 右を走行
+    out = tr.update(lines)
+    assert abs(out.offsets["center"] + 2.9) < 0.05              # 1 フレームでは付け直さない
+    for _ in range(LineTrackerParams().anchor_frames):
+        out = tr.update(lines)
+    assert all(out.detected.values())
+    assert abs(out.offsets["center"] - 0.6) < 0.05
+
+
+def test_tracker_reanchor_ignores_double_line_stripe():
+    """外側二重線の外側の線は道幅と合わないので再アンカーの根拠にしない."""
+    tr = LineTracker(LineTrackerParams(lane_width_init=3.1))
+    for _ in range(5):
+        out = tr.update([_line(3.1), _line(0.0), _line(-3.1), _line(-3.9)])
+    assert abs(out.offsets["center"]) < 0.05 and abs(out.offsets["right"] + 3.1) < 0.05
+
+
+def test_tracker_double_line_marks_boundary():
+    """中央線の上と思い込んで右端から発進しても, 右白線が二重線なら右境界と分かって付け直す."""
+    tr = LineTracker(LineTrackerParams(lane_width_init=3.5))      # 初期仮定: 中央線の上
+    lines = [_line(2.9), _line(-0.6), _line(-1.3)]                # 中央線 / 右境界 (二重線の内側, 外側)
+    out = tr.update(lines)
+    assert abs(out.offsets["center"] + 0.6) < 0.05                # 最初は右白線を中央線と取り違える
+    for _ in range(LineTrackerParams().anchor_frames):
+        out = tr.update(lines)
+    assert abs(out.offsets["center"] - 2.9) < 0.05
+    assert abs(out.offsets["right"] + 0.6) < 0.05                 # 境界は二重線の内側 (車に近い方)
+
+
+def test_tracker_reanchor_ignores_far_extrapolated_line():
+    """遠方 (9.8m より先) にしか見えない斜めの線を外挿した位置は, 付け直しの根拠にしない (実測の誤作動)."""
+    tr = LineTracker(LineTrackerParams(lane_width_init=3.5, init_offset=-2.9))
+    xs = np.linspace(9.8, 12.0, 10)
+    far = fit_line(xs, 9.68 - 0.298 * xs)                        # 向きの差 0.29rad, x_ref=2 へ外挿すると約 +9.1
+    for _ in range(6):
+        out = tr.update([far, _line(-0.7), _line(2.73)])
+    assert abs(out.offsets["center"] - 2.73) < 0.05 and abs(out.offsets["right"] + 0.7) < 0.05
+
+
+def test_tracker_seed_lane_position():
+    """6レーン座標 (左白線=0, 中央線=3, 右白線=6) の車両位置から線の位置を置き直せる."""
+    tr = LineTracker(LineTrackerParams(lane_width_init=3.5))
+    tr.seed_lane_position(5.5)                                   # 中央線から 2.92m 右
+    assert abs(tr.offsets["center"] - 2.5 * 3.5 / 3) < 1e-9
+    assert abs(tr.offsets["right"] - (2.5 * 3.5 / 3 - 3.5)) < 1e-9
+    out = tr.update([_line(-0.58)])
+    assert out.detected["right"]
+
+
 def test_spacing_dense_in_curves():
     p = RecorderParams()
     assert spacing_for_curvature(0.0, p) == p.ds_straight

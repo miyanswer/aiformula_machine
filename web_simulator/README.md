@@ -366,6 +366,32 @@ make sim-nav                   # 3. simulator_test.launch.py (BACKEND=yolop|ufld
 - YOLOP の前処理はブラウザ側では `crop_bottom`（上部を切り落として 640x640 に引き伸ばし）、
   チャンネル順は学習時と同じ BGR のまま ImageNet mean/std で正規化します。
 
+## 6レーン動的選択走行（地図なし・オドメトリなし）
+
+「自動運転」タブの **走行方式** で「周回マップ+QP」（既存）と「6レーン (地図なし)」を切り替えます。
+6レーン方式は地図を作らず、自己位置（オドメトリ）も使わず、その瞬間のカメラ白線だけで走ります。
+
+- 左白線〜中央線、中央線〜右白線をそれぞれ3等分した仮想レーン **L1〜L6**（左端が L1、右端が L6）を毎フレーム作る
+- 白線の点群から前方 3m / 6m / 9.5m の曲率を求め、速度と合わせて小さなニューラルネット（MLP）が
+  行くべきレーンを確率で出す（左回りなので、直線=L6 → カーブ中=イン側 L1〜L2 → 出口=L6 のアウト・イン・アウト）
+- コーンで塞がれたレーンは除外、目標レーンへは進入角を制限した Pure Pursuit で移る。速度は車輪速（CAN 相当）だけ使う
+- 右上の俯瞰パネルが「6レーン 白線点群 (俯瞰)」に変わり、左/中央/右白線の点群・6レーン（現在=緑、目標=橙、
+  コーンで閉塞=赤）・NN の確率バー・予定軌跡を表示
+- **右下**に日本語で思考結果（現在レーン → 目標レーン、局面、判断理由、NN の各レーン確率）を表示
+
+白線検出は「理想検出」「YOLOP」「UFLD」のどれでも動きます。「ROS2連携」を選ぶと ROS 2 の
+`six_lane_planner` ノード（`ros2 launch oit_navigation six_lane.launch.py simulator:=true`）の判断を右下に表示します。
+アルゴリズムと ROS 2 ノードの詳細は [`src/oit_navigation/oit_navigation/6lane/README.md`](../src/oit_navigation/oit_navigation/6lane/README.md)。
+NN の重み `six_lane_policy.json` は実機ノードと共用で、シミュレータは `../src/oit_navigation/oit_navigation/6lane/` から読み込みます。
+
+コンソールからの検証: `__sim.setNavMethod('sixlane')` → `await __sim.fastForward(200)`（返り値は status JSON）。
+
+確認結果（早送り）: YOLOP 2 周は逸脱 0 回・接触 0 回（最小余裕 0.19m）。理想検出は 22 周中 1 周だけ白線に
+0.12m 触れた（残り 21 周は逸脱なし）。各カーブで L6 → L1〜L2 → L6 のアウト・イン・アウト。
+直線のコーン 1 本（L6 上）は L5 に移って 1.2m 以上離して通過。
+白線の追跡（LineTracker）は「車両は中央線の上」と仮定しない: 見失っても横位置を保ち、3本揃い・二重線を根拠に
+取り違えを付け直す（YOLOP で右端に何も伝えずに置いても 0.2 秒で正しい横位置に戻る）。詳細は 6lane/README.md。
+
 ## 車体モデル・物理パラメータ
 
 `vehicles/sample_vehicle/xacro/ai_car1.xacro` に準拠した差動2輪駆動（後方キャスター）
@@ -400,6 +426,7 @@ web_simulator/
 │   ├── ufld_lane_detector.js       UFLD (ONNX) による白線点列検出
 │   ├── ideal_lane_detector.js      理想検出（コースの実際の白線 + ノイズ）
 │   ├── lane_navigator.js           oit_navigation lane_nav の JS 移植（線追跡・境界記録・QP・追従）
+│   ├── six_lane_planner.js         6レーン動的選択走行（oit_navigation/6lane/six_lane_core.py の JS 移植）
 │   ├── hud_ui.js                   HUD のタブ切替・折りたたみ・ドラッグ移動
 │   └── twist_mux.js         WASD/自動運転の優先度＋タイムアウト調停
 ├── models/                  course.glb（コース）/ MyLaps.obj・.mtl（ゲート）/ cone.glb（コーン）/

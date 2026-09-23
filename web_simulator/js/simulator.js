@@ -17,6 +17,7 @@ import {
 } from './lane_navigator.js';
 import { ConeDetector } from './cone_detector.js';
 import { reactiveAvoid, ConeRecorder, applyRacelineDeflection, coneLandmarkCorrection } from './cone_avoidance.js';
+import { SixLanePlanner, LanePolicyNet, SIX_LANE_PARAMS, N_LANES, laneY, explainJa } from './six_lane_planner.js';
 
 // ---------------------------------------------------------------------------
 // Geometry taken directly from vehicles/sample_vehicle/xacro/ai_car1.xacro
@@ -497,6 +498,10 @@ let rightBoundaryTopic = null;
 let autonomousCmdVelTopic = null;
 let laneTrackerStatusTopic = null;
 let muxedCmdVelTopic = null;
+let sixLaneStatusTopic = null;
+let sixLaneTargetPathTopic = null;
+let sixLaneReseedTopic = null;
+let rosSixLaneStatusSub = null;
 // "ROS2連携" detector mode subscriptions: when selected, UFLD inference +
 // the lap-mapping/QP navigator run on the ROS 2 side (see
 // src/oit_navigation/launch/simulator_test.launch.py) instead of in the
@@ -550,6 +555,14 @@ const RIGHT_BOUNDARY_TOPIC = '/aiformula_visualization/lane_navigator/right_boun
 const AUTONOMOUS_CMD_VEL_TOPIC = '/aiformula_control/extremum_seeking_mpc/cmd_vel';
 // lane_navigator status (std_msgs/String, JSON -- LaneNavigator.status()).
 const LANE_TRACKER_STATUS_TOPIC = '/aiformula_control/lane_tracker/status';
+// 6レーン走行 (six_lane_planner ノード, src/oit_navigation/oit_navigation/6lane/) の
+// 状態 JSON と目標経路。指令は lane_navigator と同じ twist_mux "mpc" 入力
+// (AUTONOMOUS_CMD_VEL_TOPIC) に出す -- 実機でもどちらか一方だけを起動する。
+const SIX_LANE_STATUS_TOPIC = '/aiformula_control/six_lane_planner/status';
+const SIX_LANE_TARGET_PATH_TOPIC = '/aiformula_visualization/six_lane_planner/target_path';
+// 6レーン走行が白線の役割取り違えを検出したときの横位置 (レーン座標 F, std_msgs/Float64)。
+// lane_detector が購読して LineTracker を置き直す (tracker.seed_lane_position)。
+const SIX_LANE_RESEED_TOPIC = '/aiformula_control/six_lane_planner/lane_reseed';
 // twist_mux's arbitrated output (topic_list.yaml control.speed_command.multiplexed).
 const MUXED_CMD_VEL_TOPIC = '/aiformula_control/twist_mux/cmd_vel';
 
@@ -609,6 +622,10 @@ function clearRosTopics() {
   autonomousCmdVelTopic = null;
   laneTrackerStatusTopic = null;
   muxedCmdVelTopic = null;
+  sixLaneStatusTopic = null;
+  sixLaneTargetPathTopic = null;
+  sixLaneReseedTopic = null;
+  rosSixLaneStatusSub = null;
   rosLaneDetectorAnnotatedImageSub = null;
   rosAutonomousCmdVelSub = null;
   rosLaneTrackerStatusSub = null;
@@ -670,6 +687,11 @@ function connect() {
     autonomousCmdVelTopic = new ROSLIB.Topic({ ros, name: AUTONOMOUS_CMD_VEL_TOPIC, messageType: 'geometry_msgs/msg/Twist' });
     laneTrackerStatusTopic = new ROSLIB.Topic({ ros, name: LANE_TRACKER_STATUS_TOPIC, messageType: 'std_msgs/msg/String' });
     muxedCmdVelTopic = new ROSLIB.Topic({ ros, name: MUXED_CMD_VEL_TOPIC, messageType: 'geometry_msgs/msg/Twist' });
+    sixLaneStatusTopic = new ROSLIB.Topic({ ros, name: SIX_LANE_STATUS_TOPIC, messageType: 'std_msgs/msg/String' });
+    sixLaneTargetPathTopic = new ROSLIB.Topic({ ros, name: SIX_LANE_TARGET_PATH_TOPIC, messageType: 'nav_msgs/msg/Path' });
+    sixLaneReseedTopic = new ROSLIB.Topic({ ros, name: SIX_LANE_RESEED_TOPIC, messageType: 'std_msgs/msg/Float64' });
+    rosSixLaneStatusSub = new ROSLIB.Topic({ ros, name: SIX_LANE_STATUS_TOPIC, messageType: 'std_msgs/msg/String' });
+    rosSixLaneStatusSub.subscribe(onRosSixLaneStatus);
 
     // "ROS2連携" mode subscriptions (see onRos*() callbacks below) -- always
     // subscribed once connected, regardless of the current detectorMode;
@@ -904,8 +926,38 @@ let lastMapPublishTime = 0;
 const localizerTrail = [];
 const laneTrace = [];
 
+// ---------------------------------------------------------------------------
+// 走行方式: 'qp' = 既存の 1周目マップ作成 + 2周目QPレーシングライン (LaneNavigator)、
+// 'sixlane' = 地図なし・オドメトリなしの 6レーン動的選択 (js/six_lane_planner.js)。
+// どちらも同じ白線検出 (理想検出/YOLOP/UFLD) -> LineTracker の出力を使い、
+// 同じ twist_mux "mpc" 入力に指令を出す。
+// ---------------------------------------------------------------------------
+// NN の重みは実機ノードと共用 (train_policy.py が生成)。serve.py はリポジトリの
+// ルートを配信するので ../src/... で読める。
+const SIX_LANE_POLICY_URL = '../src/oit_navigation/oit_navigation/6lane/six_lane_policy.json';
+let navMethod = 'qp';
+let sixLanePlanner = null;
+let sixLaneLoadError = null;
+const sixLaneReady = LanePolicyNet.load(SIX_LANE_POLICY_URL)
+  .then((net) => {
+    sixLanePlanner = new SixLanePlanner(net, { ...SIX_LANE_PARAMS, vMax: MAX_SPEED, maxAngularSpeed: MAX_ANGULAR });
+  })
+  .catch((err) => {
+    console.error('six_lane_policy.json load failed', err);
+    sixLaneLoadError = String(err);
+  });
+let latestSixLaneLines = null; // 最後に見えた白線 (BEV 描画用)
+
+const sixLaneDebugEl = document.getElementById('six-lane-debug');
+const sixLaneDebugTextEl = document.getElementById('six-lane-debug-text');
+const sixLaneDebugBarsEl = document.getElementById('six-lane-debug-bars');
+const mapLabelEl = document.getElementById('map-label');
+const navMethodQpBtn = document.getElementById('nav-method-qp-btn');
+const navMethodSixLaneBtn = document.getElementById('nav-method-6lane-btn');
+
 function resetNavigation() {
   laneNavigator.reset();
+  if (sixLanePlanner) sixLanePlanner.reset();
   lineTracker.reset();
   resetLocalizer();
   localizerTrail.length = 0;
@@ -919,6 +971,7 @@ function resetNavigation() {
   prevReactiveBias = 0;
   previousNavState = null;
   window.__sim.coneMapPoints = [];
+  latestSixLaneLines = null;
   // Reflect the reset in the HUD immediately, rather than waiting for the
   // next physics step.
   writeCollisionHud(false, 0, false);
@@ -975,6 +1028,24 @@ yolopBtn.addEventListener('click', () => setDetectorMode('yolop'));
 ufldBtn.addEventListener('click', () => setDetectorMode('ufld'));
 idealBtn.addEventListener('click', () => setDetectorMode('ideal'));
 ros2Btn.addEventListener('click', () => setDetectorMode('ros2'));
+
+function setNavMethod(method) {
+  navMethod = method;
+  navMethodQpBtn.classList.toggle('active', method === 'qp');
+  navMethodSixLaneBtn.classList.toggle('active', method === 'sixlane');
+  sixLaneDebugEl.style.display = method === 'sixlane' ? 'block' : 'none';
+  mapLabelEl.textContent = method === 'sixlane' ? '6レーン 白線点群 (俯瞰)' : '周回マップ';
+  mapCanvas.parentElement.classList.toggle('sixlane', method === 'sixlane');
+  finishMappingBtn.disabled = method === 'sixlane';
+  if (sixLanePlanner) sixLanePlanner.reset();
+  lastNavStepTime = null;
+  if (method === 'sixlane') {
+    oitStateEl.textContent = sixLaneLoadError ? `6レーン: 重み読込エラー` : '6レーン走行 (地図なし)';
+    oitLapEl.textContent = '-';
+  }
+}
+navMethodQpBtn.addEventListener('click', () => setNavMethod('qp'));
+navMethodSixLaneBtn.addEventListener('click', () => setNavMethod('sixlane'));
 
 let autonomousMode = false;
 let latestAutonomousCmd = { v: 0, omega: 0 };
@@ -1314,6 +1385,116 @@ function drawMapPanel(map, pose) {
   mapCtx.fillText(`${(span - 2 * pad).toFixed(0)}m 四方 | ●左境界 ●右境界 ○QPウェイポイント`, 8, H - 10);
 }
 
+// 6レーン走行の俯瞰図 (base_link, 前方が上・左が左): 仮想6レーンの塗り分け
+// (現在レーン=緑, 目標レーン=橙, コーンで塞がれたレーン=赤)、白線の点群
+// (左=水色/中央=黄/右=桃, 補完線は破線)、各レーン上端に NN の確率バー、
+// Pure Pursuit の注視点と予定軌跡、コーン、車体。
+const BEV = { xMin: -1.5, xMax: 13.0, xLane: 12.0 };
+
+function drawSixLaneBev(lines, st, cones) {
+  const W = mapCanvas.width, H = mapCanvas.height;
+  const scale = H / (BEV.xMax - BEV.xMin);
+  const toPx = (x, y) => [W / 2 - y * scale, H - (x - BEV.xMin) * scale];
+  const ctx = mapCtx;
+  ctx.fillStyle = '#0b0d10';
+  ctx.fillRect(0, 0, W, H);
+  ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+  ctx.lineWidth = 1;
+  for (let x = 0; x <= BEV.xMax; x += 2) {
+    const [, v] = toPx(x, 0);
+    ctx.beginPath(); ctx.moveTo(0, v); ctx.lineTo(W, v); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,255,255,0.35)';
+    ctx.font = '13px sans-serif';
+    ctx.fillText(`${x}m`, 4, v - 3);
+  }
+  if (lines) {
+    const xs = [];
+    for (let x = 0; x <= BEV.xLane + 1e-6; x += 0.5) xs.push(x);
+    const blocked = new Set(st && st.blocked ? st.blocked : []);
+    for (let k = 1; k <= N_LANES; k++) {
+      const pts = [...xs.map((x) => toPx(x, laneY(lines, x, k - 1))), ...xs.slice().reverse().map((x) => toPx(x, laneY(lines, x, k)))];
+      let fill = k % 2 ? 'rgba(255,255,255,0.05)' : 'rgba(255,255,255,0.10)';
+      if (st && k === st.currentLane) fill = 'rgba(80,220,120,0.30)';
+      if (st && k === st.targetLane) fill = st.targetLane === st.currentLane ? 'rgba(160,220,90,0.40)' : 'rgba(255,159,26,0.35)';
+      if (blocked.has(k)) fill = 'rgba(255,70,70,0.35)';
+      ctx.fillStyle = fill;
+      ctx.beginPath();
+      pts.forEach(([u, v], i) => (i ? ctx.lineTo(u, v) : ctx.moveTo(u, v)));
+      ctx.closePath();
+      ctx.fill();
+    }
+    // レーン境界 (白線以外は細い破線)
+    for (let F = 0; F <= N_LANES; F++) {
+      const role = F === 0 ? 'left' : F === 3 ? 'center' : F === 6 ? 'right' : null;
+      ctx.strokeStyle = role ? ROLE_COLORS[role] : 'rgba(255,255,255,0.35)';
+      ctx.lineWidth = role ? 2.5 : 1;
+      ctx.setLineDash(role ? (lines[role].detected ? [] : [10, 7]) : [4, 6]);
+      ctx.beginPath();
+      xs.forEach((x, i) => { const [u, v] = toPx(x, laneY(lines, x, F)); i ? ctx.lineTo(u, v) : ctx.moveTo(u, v); });
+      ctx.stroke();
+    }
+    ctx.setLineDash([]);
+    // 白線の点群
+    for (const role of ROLES) {
+      const ln = lines[role];
+      if (!ln || !ln.px) continue;
+      ctx.fillStyle = ROLE_COLORS[role];
+      for (let i = 0; i < ln.px.length; i++) {
+        const [u, v] = toPx(ln.px[i], ln.py[i]);
+        ctx.beginPath(); ctx.arc(u, v, 3.5, 0, 2 * Math.PI); ctx.fill();
+      }
+    }
+    // レーン番号 + NN 確率バー (上端)
+    ctx.font = 'bold 16px sans-serif';
+    ctx.textAlign = 'center';
+    for (let k = 1; k <= N_LANES; k++) {
+      const [u, v] = toPx(BEV.xLane - 0.6, laneY(lines, BEV.xLane - 0.6, k - 0.5));
+      const q = st && st.probs ? st.probs[k - 1] : 0;
+      ctx.fillStyle = 'rgba(255,159,26,0.9)';
+      ctx.fillRect(u - 9, v - 8 - q * 60, 18, q * 60);
+      ctx.fillStyle = '#e8eaed';
+      ctx.fillText(`${k}`, u, v + 14);
+    }
+    ctx.textAlign = 'start';
+    // Pure Pursuit の予定軌跡 (円弧) と注視点
+    if (st && st.lookahead) {
+      const [tx, ty] = st.lookahead;
+      const kap = (2 * ty) / (tx * tx + ty * ty);
+      ctx.strokeStyle = '#ff9f1a';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      const L = Math.hypot(tx, ty) * 1.05;
+      for (let sArc = 0; sArc <= L; sArc += 0.1) {
+        const x = Math.abs(kap) < 1e-6 ? sArc : Math.sin(kap * sArc) / kap;
+        const y = Math.abs(kap) < 1e-6 ? 0 : (1 - Math.cos(kap * sArc)) / kap;
+        const [u, v] = toPx(x, y);
+        sArc ? ctx.lineTo(u, v) : ctx.moveTo(u, v);
+      }
+      ctx.stroke();
+      const [u, v] = toPx(tx, ty);
+      ctx.beginPath(); ctx.arc(u, v, 6, 0, 2 * Math.PI); ctx.stroke();
+    }
+  }
+  // コーン
+  ctx.fillStyle = '#ff7a1a';
+  for (const c of cones || []) {
+    if (c.x < BEV.xMin || c.x > BEV.xMax) continue;
+    const [u, v] = toPx(c.x, c.y);
+    ctx.beginPath(); ctx.arc(u, v, 0.15 * scale, 0, 2 * Math.PI); ctx.fill();
+  }
+  // 車体 (base_link = 駆動輪軸, 後輪は wheelbase 後方)
+  const body = [[0.35, 0.35], [0.35, -0.35], [-VEHICLE.wheelbase - 0.1, -0.35], [-VEHICLE.wheelbase - 0.1, 0.35]].map(([x, y]) => toPx(x, y));
+  ctx.fillStyle = '#ff3b3b';
+  ctx.beginPath();
+  body.forEach(([u, v], i) => (i ? ctx.lineTo(u, v) : ctx.moveTo(u, v)));
+  ctx.closePath();
+  ctx.fill();
+  ctx.font = '15px sans-serif';
+  ctx.fillStyle = '#e8eaed';
+  const head = !lines ? '白線なし' : st && st.currentLane ? `現在 L${st.currentLane} → 目標 L${st.targetLane}` : '判断待ち';
+  ctx.fillText(`${head}　●左 ●中央 ●右 点群`, 8, H - 10);
+}
+
 function navMapLayers() {
   const nav = laneNavigator;
   const samples = nav.recorder.samples;
@@ -1332,7 +1513,8 @@ function navMapLayers() {
 // ---------------------------------------------------------------------------
 let lanePipelineBusy = false;
 
-function stepNavigator(tracked, now = performance.now() / 1000) {
+function stepNavigator(tracked, now = performance.now() / 1000, sixLaneLines = null) {
+  if (navMethod === 'sixlane') return stepSixLane(tracked ? sixLaneLines : null, now);
   const dt = lastNavStepTime === null ? 0 : Math.min(now - lastNavStepTime, 0.5);
   lastNavStepTime = now;
   const pose = [localizer.x, localizer.y, localizer.yaw];
@@ -1368,6 +1550,96 @@ function stepNavigator(tracked, now = performance.now() / 1000) {
   return cmd;
 }
 
+// 6レーン走行の1制御周期: 白線 (null = 観測なし) -> SixLanePlanner -> コーン反応回避
+// (QP 方式と同じ最終安全層) -> twist_mux "mpc"。オドメトリ (localizer) は使わず、
+// 速度だけ車輪速 (CAN 相当, スリップ込み) を使う。
+function stepSixLane(lines, now) {
+  const dt = lastNavStepTime === null ? 0 : Math.min(now - lastNavStepTime, 0.5);
+  lastNavStepTime = now;
+  if (!sixLanePlanner) {
+    oitMessageEl.textContent = sixLaneLoadError ? `6レーン: ${sixLaneLoadError}` : '6レーン: NN 読込中...';
+    return { v: 0, omega: 0 };
+  }
+  const measured = physics.measuredWheelSpeeds();
+  const vMeas = (measured.left + measured.right) / 2;
+  const cones = coneDetectionsForAvoidance();
+  const st = sixLanePlanner.step(dt, lines, vMeas, cones, !!(lines && lines.reanchored));
+  // 白線の役割取り違えを検出したら、LineTracker を追跡済みの横位置で置き直して正しい割り当てに戻す
+  // (実機では six_lane_planner が lane_reseed トピックで lane_detector に同じことをさせる)
+  if (st.lateralRejected) {
+    lineTracker.seedLanePosition(st.F);
+    if (sixLaneReseedTopic) sixLaneReseedTopic.publish(new ROSLIB.Message({ data: st.F }));
+  }
+  const avoided = reactiveAvoid({ v: st.v, omega: st.omega }, cones, prevReactiveBias, dt);
+  prevReactiveBias = avoided.bias;
+  if (!fastForwarding) avoidanceDebugEl.textContent = avoided.debug;
+  const cmd = { v: avoided.v, omega: avoided.omega };
+  latestAutonomousCmd = cmd;
+  twistMux.update('mpc', cmd.v, cmd.omega, performance.now());
+  if (autonomousCmdVelTopic) {
+    autonomousCmdVelTopic.publish(
+      new ROSLIB.Message({ linear: { x: cmd.v, y: 0, z: 0 }, angular: { x: 0, y: 0, z: cmd.omega } })
+    );
+  }
+  if (sixLaneStatusTopic) sixLaneStatusTopic.publish(new ROSLIB.Message({ data: JSON.stringify(sixLaneStatusJson(st)) }));
+  if (sixLaneTargetPathTopic && lines && st.targetLane) {
+    const pts = [];
+    for (let x = 0; x <= 10 + 1e-6; x += 0.5) pts.push([x, laneY(lines, x, st.targetLane - 0.5)]);
+    publishPathTopic(sixLaneTargetPathTopic, pts);
+  }
+  if (!fastForwarding) showSixLaneDebug(st);
+  return cmd;
+}
+
+// 実機ノード (six_lane_planner_node.py) の status JSON と同じキー。
+function sixLaneStatusJson(st) {
+  const r = (v, d = 3) => (typeof v === 'number' ? +v.toFixed(d) : v);
+  return {
+    phase: st.phase, current_lane: st.currentLane ?? null, target_lane: st.targetLane ?? null,
+    pending_lane: st.pendingLane ?? null, pending_count: st.pendingCount ?? 0, sign: st.sign ?? 0,
+    teacher_target: r(st.teacherTarget), intensity: r(st.intensity), F: r(st.F), F_meas: r(st.FMeas),
+    lateral_rejected: !!st.lateralRejected,
+    kappas: (st.kappas || []).map((k) => r(k, 4)), confidence: r(st.confidence),
+    nn_probs: (st.nnProbs || []).map((q) => r(q)), probs: (st.probs || []).map((q) => r(q)),
+    blocked: st.blocked || [], v: r(st.v), omega: r(st.omega), lost_time: r(st.lostTime),
+  };
+}
+
+// 右下の思考結果パネル: 日本語の判断説明 + 6レーンの確率バー。
+function showSixLaneDebug(st) {
+  const header = st.currentLane
+    ? `<b>現在 レーン${st.currentLane}</b> (横位置 F=${st.F.toFixed(2)}) → <b>目標 レーン${st.targetLane}</b>`
+    : '<b>現在レーン: 不明</b>';
+  sixLaneDebugTextEl.innerHTML = [header, ...explainJa(st, sixLanePlanner.p)].map((l) => `<div>${l}</div>`).join('');
+  const probs = st.probs || new Array(N_LANES).fill(0);
+  const nn = st.nnProbs || probs;
+  sixLaneDebugBarsEl.innerHTML = probs.map((q, i) => {
+    const k = i + 1;
+    const cls = [k === st.targetLane ? 'target' : '', k === st.currentLane ? 'current' : '', (st.blocked || []).includes(k) ? 'blocked' : ''].join(' ');
+    const mark = `${k === st.currentLane ? '●' : ''}${k === st.targetLane ? '★' : ''}`;
+    return `<div class="sl-bar ${cls}" title="NN出力 ${(nn[i] * 100).toFixed(1)}% / コーン補正後 ${(q * 100).toFixed(1)}%">`
+      + `<div class="sl-fill" style="height:${Math.max(2, q * 100)}%"></div>`
+      + `<div class="sl-pct">${(q * 100).toFixed(0)}%</div><div class="sl-name">L${k}${mark}</div></div>`;
+  }).join('');
+}
+
+// "ROS2連携" 検出モード + 6レーン: 実機ノードの status JSON を表示する。
+function onRosSixLaneStatus(msg) {
+  if (detectorMode !== 'ros2' || navMethod !== 'sixlane' || !sixLanePlanner) return;
+  try {
+    const j = JSON.parse(msg.data);
+    showSixLaneDebug({
+      phase: j.phase, currentLane: j.current_lane ?? undefined, targetLane: j.target_lane, pendingLane: j.pending_lane,
+      pendingCount: j.pending_count, sign: j.sign, teacherTarget: j.teacher_target, intensity: j.intensity, F: j.F,
+      FMeas: j.F_meas, lateralRejected: j.lateral_rejected,
+      kappas: j.kappas, confidence: j.confidence, nnProbs: j.nn_probs, probs: j.probs, blocked: j.blocked,
+      v: j.v, omega: j.omega, lostTime: j.lost_time,
+    });
+  } catch (err) {
+    sixLaneDebugTextEl.textContent = msg.data;
+  }
+}
+
 // エディタで置いたコーンはシミュレータが正確な位置を知っているため、ONNX
 // モデルの有無・検出の一時的な失敗に関係なく回避対象へ渡す。カメラ検出結果も
 // 残し、同じコーンと思われる近接点は重複させない。
@@ -1395,7 +1667,8 @@ function coneDetectionsForAvoidance() {
 async function updateLanePipeline() {
   if (fastForwarding) return;
   if (detectorMode === 'ros2') {
-    drawMapPanel({ ...rosMap, trail: null }, null);
+    // 6レーン走行は判断結果 (右下パネル) だけ ROS 側の status から表示する (周回マップは無い)
+    if (navMethod !== 'sixlane') drawMapPanel({ ...rosMap, trail: null }, null);
     return;
   }
   if (lanePipelineBusy || (detectorMode === 'ufld' && !ufldDetector.session)
@@ -1418,9 +1691,11 @@ async function runPerception(now) {
     let lanes;
     let fits;
     let mask = null;
-    const toFits = (ls) => ls.map((l) => {
+    let groundPts = []; // fits[i] の元になった地面点群 (base_link), 6レーンの曲率推定・BEV 用
+    const toFits = (ls) => ls.map((l, i) => {
       if (!l) return null;
       const g = projectToGround(DEFAULT_CAMERA, l.u, l.v, width, height);
+      groundPts[i] = g;
       return fitLine(g.x, g.y);
     });
     if (detectorMode === 'yolop') {
@@ -1430,6 +1705,7 @@ async function runPerception(now) {
     } else if (detectorMode === 'ideal') {
       const obs = idealDetector.detect({ x: physics.x, y: physics.y, yaw: physics.yaw });
       fits = obs.fits;
+      groundPts = obs.points;
       // Observed ground points re-projected into the image, for the lane panel.
       lanes = obs.points.map(({ x, y }) => {
         const px = x.map((xi, i) => groundToImage(xi, y[i], width, height)).filter(Boolean);
@@ -1440,7 +1716,19 @@ async function runPerception(now) {
       fits = toFits(lanes);
     }
     const tracked = lineTracker.update(fits);
-    if (detectorMode !== 'ros2' && coneDetector.session) {
+    // 6レーン用: 役割ごとの線 (補完線も含む) に、検出線なら元の点群を添える。
+    const sixLaneLines = {};
+    for (const role of ROLES) {
+      const fit = tracked.lines[role];
+      const k = fit ? fits.indexOf(fit) : -1;
+      sixLaneLines[role] = fit ? {
+        yAt: (x) => fit.yAt(x), inferred: !!fit.inferred, detected: tracked.detected[role],
+        px: k >= 0 && groundPts[k] ? groundPts[k].x : null, py: k >= 0 && groundPts[k] ? groundPts[k].y : null,
+      } : null;
+    }
+    const sixLaneLinesOk = ROLES.every((r) => sixLaneLines[r]) ? sixLaneLines : null;
+    if (sixLaneLinesOk) sixLaneLinesOk.reanchored = !!tracked.reanchored;
+    latestSixLaneLines = sixLaneLinesOk;    if (detectorMode !== 'ros2' && coneDetector.session) {
       try {
         latestConeDetections = await coneDetector.infer(captureCanvas);
       } catch (err) {
@@ -1450,7 +1738,7 @@ async function runPerception(now) {
     } else {
       latestConeDetections = [];
     }
-    if (laneNavigator.state === MAPPING) {
+    if (navMethod === 'qp' && laneNavigator.state === MAPPING) {
       coneRecorder.update(localizer.s, [localizer.x, localizer.y, localizer.yaw], latestConeDetections);
     }
     latestTracked = tracked;
@@ -1464,11 +1752,11 @@ async function runPerception(now) {
     });
     if (laneTrace.length > 900) laneTrace.shift();
     if (fastForwarding) {
-      stepNavigator(tracked, now);
+      stepNavigator(tracked, now, sixLaneLinesOk);
       return;
     }
     lastPipelineTime = performance.now();
-    stepNavigator(tracked, now);
+    stepNavigator(tracked, now, sixLaneLinesOk);
 
     drawLanePanel(lanes, tracked, width, height, mask);
     publishImageTopic(laneDetectorAnnotatedImageTopic, width, height, 'rgb8', 3, canvasToRgb8Bytes(laneCtx, width, height), IMAGE_FRAME_ID);
@@ -1476,6 +1764,10 @@ async function runPerception(now) {
     publishPathTopic(laneCenterTopic, sampleLine(tracked.lines.center));
     publishPathTopic(laneRightTopic, sampleLine(tracked.lines.right));
 
+    if (navMethod === 'sixlane') {
+      drawSixLaneBev(sixLaneLinesOk, sixLanePlanner ? sixLanePlanner.last : null, coneDetectionsForAvoidance());
+      return;
+    }
     const layers = navMapLayers();
     drawMapPanel(layers, [localizer.x, localizer.y, localizer.yaw]);
     if (performance.now() - lastMapPublishTime > 1000) {
@@ -1541,9 +1833,14 @@ async function fastForward(seconds, physicsDt = 1 / 60) {
   } finally {
     fastForwarding = false;
     lastNavStepTime = null;
-    drawMapPanel(navMapLayers(), [localizer.x, localizer.y, localizer.yaw]);
+    if (navMethod === 'sixlane') {
+      if (sixLanePlanner) showSixLaneDebug(sixLanePlanner.last);
+      drawSixLaneBev(latestSixLaneLines, sixLanePlanner ? sixLanePlanner.last : null, coneDetectionsForAvoidance());
+    } else {
+      drawMapPanel(navMapLayers(), [localizer.x, localizer.y, localizer.yaw]);
+    }
   }
-  return laneNavigator.status();
+  return navMethod === 'sixlane' ? sixLaneStatusJson(sixLanePlanner ? sixLanePlanner.last : {}) : laneNavigator.status();
 }
 
 function recordLocalizerTrail() {
@@ -1726,6 +2023,8 @@ window.__sim = {
   setDetectorMode: (m) => setDetectorMode(m), resetNavigation: () => resetNavigation(),
   course, obstacles, mylapsRoot, pathTracker, departureMonitor, coneEditor,
   coneDetector, coneRecorder, latestConeDetections: () => latestConeDetections, coneMapPoints: [],
+  setNavMethod: (m) => setNavMethod(m), sixLane: () => sixLanePlanner, sixLaneReady,
+  seedLineTrackerFromLane: (F) => lineTracker.seedLanePosition(F),
 };
 resetLocalizer();
 setDetectorMode('yolop');

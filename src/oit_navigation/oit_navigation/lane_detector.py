@@ -31,7 +31,7 @@ from rclpy.qos import HistoryPolicy, QoSProfile, ReliabilityPolicy
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
 from sensor_msgs.msg import CompressedImage, Image
-from std_msgs.msg import Header, String
+from std_msgs.msg import Float64, Header, String
 
 from aiformula_interfaces.msg import LaneLine, LaneLines
 from common_python.workspace_paths import default_workspace_asset, resolve_workspace_asset
@@ -70,6 +70,7 @@ class LaneDetectorNode(Node):
         else:
             raise ValueError(f"backend は 'yolop' か 'ufld' です: {self.backend}")
         self.tracker = LineTracker(self.tracker_params)
+        self._tracker_lock = threading.Lock()  # tracker は推論スレッドと reseed コールバックの両方から触る
 
         self._lock = threading.Lock()
         self._event = threading.Event()
@@ -87,6 +88,10 @@ class LaneDetectorNode(Node):
             ("right", self.lane_line_right_topic))}
         self.annotated_pub = self.create_publisher(Image, self.annotated_image_topic, 1)
         self.debug_pub = self.create_publisher(String, "~/debug", 1)
+        # 6 レーン走行 (six_lane_planner) が白線の役割取り違えを検出したときの車両の横位置
+        # (レーン座標 F: 左白線=0, 中央線=3, 右白線=6). これで線の並びを置き直す. 空文字なら購読しない
+        if self.lane_reseed_topic:
+            self.create_subscription(Float64, self.lane_reseed_topic, self._reseed_cb, 5)
 
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker.start()
@@ -132,7 +137,14 @@ class LaneDetectorNode(Node):
             gate_ratio=float(d("tracker_gate_ratio", 0.4).value),
             width_tolerance=float(d("tracker_width_tolerance", 0.3).value),
             max_heading_diff=float(d("tracker_max_heading_diff", 0.3).value),
+            # 起動時の車両位置: 中央線からの横ずれ [m] (左正). 0 = 中央線の上から発進
+            init_offset=float(d("tracker_init_offset", 0.0).value),
+            anchor_tolerance=float(d("tracker_anchor_tolerance", 0.15).value),
+            anchor_frames=int(d("tracker_anchor_frames", 3).value),
+            anchor_max_x_min=float(d("tracker_anchor_max_x_min", 6.0).value),
+            anchor_heading_diff=float(d("tracker_anchor_heading_diff", 0.1).value),
         )
+        self.lane_reseed_topic = str(d("lane_reseed_topic", "/aiformula_control/six_lane_planner/lane_reseed").value)
 
     # ------------------------------------------------------------------ io
     def _image_cb(self, msg):
@@ -146,6 +158,10 @@ class LaneDetectorNode(Node):
         with self._lock:
             self._frame = (img, msg.header)
         self._event.set()
+
+    def _reseed_cb(self, msg: Float64):
+        with self._tracker_lock:
+            self.tracker.seed_lane_position(float(msg.data))
 
     def _worker_loop(self):
         min_period = 1.0 / self.max_inference_hz if self.max_inference_hz > 0 else 0.0
@@ -184,12 +200,14 @@ class LaneDetectorNode(Node):
             if f is not None:
                 fits.append(f)
                 ground_pts.append((x[valid], y[valid]))
-        tracked = self.tracker.update(fits)
+        with self._tracker_lock:
+            tracked = self.tracker.update(fits)
 
         out_header = Header(stamp=header.stamp, frame_id=self.robot_frame_id)
         msg = LaneLines(header=out_header)
         msg.lane_width_left = float(tracked.lane_widths["left"])
         msg.lane_width_right = float(tracked.lane_widths["right"])
+        msg.reanchored = bool(tracked.reanchored)
         for role in ROLES:
             setattr(msg, role, self._lane_line_msg(tracked, role, fits, ground_pts))
             self.path_pubs[role].publish(self._path_msg(tracked.lines.get(role), out_header))

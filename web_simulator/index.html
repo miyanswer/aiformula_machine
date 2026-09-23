@@ -84,11 +84,91 @@
       height: 220px;
     }
 
-    #avoidance-debug {
+    /* 6レーン走行中は俯瞰点群を大きく表示 */
+    #map-frame.sixlane {
+      width: 300px;
+      height: 300px;
+    }
+
+    /* 右下: 6レーン思考結果 + コーン回避デバッグを縦に積む */
+    #br-stack {
       position: fixed;
       right: 12px;
       bottom: 12px;
-      width: min(360px, calc(100vw - 24px));
+      width: min(400px, calc(100vw - 24px));
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      pointer-events: none;
+      z-index: 2;
+    }
+
+    #six-lane-debug {
+      display: none;
+      padding: 8px 10px;
+      box-sizing: border-box;
+      color: #e8eaed;
+      background: rgba(20, 22, 26, 0.9);
+      border: 1px solid rgba(255, 159, 26, 0.55);
+      border-radius: 6px;
+      font-size: 12px;
+      line-height: 1.5;
+      font-variant-numeric: tabular-nums;
+    }
+
+    #six-lane-debug .sl-title {
+      color: #ffb45a;
+      font-weight: bold;
+      margin-bottom: 2px;
+    }
+
+    #six-lane-debug-bars {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 4px;
+      height: 64px;
+      margin-top: 6px;
+    }
+
+    .sl-bar {
+      position: relative;
+      background: rgba(255, 255, 255, 0.06);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .sl-fill {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 16px;
+      background: rgba(127, 209, 255, 0.55);
+    }
+
+    .sl-bar.current .sl-fill { background: rgba(80, 220, 120, 0.75); }
+    .sl-bar.target .sl-fill { background: rgba(255, 159, 26, 0.9); }
+    .sl-bar.blocked { background: rgba(255, 70, 70, 0.35); }
+
+    .sl-pct {
+      position: absolute;
+      top: 1px;
+      width: 100%;
+      text-align: center;
+      font-size: 10px;
+      color: #cfd3d8;
+    }
+
+    .sl-name {
+      position: absolute;
+      bottom: 0;
+      width: 100%;
+      height: 16px;
+      text-align: center;
+      font-size: 11px;
+      background: rgba(0, 0, 0, 0.35);
+    }
+
+    #avoidance-debug {
       padding: 8px 10px;
       box-sizing: border-box;
       color: #dbeeff;
@@ -97,8 +177,6 @@
       border-radius: 6px;
       font-size: 12px;
       line-height: 1.45;
-      pointer-events: none;
-      z-index: 2;
     }
 
     @media (max-width: 700px) {
@@ -535,7 +613,14 @@
     <div id="map-label" class="pip-label">周回マップ</div>
     <canvas id="map-canvas" width="640" height="640"></canvas>
   </div>
-  <div id="avoidance-debug">回避待機: コーン情報を待っています</div>
+  <div id="br-stack">
+    <div id="six-lane-debug">
+      <div class="sl-title">6レーン判断 (ニューラルネット)</div>
+      <div id="six-lane-debug-text">NN 読込中...</div>
+      <div id="six-lane-debug-bars"></div>
+    </div>
+    <div id="avoidance-debug">回避待機: コーン情報を待っています</div>
+  </div>
 
   <div id="hud">
     <div id="hud-header">
@@ -611,6 +696,13 @@
           <dt>メッセージ</dt>
           <dd id="oit-message">-</dd>
         </dl>
+        <div class="section-title">走行方式</div>
+        <div id="nav-method-controls" class="btn-row">
+          <button id="nav-method-qp-btn" class="detector-mode-btn active"
+            title="1周目で地図を作り, 2周目は二次計画法 (QP) のレーシングラインを追従">周回マップ+QP</button>
+          <button id="nav-method-6lane-btn" class="detector-mode-btn"
+            title="地図・オドメトリなし. 白線から仮想6レーンを作り, NNがカメラ入力だけでレーンを選ぶ (アウト・イン・アウト)">6レーン (地図なし)</button>
+        </div>
         <div class="section-title">白線検出</div>
         <div id="detector-mode-controls">
           <button id="detector-ideal-btn" class="detector-mode-btn" title="コースの実際の白線 (ノイズ・欠落つき) を観測する">理想検出</button>

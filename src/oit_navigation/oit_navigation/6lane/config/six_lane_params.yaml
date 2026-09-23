@@ -1,0 +1,31 @@
+# six_lane_planner (oit_navigation/6lane/) のパラメータ.
+# 省略したものは six_lane_core.SixLaneParams の既定値 (web_simulator/js/six_lane_planner.js の SIX_LANE_PARAMS と同じ).
+six_lane_planner:
+  ros__parameters:
+    lane_lines_topic: "/aiformula_perception/lane_detector/lane_lines"
+    can_topic: "/aiformula_sensing/vehicle_info"          # 速度だけ使う (自己位置は使わない)
+    cones_topic: ""                                      # geometry_msgs/PoseArray (base_link). 空 = コーン入力なし
+    cmd_vel_topic: "/aiformula_control/extremum_seeking_mpc/cmd_vel"   # twist_mux "mpc" (lane_navigator と同じ)
+    status_topic: "/aiformula_control/six_lane_planner/status"
+    target_path_topic: "/aiformula_visualization/six_lane_planner/target_path"
+    lane_reseed_topic: "/aiformula_control/six_lane_planner/lane_reseed"   # 取り違え検出時に lane_detector へ横位置を送る
+    control_rate: 20.0
+    lines_timeout: 0.3
+    x_pos: 1.5                  # [m] 現在の横位置 (レーン) を評価する前方距離
+    # --- 判断 ---
+    v_max: 1.5                  # [m/s] (NN の速度特徴量もこれで正規化)
+    home_lane: 6                # 直線で戻る外側レーン (左回りコース → 右端)
+    switch_margin: 0.12
+    switch_frames: 5
+    switch_frames_per_lane: 2
+    cone_clearance: 0.75
+    # --- 制御 ---
+    lookahead_min: 2.0
+    lookahead_max: 3.5
+    max_approach_angle: 0.384   # [rad] = 22deg
+    edge_clearance: 0.75        # [m] レーン1/6 の目標を白線からこれ以上内側にする
+    max_angular_speed: 1.2
+    a_lat_max: 1.2
+    accel: 0.8
+    decel: 1.5
+    lost_timeout: 0.8

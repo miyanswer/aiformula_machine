@@ -14,6 +14,10 @@ setup(
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.py')),
         (os.path.join('share', package_name, 'config'), glob('config/*.*')),
+        # 6レーン動的選択走行 (oit_navigation/6lane/): 起動ファイル・パラメータ・NN の重み
+        (os.path.join('share', package_name, 'launch'), glob('oit_navigation/6lane/launch/*.py')),
+        (os.path.join('share', package_name, 'config'), glob('oit_navigation/6lane/config/*.yaml')),
+        (os.path.join('share', package_name, '6lane'), ['oit_navigation/6lane/six_lane_policy.json']),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -28,6 +32,8 @@ setup(
             'lane_detector = oit_navigation.lane_detector:main',
             'odom_imu_localizer = oit_navigation.odom_imu_localizer:main',
             'lane_navigator = oit_navigation.lane_navigator_node:main',
+            # フォルダ名が数字始まりなので import 文では書けないが, entry point は importlib で読むので可
+            'six_lane_planner = oit_navigation.6lane.six_lane_planner_node:main',
             'traffic_light_distance_node = oit_navigation.traffic_light_distance_node:main',
             'image_compressor_node = oit_navigation.image_compressor_node:main',
             'export_tensorrt = oit_navigation.export_tensorrt:main',
