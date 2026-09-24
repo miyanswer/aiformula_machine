@@ -158,6 +158,7 @@ lane_navigator:
     # 追従制御
     tracker.mapping_speed: 1.0       # 1 周目の速度 [m/s]
     tracker.curve_slowdown: 0.5
+    tracker.curvature_filter_tau: 0.5  # [s] 1 周目の減速に使う曲率のローパス (検出ノイズで速度が揺れるのを防ぐ)
     tracker.lookahead_min: 1.2
     tracker.lookahead_max: 2.5
     tracker.lookahead_time: 0.6

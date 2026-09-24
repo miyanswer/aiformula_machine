@@ -652,6 +652,7 @@ export function optimizeRaceline(left, right, p = RACELINE_PARAMS) {
 export const TRACKER_PARAMS = {
   lookaheadMin: 1.2, lookaheadMax: 2.5, lookaheadTime: 0.6, crossTrackLookaheadGain: 2.0,
   maxAngularSpeed: 1.5, maxAngularAccel: 4.0, mappingSpeed: 1.0, curveSlowdown: 0.5,
+  curvatureFilterTau: 0.5,
 };
 
 export function arcCurvature(x, y) {
@@ -767,6 +768,7 @@ export class LaneNavigator {
     this.follower = null;
     this.lap = 1;
     this.cmd = { v: 0, omega: 0 };
+    this.curvFilt = null; // 1周目の減速用曲率 (ローパス後)
     this.corr = [0, 0, 0];
     this.lastLinesTime = null;
     this.lastIndex = null;
@@ -835,7 +837,15 @@ export class LaneNavigator {
     let la = Math.min(Math.max(vMeas * tp.lookaheadTime, tp.lookaheadMin), tp.lookaheadMax);
     la = Math.max(la, C.xMin);
     const kappa = arcCurvature(la, C.yAt(la));
-    const v = tp.mappingSpeed / (1 + tp.curveSlowdown * Math.abs(C.curvatureAt(la)) * 4);
+    // フレーム毎の中央線フィットの曲率は検出ノイズで揺れるため、そのまま速度にすると
+    // 目標速度が毎フレーム上下し前後にガクガクする。曲率をローパスし、速度も 2 周目と
+    // 同じ加減速制限 (raceline.aAccel / aDecel) で変化させる (navigator.py と同じ)。
+    const curv = Math.abs(C.curvatureAt(la));
+    if (this.curvFilt === null || !(tp.curvatureFilterTau > 0)) this.curvFilt = curv;
+    else this.curvFilt += (curv - this.curvFilt) * Math.min(1, dt / tp.curvatureFilterTau);
+    const vTarget = tp.mappingSpeed / (1 + tp.curveSlowdown * this.curvFilt * 4);
+    const rp = this.p.raceline;
+    const v = rateLimit(this.cmd.v, vTarget, vTarget > this.cmd.v ? rp.aAccel : rp.aDecel, dt);
     let omega = Math.max(-tp.maxAngularSpeed, Math.min(tp.maxAngularSpeed, v * kappa));
     omega = rateLimit(this.cmd.omega, omega, tp.maxAngularAccel, dt);
     this.message = `1周目 記録中: 断面 ${this.recorder.samples.length} 点 / 間隔 ${this.recorder.nextSpacing().toFixed(1)}m`;

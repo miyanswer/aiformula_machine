@@ -78,6 +78,7 @@ class LaneNavigator:
         self.follower: Optional[RacelineFollower] = None
         self.lap = 1
         self.cmd = Command(0.0, 0.0)
+        self._curv_filt: Optional[float] = None   # 1 周目の減速用曲率 (ローパス後)
         self.corr = np.zeros(3)            # 2 周目の自己位置補正 odom -> map (tx, ty, theta)
         self.last_lines_time: Optional[float] = None
         self.last_index: Optional[int] = None
@@ -184,7 +185,17 @@ class LaneNavigator:
         la = min(max(v_meas * tp.lookahead_time, tp.lookahead_min), tp.lookahead_max)
         la = max(la, C.x_min)
         kappa = arc_curvature(la, float(C.y_at(la)))
-        v = tp.mapping_speed / (1.0 + tp.curve_slowdown * abs(C.curvature_at(la)) * 4.0)
+        # フレーム毎の中央線フィットの曲率は検出ノイズで揺れるため、そのまま速度に
+        # すると目標速度が毎フレーム上下し前後にガクガクする。曲率をローパスし、
+        # 速度も 2 周目と同じ加減速制限 (raceline.a_accel / a_decel) で変化させる。
+        curv = abs(float(C.curvature_at(la)))
+        if self._curv_filt is None or tp.curvature_filter_tau <= 0.0:
+            self._curv_filt = curv
+        else:
+            self._curv_filt += (curv - self._curv_filt) * min(1.0, dt / tp.curvature_filter_tau)
+        v_target = tp.mapping_speed / (1.0 + tp.curve_slowdown * self._curv_filt * 4.0)
+        rp = self.p.raceline
+        v = rate_limit(self.cmd.v, v_target, rp.a_accel if v_target > self.cmd.v else rp.a_decel, dt)
         omega = max(-tp.max_angular_speed, min(tp.max_angular_speed, v * kappa))
         omega = rate_limit(self.cmd.omega, omega, tp.max_angular_accel, dt)
         return Command(v, omega)

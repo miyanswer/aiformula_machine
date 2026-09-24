@@ -27,6 +27,7 @@ class TrackerParams:
     max_angular_accel: float = 4.0
     mapping_speed: float = 1.0         # 1 周目の速度 [m/s]
     curve_slowdown: float = 0.5        # 1 周目: 曲率に応じた減速係数
+    curvature_filter_tau: float = 0.5  # 1 周目: 減速に使う曲率のローパス時定数 [s] (0 で無効)
 
 
 def arc_curvature(x: float, y: float) -> float:
