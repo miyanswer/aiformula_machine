@@ -31,7 +31,7 @@ start_gui_services() {
 
     # Start x11vnc if not running
     if ! pgrep -x "x11vnc" > /dev/null; then
-        x11vnc -display :1 -forever -shared -nopw -rfbport 5900 -quiet > /tmp/x11vnc.log 2>&1 &
+        x11vnc -display :1 -forever -shared -nopw -localhost -rfbport 5900 -quiet > /tmp/x11vnc.log 2>&1 &
         sleep 0.5
     fi
 

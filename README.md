@@ -71,13 +71,16 @@ make bash
 >   *(※ Ubuntu 側には `docker-ce` と `nvidia-container-toolkit` をインストールしておくだけでOKです)*
 
 > **🤖 Jetson AGX Orin (JetPack 5.1.x / L4T R35) での実行:**
-> - `make build` 実行前に `cat /etc/nv_tegra_release` で搭載中のL4Tバージョンを確認してください。`docker/Dockerfile.jetson` は既定で `r35.3.1`（JetPack 5.1.1相当）のベースイメージを使いますが、異なる場合は `make build JETSON_BASE_TAG=r35.2.1` のように上書きしてください（ズレると `torch.cuda.is_available()` が `False` になります）。
+> - `make build` 実行前に `cat /etc/nv_tegra_release` で搭載中のL4Tバージョンを確認してください。`docker/Dockerfile.jetson` は既定で `r35.3.1`（JetPack 5.1.1相当）のベースイメージを使います。実機の **L4T R35.4.1 でもこの既定のままで構いません**（`dustynv/ros:humble-pytorch-l4t-r35.4.1` は存在せず、R35.3.1/R35.4.1 はどちらも CUDA 11.4 / TensorRT 8.5 で互換）。R35.2 以前の場合のみ `make build JETSON_BASE_TAG=r35.2.1` のように上書きしてください。
+> - **ZED SDK はイメージ内にホストと同じ 4.0.8（L4T35.4 版）をインストールします**（`sensing/zed-ros2-wrapper` も v4.0.8）。ZED X（ZED Link Duo / GMSL）はホスト側の `zed_x_daemon` と `nvargus-daemon` がカメラを握り、コンテナは `/tmp/argus_socket` 経由で映像を受け取るため、ホストで `systemctl status zed_x_daemon nvargus-daemon` が active であることを確認してください。ホストの SDK / ドライバを更新した場合は `docker/Dockerfile.jetson` の `ZED_SDK_VERSION` / `ZED_L4T_*` も合わせてから `make rebuild` してください。
+> - Jetson では `docker/compose.jetson.yaml` により `network_mode: host`（`can0` と DDS を共有）、`/dev` 共有（VectorNav / Kvaser / ゲームパッドの抜き差し対応）、ZED X 用のマウント（argus socket, nvcam settings, `/usr/local/zed/settings`・`resources`）が有効になります。
+> - 初回手順: `make build` → `make up` → `make clean`（以前 SDK 無しでビルドした `build/` を消す） → `make build-ws` → `make zed-check`（SDK / argus socket / can0 / IMU の可視性確認） → `make bringup-hw`（または `make bringup-all`）。`make bringup-*` / `make teleop` はコンテナ内で実行されます（ホストの ROS 2 は Foxy のため）。
 > - `docker info | grep -i runtime` で `nvidia` ランタイムが登録されていることを事前に確認してください（JetPack標準セットアップ済みであれば通常は有効です）。
 > - `models/*_rtx_2070_..._sm75.engine` はRTX2070(sm75)向けのTensorRTエンジンで、Orin(sm87)では使われません。`lane_detector` (backend=yolop, `use_tensorrt:=true`) は起動時に現在のGPU向けのエンジンが無ければ自動でコンパイルし直すため（`src/oit_navigation/oit_navigation/yolop_lane_backend.py` の `_init_tensorrt` 参照）、追加の手動作業は不要ですが、初回起動時は数分ほど余分に時間がかかります。
 > - 実機は GitHub から clone したリポジトリで走らせるため、白線検出は git 管理されている YOLOP の重み (`models/honda_shihou_finetuned_best.pth`) を使います (`backend:=yolop`, 既定)。UFLD の重み (245MB) は git 管理外です。
 > - Jetsonでは `rviz_aiformula_plugins` パッケージ（RViz専用プラグイン、実車走行には不要）はビルド対象から外れます。`make build-ws` / `make build-pkg` が `IS_JETSON` を自動検知して `--packages-skip rviz_aiformula_plugins` を付与するため、いつも通り `make build-ws` を実行するだけで構いません（手動でフラグを付ける必要はありません）。
 > - Jetson上ではRViz2/rqt本体をインストールしていない（ヘッドレス構成の）ため、`make rqt` / `make rqt-graph` / `make open-rviz` は動作しません。可視化が必要な場合はMac側の Web シミュレータ（[http://localhost:8000/web_simulator/](http://localhost:8000/web_simulator/)）や、動画検証用の Web GUI（PC単体検証時）を利用してください。
-> - `sensing/zed-ros2-wrapper` ディレクトリには `COLCON_IGNORE` が置かれていないため、`colcon build` がこれもビルド対象に含めてしまい、ZED SDK が無い環境（Jetson/PC問わず）ではその分の失敗ログが出ることがあります（x86版でも既存の問題で、本ブランチが持ち込んだものではありません）。実車走行に `zed-ros2-wrapper` 自体は不要なので、失敗しても無視して構いません。
+> - `sensing/zed-ros2-wrapper` は ZED SDK が無い環境（Mac / x86 PC）では警告を出して C++ ターゲットをスキップします。Jetson 上で SDK が見つからない場合は、実機で ZED が起動しない状態を見逃さないよう **ビルドエラー** にしています（その場合は `make build` でイメージを作り直してください）。
 
 > **🌐 ブラウザでアクセス可能な Web UI:**
 > - **3D 走行シミュレータ:** [http://localhost:8000/web_simulator/](http://localhost:8000/web_simulator/)

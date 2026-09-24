@@ -88,6 +88,11 @@ endif()
 find_package(CUDA QUIET)
 
 if(NOT ZED_FOUND OR NOT CUDA_FOUND)
+    # 実機(Jetson)では SDK 欠落を黙ってスキップすると zed_wrapper 実行ファイルが
+    # 生成されず launch 時に初めて気付くことになるため、ビルド時点で失敗させる。
+    if(EXISTS "/etc/nv_tegra_release")
+        message(FATAL_ERROR "ZED SDK (ZED_FOUND=${ZED_FOUND}) or CUDA (CUDA_FOUND=${CUDA_FOUND}) not found on Jetson. Rebuild the image with docker/Dockerfile.jetson (make build).")
+    endif()
     message(WARNING "ZED SDK or CUDA not found. Skipping zed_components C++ targets.")
     find_package(ament_cmake REQUIRED)
     ament_package()

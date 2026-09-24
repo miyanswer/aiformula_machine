@@ -110,7 +110,7 @@ PKG ?=
         build-ws colcon clean test-pc test test-tl test-lane test-yolop test-ufld \
         verification-gui vgui open-rviz gui open-vgui stop-nodes kill \
         rosbridge sim open-sim sim-nav rqt rqt-graph \
-        bringup-hw bringup-all teleop
+        bringup-hw bringup-all teleop zed-check
 
 # Default: Show help message
 help:
@@ -163,6 +163,7 @@ help:
 	@echo "  make bringup-hw       Launch hardware nodes only"
 	@echo "  make bringup-all      Launch hardware + full autonomous stack"
 	@echo "  make teleop           Run keyboard teleoperation"
+	@echo "  make zed-check        Check ZED SDK / argus socket / can0 / IMU visibility in container"
 	@echo ""
 	@echo "🤖 [Jetson Troubleshooting]"
 	@echo "  cat /etc/nv_tegra_release                 Check installed L4T/JetPack version"
@@ -347,11 +348,32 @@ sim-nav:
 # Real Vehicle Operations
 # ------------------------------------------------------------------------------
 
+# 実機ホスト(Jetson)は ROS 2 Foxy / Humble 未導入のため、bringup はコンテナ内で実行する
+# (ZED SDK・extra_ros_ws・ビルド済み install/ は全てコンテナ側にある)。
+define ENSURE_UP
+	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
+		$(DOCKER_COMPOSE) up -d; \
+	fi
+endef
+
 bringup-hw:
-	bash bash/1_bringup_hardware.sh
+	$(ENSURE_UP)
+	$(DOCKER_COMPOSE) exec -it $(SERVICE_NAME) bash bash/1_bringup_hardware.sh
 
 bringup-all:
-	bash bash/3_bringup_all_nodes.sh
+	$(ENSURE_UP)
+	$(DOCKER_COMPOSE) exec -it $(SERVICE_NAME) bash bash/3_bringup_all_nodes.sh
 
 teleop:
-	bash bash/teleop_keyboard.sh
+	$(ENSURE_UP)
+	$(DOCKER_COMPOSE) exec -it $(SERVICE_NAME) bash bash/teleop_keyboard.sh
+
+# ZED X がコンテナ内から見えるかの確認 (ホスト側の zed_x_daemon / nvargus-daemon 前提)
+zed-check:
+	$(ENSURE_UP)
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
+		"ls -l /usr/local/zed/lib/libsl_zed.so* && \
+		 grep -h "set(PACKAGE_VERSION " /usr/local/zed/zed-config-version.cmake; \
+		 test -S /tmp/argus_socket && echo '[OK] /tmp/argus_socket' || echo '[NG] /tmp/argus_socket missing (host: sudo systemctl restart nvargus-daemon zed_x_daemon)'; \
+		 ip link show can0 >/dev/null 2>&1 && echo '[OK] can0 visible' || echo '[NG] can0 not visible'; \
+		 ls /dev/ttyUSB0 >/dev/null 2>&1 && echo '[OK] /dev/ttyUSB0' || echo '[NG] /dev/ttyUSB0 missing'"

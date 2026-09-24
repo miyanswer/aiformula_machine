@@ -1,3 +1,5 @@
+# dustynv に humble-pytorch-l4t-r35.4.1 タグは無い。実機(L4T R35.4.1)でも r35.3.1
+# (同じ JetPack 5.1.x / CUDA 11.4) を使う。
 ARG JETSON_BASE_TAG=r35.3.1
 FROM dustynv/ros:humble-pytorch-l4t-${JETSON_BASE_TAG}
 
@@ -111,6 +113,15 @@ RUN git clone --branch dashing-devel --depth 1 https://github.com/ros-industrial
     mv /tmp/ros_canopen/can_msgs /opt/extra_ros_ws/src/can_msgs && \
     rm -rf /tmp/ros_canopen
 
+# zed_components は image_transport に build/exec 依存する。dustynv の
+# humble ベースはタグによって image_common を含まない場合があり、そのとき
+# ここで補わないと `make build-ws` で zed_components が
+# "Could not find package image_transport" で落ちる。既にベースに入って
+# いる場合は二重ビルドを避けるため clone しない。
+RUN if [ ! -d /opt/ros/${ROS_DISTRO}/install/share/image_transport ]; then \
+      git clone --branch humble --depth 1 https://github.com/ros-perception/image_common.git /opt/extra_ros_ws/src/image_common; \
+    fi
+
 WORKDIR /opt/extra_ros_ws
 RUN apt-get update && rosdep update && \
     rosdep install --from-paths src --ignore-src -r -y --rosdistro ${ROS_DISTRO} && \
@@ -187,12 +198,69 @@ RUN pip3 install --no-cache-dir --no-deps ultralytics ultralytics-thop && \
     polars \
     nvidia-ml-py
 
+# ---------------------------------------------------------------------------
+# ZED SDK (zed-ros2-wrapper のビルド/実行に必須)
+#
+# 実機ホストは L4T R35.4.1 + ZED SDK 4.0.8 + ZED Link Duo(GMSL) ドライバ
+# (stereolabs-zedlink-duo 1.3.0-...-L4T35.4.1)。コンテナ内 SDK はホストの
+# GMSL ドライバ / zed_x_daemon と同じバージョン系列でないと ZED X を開けない
+# ため、ホストと完全に同じ 4.0.8 / L4T35.4 版インストーラを使う
+# (sensing/zed-ros2-wrapper も v4.0.8 で一致)。
+#
+# dustynv の Humble+PyTorch イメージには r35.4.1 タグが存在しないので
+# ベースは r35.3.1 のまま (どちらも JetPack 5.1.x / CUDA 11.4 / TensorRT 8.5
+# で ABI 互換)。インストーラは /etc/nv_tegra_release で L4T を厳密一致
+# チェックするため、ホストと同じ R35.4.1 に書き換えてから実行する
+# (Stereolabs 公式 Dockerfile.l4t35_1-humble-release と同じ手法)。
+#
+# - skip_tools : GUI ツール(Qt依存)はヘッドレスコンテナでは不要
+# - skip_hub   : ZED Hub 不要
+# - skip_python: pyzed は本プロジェクトで未使用。インストーラが numpy を
+#                無条件に pip upgrade して上の numpy<2 固定を崩すのを防ぐ
+# - AI モジュールのバイナリは残し、resources/ (AIモデル) は compose.jetson.yaml
+#   でホストの /usr/local/zed/resources を bind mount して共有する
+# ---------------------------------------------------------------------------
+ARG ZED_SDK_VERSION=4.0.8
+ARG ZED_L4T_MAJOR=35
+ARG ZED_L4T_MINOR=4
+ARG ZED_L4T_REVISION=4.1
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    zstd \
+    file \
+    less \
+    udev \
+    lsb-release \
+    apt-transport-https \
+    libjpeg-turbo8 \
+    libturbojpeg \
+    libusb-1.0-0 \
+    libusb-1.0-0-dev \
+    libopenblas-dev \
+    libarchive-dev \
+    libv4l-0 \
+    libpng-dev \
+    unzip \
+    zlib1g \
+    mesa-utils \
+    && echo "# R${ZED_L4T_MAJOR} (release), REVISION: ${ZED_L4T_REVISION}" > /etc/nv_tegra_release \
+    && wget -q -O /tmp/ZED_SDK.run \
+       "https://stereolabs.sfo2.cdn.digitaloceanspaces.com/zedsdk/${ZED_SDK_VERSION%.*}/ZED_SDK_Tegra_L4T${ZED_L4T_MAJOR}.${ZED_L4T_MINOR}_v${ZED_SDK_VERSION}.zstd.run" \
+    && chmod +x /tmp/ZED_SDK.run \
+    && cd /tmp && ./ZED_SDK.run -- silent skip_tools skip_hub skip_python \
+    && rm -f /tmp/ZED_SDK.run \
+    && rm -rf /usr/local/zed/resources/* \
+    && test -f /usr/local/zed/zed-config.cmake \
+    && test -n "$(ls /usr/local/zed/lib/libsl_zed.so* 2>/dev/null)" \
+    && ldconfig \
+    && rm -rf /var/lib/apt/lists/*
+
 # Create non-root user 'rosuser' with sudo privileges
 ARG USERNAME=rosuser
 ARG USER_UID=1000
 ARG USER_GID=1000
 RUN groupadd --gid $USER_GID $USERNAME 2>/dev/null || true \
     && useradd --uid $USER_UID --gid $USER_GID -m $USERNAME -s /bin/bash 2>/dev/null || true \
+    && for g in video dialout plugdev; do getent group $g >/dev/null && usermod -aG $g $USERNAME; done; true \
     && echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/$USERNAME \
     && chmod 0440 /etc/sudoers.d/$USERNAME
 
