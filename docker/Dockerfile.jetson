@@ -217,6 +217,11 @@ RUN pip3 install --no-cache-dir --no-deps ultralytics ultralytics-thop && \
 # - skip_hub   : ZED Hub 不要
 # - skip_python: pyzed は本プロジェクトで未使用。インストーラが numpy を
 #                無条件に pip upgrade して上の numpy<2 固定を崩すのを防ぐ
+# - インストーラ(makeself)は umask 077 で動くため、コピーされた
+#   /usr/local/zed 以下と /etc/ld.so.conf.d/zed.conf が root 専用 (0700/0600)
+#   になり、rosuser から find_package(ZED) も libsl_zed.so の読み込みも
+#   できなくなる。インストール後に全ユーザー読み取り可へ直し、root 以外
+#   (nobody) から読めることをビルド時に検査する。
 # - AI モジュールのバイナリは残し、resources/ (AIモデル) は compose.jetson.yaml
 #   でホストの /usr/local/zed/resources を bind mount して共有する
 # ---------------------------------------------------------------------------
@@ -249,6 +254,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && cd /tmp && ./ZED_SDK.run -- silent skip_tools skip_hub skip_python \
     && rm -f /tmp/ZED_SDK.run \
     && rm -rf /usr/local/zed/resources/* \
+    && chmod -R a+rX /usr/local/zed \
+    && chmod 644 /etc/ld.so.conf.d/zed.conf \
+    && su -s /bin/sh nobody -c "test -r /usr/local/zed/zed-config.cmake && test -r /usr/local/zed/lib/libsl_zed.so" \
     && test -f /usr/local/zed/zed-config.cmake \
     && test -n "$(ls /usr/local/zed/lib/libsl_zed.so* 2>/dev/null)" \
     && ldconfig \
