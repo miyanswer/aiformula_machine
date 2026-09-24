@@ -116,7 +116,7 @@ PKG ?=
         build-ws colcon clean test-pc test test-tl test-lane test-yolop test-ufld \
         verification-gui vgui open-rviz gui open-vgui stop-nodes kill \
         rosbridge sim open-sim sim-nav rqt rqt-graph \
-        bringup-hw bringup-all teleop zed-check
+        bringup-hw bringup-all teleop zed-check camera-view
 
 # Default: Show help message
 help:
@@ -170,6 +170,7 @@ help:
 	@echo "  make bringup-all      Launch hardware + full autonomous stack"
 	@echo "  make teleop           Run keyboard teleoperation"
 	@echo "  make zed-check        Check ZED SDK / argus socket / can0 / IMU visibility in container"
+	@echo "  make camera-view      Stream camera images to browser (http://<jetson-ip>:8091)  TOPIC=..."
 	@echo ""
 	@echo "🤖 [Jetson Troubleshooting]"
 	@echo "  cat /etc/nv_tegra_release                 Check installed L4T/JetPack version"
@@ -373,6 +374,12 @@ bringup-all:
 teleop:
 	$(ENSURE_UP)
 	$(DOCKER_COMPOSE) exec -it $(SERVICE_NAME) bash bash/teleop_keyboard.sh
+
+# カメラ映像をブラウザで確認 (Jetson は rviz2 / rqt_image_view 非搭載のため)。
+# http://<JetsonのIP>:8091/ を開く。TOPIC=... で CompressedImage(JPEG) トピックを変更可。
+camera-view:
+	$(ENSURE_UP)
+	$(DOCKER_COMPOSE) exec -it $(SERVICE_NAME) bash -c "$(ROS_SETUP) && python3 bash/camera_web_view.py $(if $(TOPIC),--topic $(TOPIC),)"
 
 # ZED X がコンテナ内から見えるかの確認 (ホスト側の zed_x_daemon / nvargus-daemon 前提)
 zed-check:
