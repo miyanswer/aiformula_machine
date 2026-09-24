@@ -100,6 +100,12 @@ endif
 
 DOCKER_COMPOSE := docker compose $(COMPOSE_FILES)
 
+# コンテナ内で ROS 2 環境を読み込むコマンド。`bash -c` は非対話シェルで
+# /etc/bash.bashrc が読まれないため、Jetson イメージの /opt/extra_ros_ws
+# (diagnostic_updater / robot_localization / ros2_socketcan 等) もここで明示的に
+# source する (x86 イメージには存在しないので条件付き)。
+ROS_SETUP := source /opt/ros/humble/setup.bash && if [ -f /opt/extra_ros_ws/install/setup.bash ]; then source /opt/extra_ros_ws/install/setup.bash; fi
+
 # Parameters with defaults
 DEVICE ?= $(if $(filter 1,$(ENABLE_CUDA)),cuda,cpu)
 VIDEO ?=
@@ -224,7 +230,7 @@ build-ws colcon:
 	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
 		$(DOCKER_COMPOSE) up -d; \
 	fi
-	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "source /opt/ros/humble/setup.bash && colcon build --symlink-install $(COLCON_SKIP)"
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "$(ROS_SETUP) && colcon build --symlink-install $(COLCON_SKIP)"
 
 build-pkg:
 	@if [ -z "$(PKG)" ]; then \
@@ -234,7 +240,7 @@ build-pkg:
 	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
 		$(DOCKER_COMPOSE) up -d; \
 	fi
-	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "source /opt/ros/humble/setup.bash && colcon build --packages-select $(PKG) --symlink-install $(COLCON_SKIP)"
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "$(ROS_SETUP) && colcon build --packages-select $(PKG) --symlink-install $(COLCON_SKIP)"
 
 clean:
 	rm -rf build install log
@@ -248,7 +254,7 @@ test-pc test:
 		$(DOCKER_COMPOSE) up -d; \
 	fi
 	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
-		"source /opt/ros/humble/setup.bash && source install/setup.bash && \
+		"$(ROS_SETUP) && source install/setup.bash && \
 		 ros2 launch oit_navigation video_test.launch.py \
 		 $(if $(VIDEO),video_path:=$(VIDEO),) \
 		 use_device:=$(DEVICE) \
@@ -260,7 +266,7 @@ test-tl:
 		$(DOCKER_COMPOSE) up -d; \
 	fi
 	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
-		"source /opt/ros/humble/setup.bash && source install/setup.bash && \
+		"$(ROS_SETUP) && source install/setup.bash && \
 		 ros2 launch oit_navigation traffic_light_video_test.launch.py \
 		 $(if $(VIDEO),video_path:=$(VIDEO),) \
 		 device:=$(DEVICE)"
@@ -270,7 +276,7 @@ test-lane:
 		$(DOCKER_COMPOSE) up -d; \
 	fi
 	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
-		"source /opt/ros/humble/setup.bash && source install/setup.bash && \
+		"$(ROS_SETUP) && source install/setup.bash && \
 		 ros2 launch oit_navigation video_test.launch.py \
 		 $(if $(VIDEO),video_path:=$(VIDEO),) \
 		 use_device:=$(DEVICE) \
@@ -289,7 +295,7 @@ vgui verification-gui:
 		$(DOCKER_COMPOSE) up -d; \
 	fi
 	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
-		"source /opt/ros/humble/setup.bash && source install/setup.bash && ros2 run oit_navigation verification_gui"
+		"$(ROS_SETUP) && source install/setup.bash && ros2 run oit_navigation verification_gui"
 
 stop-nodes kill:
 	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
@@ -313,21 +319,21 @@ rqt-graph:
 		$(DOCKER_COMPOSE) up -d; \
 	fi
 	@which open > /dev/null && open http://localhost:8080 || which xdg-open > /dev/null && xdg-open http://localhost:8080 || echo "Open http://localhost:8080 in your browser"
-	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "source /opt/ros/humble/setup.bash && rqt_graph"
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "$(ROS_SETUP) && rqt_graph"
 
 rqt:
 	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
 		$(DOCKER_COMPOSE) up -d; \
 	fi
 	@which open > /dev/null && open http://localhost:8080 || which xdg-open > /dev/null && xdg-open http://localhost:8080 || echo "Open http://localhost:8080 in your browser"
-	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "source /opt/ros/humble/setup.bash && rqt"
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "$(ROS_SETUP) && rqt"
 
 rosbridge:
 	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
 		$(DOCKER_COMPOSE) up -d; \
 	fi
 	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
-		"source /opt/ros/humble/setup.bash && \
+		"$(ROS_SETUP) && \
 		 if ! ros2 pkg list | grep -q '^rosbridge_server$$'; then \
 		   echo '[INFO] Installing ros-humble-rosbridge-server...'; \
 		   sudo apt-get update && sudo apt-get install -y ros-humble-rosbridge-server; \
@@ -339,7 +345,7 @@ sim-nav:
 		$(DOCKER_COMPOSE) up -d; \
 	fi
 	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
-		"source /opt/ros/humble/setup.bash && source install/setup.bash && \
+		"$(ROS_SETUP) && source install/setup.bash && \
 		 ros2 launch oit_navigation simulator_test.launch.py \
 		 use_device:=$(DEVICE) \
 		 backend:=$(BACKEND)"
