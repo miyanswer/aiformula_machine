@@ -309,3 +309,53 @@ def test_async_optimization_and_map_json_roundtrip():
     nav2 = LaneNavigator(NavigatorParams())
     nav2.load_map(loaded)
     assert nav2.state == RACING
+
+
+def _straight_center_lines(pose):
+    """世界座標 y=0 のまっすぐな中央線 (と ±1.75m の境界線) を, 車体座標のフィットで返す."""
+    from oit_navigation.lane_nav.geometry import LineFit
+    from oit_navigation.lane_nav.line_tracker import TrackedLines
+    x, y, yaw = pose
+    # 車体座標で y_body(x_b) ≈ -(y + x_b * tan(yaw)) (小角度の直線)
+    c0, c1 = -y / math.cos(yaw), -math.tan(yaw)
+    fits = {r: LineFit(np.array([c0 + off, c1, 0.0]), 0.8, 8.0, 20)
+            for r, off in (("left", 1.75), ("center", 0.0), ("right", -1.75))}
+    return TrackedLines(lines=fits, detected={r: True for r in fits})
+
+
+def test_mapping_keeps_following_remembered_center_line_through_short_loss():
+    """1 周目: 中央線が途切れても即停止→再加速を繰り返さず, 記憶した線をオドメトリで追って
+    lines_lost_speed 以下で走り続け, lines_hold_distance を超えて見えなければ停止する."""
+    from oit_navigation.lane_nav import LaneNavigator, NavigatorParams
+    p = NavigatorParams()
+    nav = LaneNavigator(p)
+    pose = [0.0, 0.0, 0.0]
+    s = t = 0.0
+    dt = 1.0 / 15.0
+    v = w = 0.0
+    log = []
+    while t < 20.0:
+        visible = t < 4.0                       # 4 秒後から白線が一切見えない
+        lines = _straight_center_lines(pose) if visible else None
+        cmd = nav.step(t, dt, tuple(pose), v, w, s, lines)
+        v, w = cmd.v, cmd.omega
+        pose[0] += v * math.cos(pose[2]) * dt
+        pose[1] += v * math.sin(pose[2]) * dt
+        pose[2] += w * dt
+        if t < 4.0 + dt and t >= 4.0 - dt:
+            pose[1] += 0.3                      # 見えない間に横ずれ (オドメトリ上) を入れる
+        s += v * dt
+        t += dt
+        log.append((t, v, pose[1], s, nav.message))
+    s_lost = next(r[3] for r in log if r[0] > 4.0)
+    during = [r for r in log if 4.0 + p.lines_timeout + 0.2 < r[0] and r[3] < s_lost + p.lines_hold_distance - 0.3]
+    assert during, "ロスト後に記憶した線で走る区間がある"
+    # 止まらずに走り続ける (lines_lost_speed まで減速するだけ)
+    assert min(r[1] for r in during) > 0.8 * p.lines_lost_speed
+    assert max(r[1] for r in during if r[0] > 4.0 + p.lines_timeout + 1.0) <= p.lines_lost_speed + 1e-6
+    assert all(r[4] == "白線ロスト: 記憶した中央線で走行" for r in during)
+    # 記憶した線 (y=0) へ戻る: オドメトリ上の横ずれ 0.3m が縮む
+    assert abs(during[-1][2]) < 0.2
+    # 保持距離を過ぎたら減速停止
+    assert log[-1][1] == 0.0 and log[-1][4] == "白線ロスト: 減速停止"
+    assert log[-1][3] < s_lost + p.lines_hold_distance + 1.0
