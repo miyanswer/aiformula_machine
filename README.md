@@ -154,7 +154,7 @@ bash bash/teleop_keyboard.sh
 
 > ⚠️ **接続断時の挙動:** Mac⇔Jetson間の無線接続が切れて `gamepad` トピックが 0.3 秒以上途絶えると、`twist_mux`（`launchers/sample_launchers/config/twist_mux.yaml`）は自動的に次に優先度の高い入力へフォールバックします。`bringup-all`（自律走行スタック起動）で使用している場合、これは無操作停止ではなく自動運転（`mpc`、優先度50）への切り替わりを意味するため、意図しない挙動に注意してください。
 >
-> 🛑 **全入力が途絶えた場合:** `twist_mux` は入力が全てタイムアウトしても何も出力しないため、`motor_controller` に指令タイムアウト（`control/motor_controller/config/motor_controller.yaml` の `cmd_timeout: 0.5` 秒）を設けています。速度指令が 0.5 秒届かなければ RPM 0 を送って停止します（以前は最後の指令を保持し続け、Wi-Fi 断でそのまま走り続けていました）。web_simulator も同じ挙動（0.5 秒保持→停止）を再現します。
+> 🛑 **全入力が途絶えた場合:** `twist_mux` は入力が全てタイムアウトしても何も出力しないため、`motor_controller` に指令タイムアウト（`control/motor_controller/config/motor_controller.yaml` の `cmd_timeout: 0.5` 秒）を設けています。速度指令が 0.5 秒届かなければ目標速度を 0 にして停止します（以前は最後の指令を保持し続け、Wi-Fi 断でそのまま走り続けていました）。また `motor_controller` は速度指令に加減速制限（`max_linear_accel: 2.2` m/s²・`max_linear_decel: 1.5` m/s²・`max_angular_accel: 4.0` rad/s²）をかけて追従するため、停止指令・タイムアウト時も急停止せず 1.5 m/s² で止まります（1.5 m/s から約 1 秒・0.75 m）。web_simulator も同じ値（`js/vehicle_physics.js` の `MOTOR_MAX_*`）で車を動かします。
 
 ---
 

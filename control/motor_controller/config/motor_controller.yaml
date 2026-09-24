@@ -1,7 +1,12 @@
 /**:
   ros__parameters:
     publish_timer_loop_duration: 0.01 #[sec]
-    # 速度指令 (twist_mux 出力) がこの時間届かなければ RPM 0 を送る。
+    # 速度指令 (twist_mux 出力) がこの時間届かなければ目標速度を 0 にする (下の減速度で停止)。
     # twist_mux の各入力タイムアウト (0.3 s) より長くする。
     cmd_timeout: 0.5 #[sec]
+    # 速度指令への追従の加減速制限 (停止指令・タイムアウト時も一定減速度で止める)。
+    # web_simulator/js/vehicle_physics.js の MOTOR_MAX_* と同じ値にすること。
+    max_linear_accel: 2.2   #[m/s^2]
+    max_linear_decel: 1.5   #[m/s^2]
+    max_angular_accel: 4.0  #[rad/s^2]
       

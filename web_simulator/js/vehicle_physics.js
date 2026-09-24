@@ -25,6 +25,28 @@ const REVERSE_FORCE_N = 98; // S held while stopped/reversing -> ~1.4 m/s^2
 const BRAKE_FORCE_N = 231; // S held while still moving forward -> ~3.3 m/s^2
 const COAST_RESISTANCE_N = 35; // rolling resistance + drag while coasting -> ~0.5 m/s^2
 
+// 実機 motor_controller の加減速制限 (control/motor_controller/config/
+// motor_controller.yaml の max_linear_accel / max_linear_decel /
+// max_angular_accel と同じ値にすること)。実機は受けた速度指令に対し、|v| が
+// 大きくなる向きは ACCEL、小さくなる向き (減速・停止・前後反転の手前まで) は
+// DECEL を超えない範囲でしか追従しないので、シミュレータの車もこれ以上速く
+// 速度を変えない (例: S ブレーキ 3.2 m/s^2 も実機同様 1.5 m/s^2 に制限される)。
+export const MOTOR_MAX_LINEAR_ACCEL = 2.2; // [m/s^2]
+export const MOTOR_MAX_LINEAR_DECEL = 1.5; // [m/s^2]
+export const MOTOR_MAX_ANGULAR_ACCEL = 4.0; // [rad/s^2]
+
+function motorLimitLinear(previous, next, dt) {
+  const toward = previous * next < 0 ? 0 : next; // 前後反転は一度 0 まで減速
+  const decreasing = Math.abs(toward) < Math.abs(previous) || previous * next < 0;
+  const maxStep = (decreasing ? MOTOR_MAX_LINEAR_DECEL : MOTOR_MAX_LINEAR_ACCEL) * dt;
+  return previous + clamp(toward - previous, -maxStep, maxStep);
+}
+
+function motorLimitAngular(previous, next, dt) {
+  const maxStep = MOTOR_MAX_ANGULAR_ACCEL * dt;
+  return previous + clamp(next - previous, -maxStep, maxStep);
+}
+
 // Exported so js/simulator.js can pass them to the autonomous-driving
 // lane navigator (lane_navigator.js) as its max speed / angular clamp --
 // per instruction, autonomous driving keeps these same limits rather than
@@ -99,10 +121,11 @@ export class VehiclePhysics {
     } else {
       this.v = approachZero(this.v, COAST_RESISTANCE_N / mass, dt);
     }
-    this.v = clamp(this.v, MAX_REVERSE_SPEED, MAX_SPEED);
+    this.v = motorLimitLinear(previousV, clamp(this.v, MAX_REVERSE_SPEED, MAX_SPEED), dt);
     this.linearAccel = dt > 0 ? (this.v - previousV) / dt : 0;
 
     // --- Yaw rate (angular.z) ---
+    const previousOmega = this.omega;
     if (keys.left && !keys.right) {
       this.omega += ANGULAR_ACCEL * dt;
     } else if (keys.right && !keys.left) {
@@ -110,7 +133,7 @@ export class VehiclePhysics {
     } else {
       this.omega = approachZero(this.omega, ANGULAR_DAMPING, dt);
     }
-    this.omega = clamp(this.omega, -MAX_ANGULAR, MAX_ANGULAR);
+    this.omega = motorLimitAngular(previousOmega, clamp(this.omega, -MAX_ANGULAR, MAX_ANGULAR), dt);
 
     // --- Integrate pose (ROS convention: x forward, y left, yaw about z) ---
     this.x += this.v * Math.cos(this.yaw) * dt;
@@ -146,7 +169,7 @@ export class VehiclePhysics {
       const decel = (this.v > 0 ? BRAKE_FORCE_N : REVERSE_FORCE_N) / mass;
       this.v = Math.max(vCmd, this.v - decel * dt);
     }
-    this.v = clamp(this.v, MAX_REVERSE_SPEED, MAX_SPEED);
+    this.v = motorLimitLinear(previousV, clamp(this.v, MAX_REVERSE_SPEED, MAX_SPEED), dt);
     this.linearAccel = dt > 0 ? (this.v - previousV) / dt : 0;
 
     if (this.omega < omegaCmd) {

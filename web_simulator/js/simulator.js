@@ -596,8 +596,8 @@ const SIX_LANE_RESEED_TOPIC = '/aiformula_control/six_lane_planner/lane_reseed';
 // ボタンを押している間だけ publish し、離すとゼロを送る) と同じ振る舞いにする:
 // キーを押している間だけ現在の速度を送り、離したらゼロを数回送って送信を止める。
 // 以降は実機の twist_mux が gamepad 入力をタイムアウト (0.3s) させ、下位の
-// 入力 (自律走行など) に制御が戻る。シミュレータの車も同時に停止させて、
-// 画面上の車と実機への指令を一致させる (惰性で走り続ける速度を送らない)。
+// 入力 (自律走行など) に制御が戻る。シミュレータの車も animate() 側で同じ
+// 減速制限 (vehicle_physics.js の MOTOR_MAX_*) で 0 へ向かわせ、実機と一致させる。
 const TELEOP_STOP_REPEAT = 3;
 let teleopStopRemaining = 0;
 
@@ -607,10 +607,6 @@ function publishTeleopCmdVel() {
     publishCmdVel(physics.v, physics.omega);
     teleopStopRemaining = TELEOP_STOP_REPEAT;
     return;
-  }
-  if (!autonomousMode) {
-    physics.v = 0;
-    physics.omega = 0;
   }
   if (teleopStopRemaining > 0) {
     publishCmdVel(0, 0);
@@ -2439,8 +2435,15 @@ function animate() {
     physics.stepAutonomous(latestAutonomousCmd.v, latestAutonomousCmd.omega, dt);
     lastMuxOutput = { v: latestAutonomousCmd.v, omega: latestAutonomousCmd.omega, timeMs: muxNowMs };
   } else if (activeSource === 'gamepad') {
-    physics.step(effectiveKeys, dt);
-    lastMuxOutput = { v: physics.v, omega: physics.omega, timeMs: muxNowMs };
+    if (teleopOnly && !(effectiveKeys.forward || effectiveKeys.backward || effectiveKeys.left || effectiveKeys.right)) {
+      // 実機操縦でキーを離した直後: 実機には速度 0 を送っている (publishTeleopCmdVel)
+      // ので、惰性ではなく motor_controller と同じ減速制限で 0 へ向かわせる。
+      physics.stepAutonomous(0, 0, dt);
+      lastMuxOutput = { v: 0, omega: 0, timeMs: muxNowMs };
+    } else {
+      physics.step(effectiveKeys, dt);
+      lastMuxOutput = { v: physics.v, omega: physics.omega, timeMs: muxNowMs };
+    }
   } else if ((muxNowMs - lastMuxOutput.timeMs) / 1000 <= MOTOR_CMD_TIMEOUT_SEC) {
     // 全入力タイムアウト直後: 実機 motor_controller は最後の指令を保持している
     physics.stepAutonomous(lastMuxOutput.v, lastMuxOutput.omega, dt);
