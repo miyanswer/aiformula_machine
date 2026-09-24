@@ -77,6 +77,12 @@ Web シミュレータの HUD の「詳細」タブ →「rosbridge」で以下�
   `control/twist_mux/config/twist_mux_topics.yaml` の `keyboard`（`key_vel`）経由で
   twist_mux を単体起動している場合は、ここを `key_vel` に変更してください）
 
+- **実機操縦（cmd_vel のみ送信）**: 実機（Jetson）の rosbridge に繋いで WASD で操縦する
+  ときはオン（URL が localhost 以外なら自動でオン）。キーを押している間だけ cmd_vel を送り、
+  離すと速度 0 を送って止めます。シミュレータのセンサ・画像・自律走行指令・twist_mux 出力は
+  一切送りません（オフのまま実機に繋ぐと、それらが実機の同名トピックに流れ込みます）。
+  以下の説明はオフ（ローカルの ROS 2 スタックとシミュレータを連携させる通常モード）のものです。
+
 ステータスが緑の「接続済み」になれば成功です。接続した時点で、停止中でも
 `geometry_msgs/msg/Twist` を 10Hz で publish し続けます（速度 0 の Twist が流れるので、
 twist_mux 側のタイムアウトでロックされることもありません）。

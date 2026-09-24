@@ -781,6 +781,11 @@
         <div class="row"><label>URL</label><input id="ros-url" type="text" value="ws://localhost:9090"></div>
         <div class="row"><label>cmd_vel</label><input id="ros-topic" type="text"
             value="/aiformula_control/gamepad/cmd_vel"></div>
+        <div class="row" title="実機に接続するときはオン: キー操作中の cmd_vel だけを送り、シミュレータのセンサ/画像/twist_mux出力は送らない (URL が localhost 以外なら自動でオン)">
+          <label for="ros-teleop-only">実機操縦</label>
+          <input id="ros-teleop-only" type="checkbox">
+          <span style="color:#aab2bd;font-size:11px">cmd_vel のみ送信</span>
+        </div>
       </div>
     </div>
   </div>

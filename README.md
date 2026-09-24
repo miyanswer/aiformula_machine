@@ -146,8 +146,10 @@ bash bash/teleop_keyboard.sh
 1. Mac とJetsonを同じLANに接続する。
 2. Jetson側でLAN IPを確認する: `hostname -I` （例: `192.168.1.50`）
 3. Macのブラウザで `web_simulator/index.html` を開く（`python3 web_simulator/serve.py` などで配信するか、ファイルを直接開く）。
-4. 画面上部の「rosbridge URL」欄を `ws://<JetsonのLAN IP>:9090` に書き換えて接続する（デフォルトは `ws://localhost:9090` になっている）。
-5. 接続後、WASDキーで操作すると `/aiformula_control/gamepad/cmd_vel` トピック経由で実機の `twist_mux`（gamepad優先度150）に届き、実車が動く。
+4. 画面上部の「rosbridge URL」欄を `ws://<JetsonのLAN IP>:9090` に書き換える（デフォルトは `ws://localhost:9090` になっている）。URL が localhost 以外になると **「実機操縦（cmd_vel のみ送信）」が自動でオン**になるので、オンのまま接続する（ステータスが「接続済み (実機操縦)」になる）。
+5. 接続後、WASDキーを押している間だけ `/aiformula_control/gamepad/cmd_vel` が 10Hz で送られ、実機の `twist_mux`（gamepad優先度150）に届いて実車が動く。キーを離す・ブラウザのフォーカスが外れると即座に速度 0 を送って送信を止める（実機のゲームパッド teleop_twist_joy と同じ振る舞い）。
+
+> ⚠️ **「実機操縦」を必ずオンにする:** オフのまま実機に接続すると、シミュレータ用のカメラ画像（無圧縮 RGB の注釈画像だけで約 8.6MB/s）・IMU・オドメトリ・CAN 車輪速・自律走行指令・`twist_mux/cmd_vel`（= motor_controller 入力）まで実機と同じトピック名で送ってしまい、実センサへの偽データ混入・twist_mux の優先度の迂回・rosbridge 飽和による操作遅延が起きる。
 
 > ⚠️ **接続断時の挙動:** Mac⇔Jetson間の無線接続が切れて `gamepad` トピックが 0.3 秒以上途絶えると、`twist_mux`（`launchers/sample_launchers/config/twist_mux.yaml`）は自動的に次に優先度の高い入力へフォールバックします。`bringup-all`（自律走行スタック起動）で使用している場合、これは無操作停止ではなく自動運転（`mpc`、優先度50）への切り替わりを意味するため、意図しない挙動に注意してください。
 

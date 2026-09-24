@@ -458,6 +458,24 @@ window.addEventListener('keyup', (e) => {
   if (keyEls[e.code]) keyEls[e.code].classList.remove('active');
 });
 
+// キーを押したまま別タブ/別ウィンドウに移ると keyup が届かず、押しっぱなし
+// 扱いのまま残る (実機操縦中なら前進指令を送り続ける)。フォーカスを失った
+// 時点で全キーを離した扱いにし、実機操縦中は即座に停止指令を送る
+// (非表示タブでは requestAnimationFrame が間引かれ、通常の送信ループを
+// 待つと停止が遅れるため)。
+function releaseAllKeys() {
+  keys.forward = keys.backward = keys.left = keys.right = false;
+  Object.values(keyEls).forEach((el) => el.classList.remove('active'));
+  if (teleopOnly && cmdVelTopic) {
+    publishCmdVel(0, 0);
+    teleopStopRemaining = TELEOP_STOP_REPEAT;
+  }
+}
+window.addEventListener('blur', releaseAllKeys);
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'hidden') releaseAllKeys();
+});
+
 // ---------------------------------------------------------------------------
 // rosbridge connection (roslib.js, loaded globally as ROSLIB via <script>)
 // ---------------------------------------------------------------------------
@@ -570,6 +588,35 @@ const SIX_LANE_TARGET_PATH_TOPIC = '/aiformula_visualization/six_lane_planner/ta
 // 6レーン走行が白線の役割取り違えを検出したときの横位置 (レーン座標 F, std_msgs/Float64)。
 // lane_detector が購読して LineTracker を置き直す (tracker.seed_lane_position)。
 const SIX_LANE_RESEED_TOPIC = '/aiformula_control/six_lane_planner/lane_reseed';
+// 実機操縦モードの cmd_vel 送信。実機のゲームパッド (teleop_twist_joy: 有効
+// ボタンを押している間だけ publish し、離すとゼロを送る) と同じ振る舞いにする:
+// キーを押している間だけ現在の速度を送り、離したらゼロを数回送って送信を止める。
+// 以降は実機の twist_mux が gamepad 入力をタイムアウト (0.3s) させ、下位の
+// 入力 (自律走行など) に制御が戻る。シミュレータの車も同時に停止させて、
+// 画面上の車と実機への指令を一致させる (惰性で走り続ける速度を送らない)。
+const TELEOP_STOP_REPEAT = 3;
+let teleopStopRemaining = 0;
+
+function publishTeleopCmdVel() {
+  if (!cmdVelTopic) return;
+  if (keys.forward || keys.backward || keys.left || keys.right) {
+    publishCmdVel(physics.v, physics.omega);
+    teleopStopRemaining = TELEOP_STOP_REPEAT;
+    return;
+  }
+  physics.v = 0;
+  physics.omega = 0;
+  if (teleopStopRemaining > 0) {
+    publishCmdVel(0, 0);
+    teleopStopRemaining -= 1;
+  } else {
+    // 送信停止中はローカルの cmd_vel タイムアウト (isCmdVelTimedOut) を
+    // 解除しておく。残したままだと次のキー入力が NO_KEYS 扱いで無視され、
+    // 二度と publish されなくなる。
+    lastCmdVelPublishTime = null;
+  }
+}
+
 // twist_mux's arbitrated output (topic_list.yaml control.speed_command.multiplexed).
 const MUXED_CMD_VEL_TOPIC = '/aiformula_control/twist_mux/cmd_vel';
 // 信号機: traffic_light_distance_node (traffic_light_params.yaml base_topic) の出力と、
@@ -614,7 +661,30 @@ const SIM_START_POSE = { x: 0, y: 0, yaw: 0 };
 const urlInput = document.getElementById('ros-url');
 const topicInput = document.getElementById('ros-topic');
 const connectBtn = document.getElementById('connect-btn');
+const teleopOnlyInput = document.getElementById('ros-teleop-only');
 const statusDot = document.getElementById('status-dot');
+
+// 実機操縦モード: rosbridge の接続先が実機 (Jetson) のとき、キー操作中の
+// cmd_vel (gamepad 入力) *だけ* を送る。通常の接続はシミュレータ用に
+// カメラ画像 (JPEG + 無圧縮RGBの注釈画像)・IMU・オドメトリ・CAN車輪速・
+// twist_mux出力までを実機と同じトピック名で publish するため、実機に
+// 繋ぐと (1) 実センサのトピックに偽データが混ざり、(2) twist_mux 出力
+// (= motor_controller 入力) を直接上書きしてしまい、(3) 画像で rosbridge
+// が飽和して cmd_vel が数百ms遅延する。接続先 URL が localhost 以外なら
+// 既定でオン (接続前ならいつでも手動で切替可)。
+let teleopOnly = false;
+function isLocalRosUrl(url) {
+  try {
+    return ['localhost', '127.0.0.1', '[::1]', '::1'].includes(new URL(url).hostname);
+  } catch (err) {
+    return true;
+  }
+}
+function syncTeleopOnlyDefault() {
+  if (!ros) teleopOnlyInput.checked = !isLocalRosUrl(urlInput.value);
+}
+urlInput.addEventListener('input', syncTeleopOnlyDefault);
+syncTeleopOnlyDefault();
 const statusText = document.getElementById('status-text');
 
 function setStatus(state, label) {
@@ -623,6 +693,7 @@ function setStatus(state, label) {
 }
 
 function clearRosTopics() {
+  teleopOnlyInput.disabled = false;
   cmdVelTopic = null;
   compressedImageTopic = null;
   imuTopic = null;
@@ -668,9 +739,11 @@ function connect() {
   connectBtn.disabled = true;
 
   ros = new ROSLIB.Ros({ url: urlInput.value });
+  teleopOnly = teleopOnlyInput.checked;
+  teleopOnlyInput.disabled = true;
 
   ros.on('connection', () => {
-    setStatus('connected', '接続済み');
+    setStatus('connected', teleopOnly ? '接続済み (実機操縦)' : '接続済み');
     connectBtn.disabled = false;
     connectBtn.textContent = '切断';
     cmdVelTopic = new ROSLIB.Topic({
@@ -678,6 +751,9 @@ function connect() {
       name: topicInput.value,
       messageType: 'geometry_msgs/msg/Twist',
     });
+    // 実機操縦: cmd_vel 以外は一切 publish / subscribe しない (上のコメント参照)。
+    // 他の *Topic は null のままなので各 publish 関数は no-op になる。
+    if (teleopOnly) return;
     compressedImageTopic = new ROSLIB.Topic({
       ros,
       name: IMAGE_TOPIC_NAME,
@@ -2321,7 +2397,9 @@ function animate() {
 
   if (fastForwarding) {
     // fastForward() owns the physics/localizer while it runs.
-  } else if (activeSource === 'mpc') {
+  } else if (activeSource === 'mpc' && !teleopOnly) {
+    // 実機操縦中はシミュレータ側の自律走行指令で車を動かさない (その速度が
+    // キー押下時の初速として実機の gamepad cmd_vel に乗ってしまうため)。
     physics.stepAutonomous(latestAutonomousCmd.v, latestAutonomousCmd.omega, dt);
   } else {
     physics.step(effectiveKeys, dt);
@@ -2389,8 +2467,12 @@ function animate() {
   publishAccumulator += dt;
   if (publishAccumulator >= PUBLISH_INTERVAL) {
     publishAccumulator = 0;
-    publishCmdVel(physics.v, physics.omega);
-    publishMuxedCmdVel(physics.v, physics.omega);
+    if (teleopOnly) {
+      publishTeleopCmdVel();
+    } else {
+      publishCmdVel(physics.v, physics.omega);
+      publishMuxedCmdVel(physics.v, physics.omega);
+    }
   }
 
   // Camera capture/publish + the oit_navigation lane pipeline itself run on a
