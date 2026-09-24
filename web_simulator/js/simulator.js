@@ -647,6 +647,14 @@ const TWIST_MUX_SOURCES = [
   { name: 'mpc', priority: 50, timeoutSec: 0.3 },
 ];
 
+// 実機 motor_controller の指令タイムアウト (control/motor_controller/config/
+// motor_controller.yaml の cmd_timeout)。twist_mux は全入力がタイムアウトしても
+// 何も出さないので、motor_controller は最後に受けた指令をこの時間だけ保持し、
+// 過ぎたら RPM 0 を送る。シミュレータでも「どの入力も選ばれていない」間は
+// 最後の twist_mux 出力を保持 → この時間を過ぎたら速度 0 へ減速させる。
+const MOTOR_CMD_TIMEOUT_SEC = 0.5;
+let lastMuxOutput = { v: 0, omega: 0, timeMs: -Infinity };
+
 // Navigator parameters = navigation_params.yaml defaults, except speed /
 // angular limits: per instruction, those stay the simulator's own WASD
 // limits (MAX_SPEED=1.5, MAX_ANGULAR=1.2) rather than the real vehicle's.
@@ -2422,14 +2430,23 @@ function animate() {
   if (effectiveKeys.forward || effectiveKeys.backward || effectiveKeys.left || effectiveKeys.right) {
     twistMux.update('gamepad', physics.v, physics.omega, performance.now());
   }
-  const { activeSource } = twistMux.mux(performance.now());
+  const muxNowMs = performance.now();
+  const { activeSource } = twistMux.mux(muxNowMs);
 
   if (fastForwarding) {
     // fastForward() owns the physics/localizer while it runs.
   } else if (activeSource === 'mpc') {
     physics.stepAutonomous(latestAutonomousCmd.v, latestAutonomousCmd.omega, dt);
-  } else {
+    lastMuxOutput = { v: latestAutonomousCmd.v, omega: latestAutonomousCmd.omega, timeMs: muxNowMs };
+  } else if (activeSource === 'gamepad') {
     physics.step(effectiveKeys, dt);
+    lastMuxOutput = { v: physics.v, omega: physics.omega, timeMs: muxNowMs };
+  } else if ((muxNowMs - lastMuxOutput.timeMs) / 1000 <= MOTOR_CMD_TIMEOUT_SEC) {
+    // 全入力タイムアウト直後: 実機 motor_controller は最後の指令を保持している
+    physics.stepAutonomous(lastMuxOutput.v, lastMuxOutput.omega, dt);
+  } else {
+    // motor_controller の cmd_timeout 経過後: RPM 0 (停止まで減速)
+    physics.stepAutonomous(0, 0, dt);
   }
 
   if (!fastForwarding) advanceSignal(dt);

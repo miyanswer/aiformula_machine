@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import time
 from typing import List
 import numpy as np
 from enum import IntEnum
@@ -36,11 +37,21 @@ class MotorController(Node):
         self.frame_msg.id = 0x210                      # MotorController CAN ID : 0x210
         self.frame_msg.dlc = 8                         # Data length
 
+        # 指令タイムアウト (安全策): twist_mux は入力が全て途絶えても何も publish
+        # しないため、この watchdog が無いと最後に受けた速度指令を CAN に送り
+        # 続ける (Mac 遠隔操作中に Wi-Fi が切れると、その速度のまま走り続ける)。
+        # cmd_timeout 秒 cmd が来なければ RPM 0 を送る。未受信の起動直後も 0。
+        self.stop_data = self.toCanCmd(0.0) + self.toCanCmd(0.0)
+        self.frame_msg.data = self.stop_data
+        self.last_cmd_time = None
+        self.cmd_timed_out = True
+
     def get_ros_params(self):
         self.diameter = get_ros_parameter(self, "wheel.diameter")
         self.tread = get_ros_parameter(self, "wheel.tread")
         self.gear_ratio = get_ros_parameter(self, "wheel.gear_ratio")
         self.publish_timer_loop_duration = get_ros_parameter(self, "publish_timer_loop_duration")
+        self.cmd_timeout = get_ros_parameter(self, "cmd_timeout")
 
     def twist_callback(self, msg):
         rpm = self.toRefRPM(msg.linear.x, msg.angular.z)
@@ -48,8 +59,17 @@ class MotorController(Node):
         cmd_right = self.toCanCmd(rpm[DriveWheel.RIGHT])
         can_data = cmd_right + cmd_left
         self.frame_msg.data = can_data
+        self.last_cmd_time = time.monotonic()
+        if self.cmd_timed_out:
+            self.get_logger().info("Speed command received.")
+        self.cmd_timed_out = False
 
     def publish_canframe_callback(self):
+        if not self.cmd_timed_out and time.monotonic() - self.last_cmd_time > self.cmd_timeout:
+            self.cmd_timed_out = True
+            self.frame_msg.data = self.stop_data
+            self.get_logger().warn(
+                f"No speed command for {self.cmd_timeout:.2f} s -> sending RPM 0 (command timeout)")
         self.can_pub.publish(self.frame_msg)
 
     # Feedback CAN Frame reception

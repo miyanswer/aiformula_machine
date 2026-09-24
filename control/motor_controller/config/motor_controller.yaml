@@ -1,4 +1,7 @@
 /**:
   ros__parameters:
     publish_timer_loop_duration: 0.01 #[sec]
+    # 速度指令 (twist_mux 出力) がこの時間届かなければ RPM 0 を送る。
+    # twist_mux の各入力タイムアウト (0.3 s) より長くする。
+    cmd_timeout: 0.5 #[sec]
       

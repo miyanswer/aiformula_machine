@@ -153,6 +153,8 @@ bash bash/teleop_keyboard.sh
 > ⚠️ **「実機操縦」を必ずオンにする:** オフのまま実機に接続すると、シミュレータ用のカメラ画像（無圧縮 RGB の注釈画像だけで約 8.6MB/s）・IMU・オドメトリ・CAN 車輪速・自律走行指令・`twist_mux/cmd_vel`（= motor_controller 入力）まで実機と同じトピック名で送ってしまい、実センサへの偽データ混入・twist_mux の優先度の迂回・rosbridge 飽和による操作遅延が起きる。
 
 > ⚠️ **接続断時の挙動:** Mac⇔Jetson間の無線接続が切れて `gamepad` トピックが 0.3 秒以上途絶えると、`twist_mux`（`launchers/sample_launchers/config/twist_mux.yaml`）は自動的に次に優先度の高い入力へフォールバックします。`bringup-all`（自律走行スタック起動）で使用している場合、これは無操作停止ではなく自動運転（`mpc`、優先度50）への切り替わりを意味するため、意図しない挙動に注意してください。
+>
+> 🛑 **全入力が途絶えた場合:** `twist_mux` は入力が全てタイムアウトしても何も出力しないため、`motor_controller` に指令タイムアウト（`control/motor_controller/config/motor_controller.yaml` の `cmd_timeout: 0.5` 秒）を設けています。速度指令が 0.5 秒届かなければ RPM 0 を送って停止します（以前は最後の指令を保持し続け、Wi-Fi 断でそのまま走り続けていました）。web_simulator も同じ挙動（0.5 秒保持→停止）を再現します。
 
 ---
 
