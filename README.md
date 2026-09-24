@@ -148,6 +148,7 @@ bash bash/teleop_keyboard.sh
 3. Macのブラウザで `web_simulator/index.html` を開く（`python3 web_simulator/serve.py` などで配信するか、ファイルを直接開く）。
 4. 画面上部の「rosbridge URL」欄を `ws://<JetsonのLAN IP>:9090` に書き換える（デフォルトは `ws://localhost:9090` になっている）。URL が localhost 以外になると **「実機操縦（cmd_vel のみ送信）」が自動でオン**になるので、オンのまま接続する（ステータスが「接続済み (実機操縦)」になる）。
 5. 接続後、WASDキーを押している間だけ `/aiformula_control/gamepad/cmd_vel` が 10Hz で送られ、実機の `twist_mux`（gamepad優先度150）に届いて実車が動く。キーを離す・ブラウザのフォーカスが外れると即座に速度 0 を送って送信を止める（実機のゲームパッド teleop_twist_joy と同じ振る舞い）。
+6. HUD の「自動運転: ON」にすると、シミュレータ自身の白線検出・走行計画が出す指令を `/aiformula_control/extremum_seeking_mpc/cmd_vel`（twist_mux の mpc、優先度50）へ約 15Hz で送り、実機をシミュレータの車と同じ指令で走らせる。WASD を押すと gamepad が優先して手動に切り替わり、離して 0.3 秒後に自動運転へ戻る（シミュレータ・実機とも同じ）。「自動運転: OFF」やタブを隠したときは mpc に速度 0 を送って止める。このとき実機側で `bringup-all`（実機の lane_navigator も同じ mpc トピックに出す）を同時に動かさないこと（`bringup-hw` で使う）。
 
 > ⚠️ **「実機操縦」を必ずオンにする:** オフのまま実機に接続すると、シミュレータ用のカメラ画像（無圧縮 RGB の注釈画像だけで約 8.6MB/s）・IMU・オドメトリ・CAN 車輪速・自律走行指令・`twist_mux/cmd_vel`（= motor_controller 入力）まで実機と同じトピック名で送ってしまい、実センサへの偽データ混入・twist_mux の優先度の迂回・rosbridge 飽和による操作遅延が起きる。
 

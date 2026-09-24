@@ -473,7 +473,11 @@ function releaseAllKeys() {
 }
 window.addEventListener('blur', releaseAllKeys);
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') releaseAllKeys();
+  if (document.visibilityState !== 'hidden') return;
+  releaseAllKeys();
+  // 非表示タブでは描画 (=シミュレータの車) が止まり、自律走行指令も古い画面から
+  // しか計算されないため、実機への mpc 指令も止める (publishAutonomousCmd 側でも抑止)。
+  if (autonomousMode) publishAutonomousStop();
 });
 
 // ---------------------------------------------------------------------------
@@ -604,8 +608,10 @@ function publishTeleopCmdVel() {
     teleopStopRemaining = TELEOP_STOP_REPEAT;
     return;
   }
-  physics.v = 0;
-  physics.omega = 0;
+  if (!autonomousMode) {
+    physics.v = 0;
+    physics.omega = 0;
+  }
   if (teleopStopRemaining > 0) {
     publishCmdVel(0, 0);
     teleopStopRemaining -= 1;
@@ -751,9 +757,13 @@ function connect() {
       name: topicInput.value,
       messageType: 'geometry_msgs/msg/Twist',
     });
-    // 実機操縦: cmd_vel 以外は一切 publish / subscribe しない (上のコメント参照)。
-    // 他の *Topic は null のままなので各 publish 関数は no-op になる。
-    if (teleopOnly) return;
+    // 実機操縦: gamepad cmd_vel と、自動運転 ON 時の extremum_seeking_mpc/cmd_vel
+    // 以外は一切 publish / subscribe しない (上のコメント参照)。他の *Topic は
+    // null のままなので各 publish 関数は no-op になる。
+    if (teleopOnly) {
+      autonomousCmdVelTopic = new ROSLIB.Topic({ ros, name: AUTONOMOUS_CMD_VEL_TOPIC, messageType: 'geometry_msgs/msg/Twist' });
+      return;
+    }
     compressedImageTopic = new ROSLIB.Topic({
       ros,
       name: IMAGE_TOPIC_NAME,
@@ -1266,6 +1276,7 @@ autonomousBtn.addEventListener('click', () => {
   autonomousBtn.textContent = `自動運転: ${autonomousMode ? 'ON' : 'OFF'}`;
   autonomousBtn.classList.toggle('active', autonomousMode);
   twistMux.setEnabled('mpc', autonomousMode);
+  if (!autonomousMode) publishAutonomousStop();
 });
 
 const conePlaceBtn = document.getElementById('cone-place-btn');
@@ -1711,6 +1722,32 @@ function navMapLayers() {
 // ---------------------------------------------------------------------------
 let lanePipelineBusy = false;
 
+// 自律走行指令 (extremum_seeking_mpc/cmd_vel = 実機 twist_mux の "mpc" 入力) の送信。
+// 通常モードは従来どおりパイプラインの出力を常に送る。実機操縦モードでは
+// 「自動運転: ON」でシミュレータ自身の検出器が走っているときだけ送り、実機に
+// シミュレータの車と同じ指令を与える (ROS2連携=実機ノードが指令元の時・早送り中・
+// タブ非表示で画面が止まっている時は送らない)。
+function publishAutonomousCmd(cmd) {
+  if (!autonomousCmdVelTopic) return;
+  if (teleopOnly && !(autonomousMode && detectorMode !== 'ros2' && !fastForwarding
+      && document.visibilityState !== 'hidden')) return;
+  autonomousCmdVelTopic.publish(
+    new ROSLIB.Message({ linear: { x: cmd.v, y: 0, z: 0 }, angular: { x: 0, y: 0, z: cmd.omega } })
+  );
+}
+
+// 実機の motor_controller は最後に受けた指令を保持し続け、twist_mux も入力が
+// 途絶えただけでは 0 を出さない。実機操縦中に自動運転を止めるときは、mpc 入力に
+// 明示的に速度 0 を送って止める。
+function publishAutonomousStop() {
+  if (!teleopOnly || !autonomousCmdVelTopic) return;
+  for (let i = 0; i < TELEOP_STOP_REPEAT; i += 1) {
+    autonomousCmdVelTopic.publish(
+      new ROSLIB.Message({ linear: { x: 0, y: 0, z: 0 }, angular: { x: 0, y: 0, z: 0 } })
+    );
+  }
+}
+
 function stepNavigator(tracked, now = performance.now() / 1000, sixLaneLines = null) {
   if (navMethod === 'sixlane') return stepSixLane(tracked ? sixLaneLines : null, now);
   const dt = lastNavStepTime === null ? 0 : Math.min(now - lastNavStepTime, 0.5);
@@ -1738,11 +1775,7 @@ function stepNavigator(tracked, now = performance.now() / 1000, sixLaneLines = n
 
   latestAutonomousCmd = { v: cmd.v, omega: cmd.omega };
   twistMux.update('mpc', cmd.v, cmd.omega, performance.now());
-  if (autonomousCmdVelTopic) {
-    autonomousCmdVelTopic.publish(
-      new ROSLIB.Message({ linear: { x: cmd.v, y: 0, z: 0 }, angular: { x: 0, y: 0, z: cmd.omega } })
-    );
-  }
+  publishAutonomousCmd(cmd);
   const st = laneNavigator.status();
   showNavStatus(st);
   if (laneTrackerStatusTopic) laneTrackerStatusTopic.publish(new ROSLIB.Message({ data: JSON.stringify(st) }));
@@ -1775,11 +1808,7 @@ function stepSixLane(lines, now) {
   const cmd = applyTrafficLightStop(now, dt, vMeas, { v: avoided.v, omega: avoided.omega });
   latestAutonomousCmd = cmd;
   twistMux.update('mpc', cmd.v, cmd.omega, performance.now());
-  if (autonomousCmdVelTopic) {
-    autonomousCmdVelTopic.publish(
-      new ROSLIB.Message({ linear: { x: cmd.v, y: 0, z: 0 }, angular: { x: 0, y: 0, z: cmd.omega } })
-    );
-  }
+  publishAutonomousCmd(cmd);
   if (sixLaneStatusTopic) sixLaneStatusTopic.publish(new ROSLIB.Message({ data: JSON.stringify(sixLaneStatusJson(st)) }));
   if (sixLaneTargetPathTopic && lines && st.targetLane) {
     const pts = [];
@@ -2397,9 +2426,7 @@ function animate() {
 
   if (fastForwarding) {
     // fastForward() owns the physics/localizer while it runs.
-  } else if (activeSource === 'mpc' && !teleopOnly) {
-    // 実機操縦中はシミュレータ側の自律走行指令で車を動かさない (その速度が
-    // キー押下時の初速として実機の gamepad cmd_vel に乗ってしまうため)。
+  } else if (activeSource === 'mpc') {
     physics.stepAutonomous(latestAutonomousCmd.v, latestAutonomousCmd.omega, dt);
   } else {
     physics.step(effectiveKeys, dt);
