@@ -379,7 +379,7 @@ zed-check:
 	$(ENSURE_UP)
 	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
 		"ls -l /usr/local/zed/lib/libsl_zed.so* && \
-		 grep -h "set(PACKAGE_VERSION " /usr/local/zed/zed-config-version.cmake; \
+		 grep -h 'set(PACKAGE_VERSION ' /usr/local/zed/zed-config-version.cmake; \
 		 test -S /tmp/argus_socket && echo '[OK] /tmp/argus_socket' || echo '[NG] /tmp/argus_socket missing (host: sudo systemctl restart nvargus-daemon zed_x_daemon)'; \
 		 ip link show can0 >/dev/null 2>&1 && echo '[OK] can0 visible' || echo '[NG] can0 not visible'; \
 		 ls /dev/ttyUSB0 >/dev/null 2>&1 && echo '[OK] /dev/ttyUSB0' || echo '[NG] /dev/ttyUSB0 missing'"
