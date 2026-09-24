@@ -88,10 +88,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # a given dustynv tag ships is not guaranteed across versions.
 # ---------------------------------------------------------------------------
 WORKDIR /opt/extra_ros_ws/src
-# rosbridge_suite: `ros2` ブランチは Rolling/Jazzy 向けの開発ブランチ (v4.x)。
-# Humble 向けリリースは rosdistro の humble/distribution.yaml が指す
-# `humble` ブランチなので、そちらを使う。
-RUN git clone --branch humble https://github.com/RobotWebTools/rosbridge_suite.git && \
+# rosbridge_suite は 2.0.0 タグに固定する。dustynv の Humble は Ubuntu 20.04
+# (Python 3.8) 上のソースビルドで、新しい版は動かない (実機で確認):
+#  - `ros2` ブランチ (v4.x, Rolling/Jazzy 向け): typing.TypeAlias (3.10+) と
+#    rclpy.experimental.EventsExecutor (Jazzy+) で rosapi / rosbridge_websocket が即死
+#  - `humble` ブランチ 2.0.2〜2.0.8: typing.ParamSpec (3.10+), str.removeprefix (3.9+)
+# 2.0.0 はこれらを含まず、使う rclpy API も全て Humble に存在する。
+RUN git clone --branch 2.0.0 --depth 1 https://github.com/RobotWebTools/rosbridge_suite.git && \
     git clone --branch ros2 https://github.com/ros/xacro.git && \
     git clone --branch humble-devel https://github.com/cra-ros-pkg/robot_localization.git && \
     git clone --branch humble-devel https://github.com/ros/angles.git && \
