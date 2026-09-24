@@ -21,6 +21,13 @@ def get_zed_node(context):
     grab_resolution_val = LaunchConfiguration("grab_resolution").perform(context)
     grab_frame_rate_val = LaunchConfiguration("grab_frame_rate").perform(context)
     is_valid_fps = check_zedx_available_fps(grab_resolution_val, grab_frame_rate_val)
+    # ZED X (GMSL) は取得フレームを EGL 経由で CUDA に渡す。DISPLAY が noVNC 用の
+    # Xvfb (:1, docker/entrypoint.sh) を指していると NVIDIA EGL が使えず
+    # "No EGL Display" → grab が全てタイムアウトしてノードが停止するため、
+    # このノードにだけ DISPLAY を渡さない (EGL はディスプレイ無しの
+    # デバイスプラットフォームで動く)。
+    zed_env = dict(context.environment)
+    zed_env.pop("DISPLAY", None)
     return (
         # ZED Wrapper node
         Node(
@@ -29,6 +36,7 @@ def get_zed_node(context):
             executable="zed_wrapper",
             name="zed_node",
             output="screen",
+            env=zed_env,
             condition=IfCondition(str(is_valid_fps)),
             parameters=[
                 # YAML files

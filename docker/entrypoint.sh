@@ -11,6 +11,13 @@ if [ -f "/aiformula_machine/install/setup.bash" ]; then
     source "/aiformula_machine/install/setup.bash"
 fi
 
+# Jetson (docker/compose.jetson.yaml): ホストの /tmp が /host_tmp にある場合、
+# ZED X (GMSL) 用の argus ソケットをシンボリックリンクで参照する。
+# nvargus-daemon 再起動でソケットが作り直されても追従できる。
+if [ -d /host_tmp ] && [ ! -e /tmp/argus_socket ] && [ ! -L /tmp/argus_socket ]; then
+    ln -s /host_tmp/argus_socket /tmp/argus_socket
+fi
+
 # Set virtual display
 export DISPLAY="${DISPLAY:-:1}"
 

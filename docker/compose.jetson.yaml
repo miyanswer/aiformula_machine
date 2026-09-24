@@ -9,6 +9,10 @@ services:
     # ホストネットワークを使う (compose.yaml の ports: はこのモードでは
     # Docker により無視され、警告が出るだけ)。
     network_mode: host
+    # compose.yaml の hostname (aiformula-machine) はホストの /etc/hosts に
+    # 無いため、sudo が毎回 "unable to resolve host" を出す。
+    extra_hosts:
+      - "aiformula-machine:127.0.1.1"
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
@@ -23,7 +27,13 @@ services:
       # Stereolabs 公式の「ZED X を Docker で使う」手順と同じマウント。
       # カメラ本体はホストの zed_x_daemon + nvargus-daemon が握っており、
       # コンテナ内 SDK は argus ソケット経由でフレームを受け取る。
-      - /tmp/argus_socket:/tmp/argus_socket
+      # nvargus-daemon は再起動のたびに /tmp/argus_socket を作り直す (別 inode)
+      # ため、ソケットファイル単体を bind mount すると再起動後に古い inode を
+      # 指したまま "Connecting to nvargus-daemon failed: Connection refused"
+      # になる。ホストの /tmp をディレクトリごと /host_tmp にマウントし、
+      # docker/entrypoint.sh で /tmp/argus_socket -> /host_tmp/argus_socket の
+      # シンボリックリンクを張る (connect 毎にパス解決されるので常に最新)。
+      - /tmp:/host_tmp
       - /var/nvidia/nvcam/settings:/var/nvidia/nvcam/settings
       - /etc/systemd/system/zed_x_daemon.service:/etc/systemd/system/zed_x_daemon.service:ro
       # キャリブレーションファイルと AI モデルはホストの SDK と共有
