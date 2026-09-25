@@ -466,6 +466,22 @@ export function correctedPoseSequence(samples, yawDrift) {
   return poses;
 }
 
+/**
+ * 周回完了時点の odom -> map 補正 [tx, ty, theta]。2 周目の LaneNavigator.corr の初期値。
+ * 方位ドリフト補正を掛けた地図は「ドリフトを取り除いた座標」なので、1 周分ドリフトした今の odom 姿勢を
+ * そのまま地図上の位置として使うと 1 周目の終わりの断面で (位置 ~2m, 方位 = yawDrift) ずれる。
+ * 最後の記録断面の odom 姿勢を補正後の姿勢に移す剛体変換を返す (補正しないときは恒等変換)。
+ * course_map.py odom_to_map_correction() と同じ計算。
+ */
+export function odomToMapCorrection(samples, p, yawDrift) {
+  if (!samples.length || !yawDriftApplied(p, yawDrift)) return [0, 0, 0];
+  const po = samples[samples.length - 1].pose;
+  const pc = correctedPoseSequence(samples, yawDrift)[samples.length - 1];
+  const th = pc[2] - po[2];
+  const c = Math.cos(th), s = Math.sin(th);
+  return [pc[0] - (c * po[0] - s * po[1]), pc[1] - (s * po[0] + c * po[1]), th];
+}
+
 function correctYawDrift(samples, yawDrift, xRec) {
   const poses = correctedPoseSequence(samples, yawDrift);
   return {
@@ -770,6 +786,7 @@ export class LaneNavigator {
     this.cmd = { v: 0, omega: 0 };
     this.curvFilt = null; // 1周目の減速用曲率 (ローパス後)
     this.corr = [0, 0, 0];
+    this.corrInit = [0, 0, 0]; // RACING 開始時の corr (方位ドリフト補正した地図に今の姿勢を合わせる)
     this.lastLinesTime = null;
     this.lastIndex = null;
     this.lapStartS = 0;
@@ -856,6 +873,7 @@ export class LaneNavigator {
     this.state = OPTIMIZING;
     try {
       this.courseMap = buildCourseMap(this.recorder.samples, this.startPose, this.p.lap, this.yawDrift, this.p.recorder.xRec);
+      this.corrInit = odomToMapCorrection(this.recorder.samples, this.p.lap, this.yawDrift);
       this._startRacing();
     } catch (e) {
       this.state = STOPPED;
@@ -867,7 +885,7 @@ export class LaneNavigator {
     const m = this.courseMap;
     this.raceline = optimizeRaceline(m.left, m.right, this.p.raceline);
     this.follower = new RacelineFollower(this.raceline.points, this.raceline.speed, this.p.tracker);
-    this.corr = [0, 0, 0];
+    this.corr = [...this.corrInit];
     this.state = RACING;
     this.lap = 2;
     this.lastIndex = null;

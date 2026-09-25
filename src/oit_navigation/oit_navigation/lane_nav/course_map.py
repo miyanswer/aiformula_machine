@@ -102,6 +102,22 @@ def corrected_poses(samples: List[BoundarySample], yaw_drift: float) -> List[np.
     return poses
 
 
+def odom_to_map_correction(samples: List[BoundarySample], p: LapDetectorParams, yaw_drift: float) -> np.ndarray:
+    """周回完了時点の odom -> map 補正 (tx, ty, theta). 2 周目の LaneNavigator.corr の初期値.
+
+    方位ドリフト補正を掛けた地図は「ドリフトを取り除いた座標」なので, 1 周分ドリフトした今の odom 姿勢を
+    そのまま地図上の位置として使うと, 1 周目の終わりの断面で (位置 ~2m, 方位 = yaw_drift) ずれる.
+    最後の記録断面の odom 姿勢を, 補正後の姿勢に移す剛体変換を返す (補正しないときは恒等変換).
+    web_simulator/js/lane_navigator.js の odomToMapCorrection() と同じ計算."""
+    if not samples or not yaw_drift_applied(p, yaw_drift):
+        return np.zeros(3)
+    po = np.asarray(samples[-1].pose, float)
+    pc = corrected_poses(samples, yaw_drift)[-1]
+    th = float(pc[2] - po[2])
+    c, s = math.cos(th), math.sin(th)
+    return np.array([pc[0] - (c * po[0] - s * po[1]), pc[1] - (s * po[0] + c * po[1]), th])
+
+
 def correct_yaw_drift(samples: List[BoundarySample], yaw_drift: float, x_rec: float):
     """方位ドリフト yaw_drift [rad] (1 周分) を走行距離比例で取り除いた左右境界点を返す."""
     poses = corrected_poses(samples, yaw_drift)

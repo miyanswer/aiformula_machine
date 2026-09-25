@@ -128,6 +128,59 @@ def test_qp_navigation_avoids_cones_on_both_laps(bias, yaw_corr):
         assert np.hypot(path[:, 0] - cx, path[:, 1] - cy).min() > DEFLECT_CLEARANCE - 0.05
 
 
+@pytest.mark.parametrize("bias", [0.001, -0.001])
+def test_cone_clearance_is_seed_robust_under_heavy_gyro_bias(bias):
+    """大きなジャイロバイアス + 方位ドリフト補正で, 乱数シードを変えても 2 周目にコーンへ近づかない.
+
+    以前は方位ドリフト補正した地図 (ドリフトを除いた座標) に, 1 周分ドリフトした odom 姿勢をそのまま載せて
+    2 周目を始めていたため, 開始時に自己位置が ~2m / 0.15rad ずれ, 直線では白線照合で進行方向のずれが取れず
+    (ランドマーク照合のゲート 1.0m の外), 押し出したラインが前後にずれてコーンから 0.03m まで近づくシードがあった.
+
+    1 周目の周回検出 (odom が開始点の close_radius=2.5m 以内に戻る) は, 0.001 rad/s では 1 周後の odom の
+    ずれが 2.0-2.8m になり成立しないシードがある (コーン回避とは別の既知の限界. 実機は停止中にバイアスを推定するので
+    残差はこの 1/10 程度で, 成立しなければ finish_mapping で手動確定する). そこで判定を分け,
+    周回できたシードでは例外なく厳密に (0.5m) 判定し, 周回できたシードが十分あること (判定が空にならないこと) を確かめる.
+    """
+    cones = [(15.0, 0.0), (16.0, 24.4), (38.5, 13.0)]
+    closed = 0
+    for seed in range(1, 7):
+        nav, ca, clear = run_lap_with_cones(cones, bias=bias, yaw_corr=True, seed=seed)
+        if nav.state != RACING:
+            continue
+        closed += 1
+        assert len(ca.cone_map) == len(cones), seed
+        assert clear['MAPPING'] > 0.5 and clear[RACING] > 0.5, (seed, clear)
+        assert clear['max_lateral'] < 1.55, (seed, clear)
+    assert closed >= 4, closed
+
+
+def test_racing_starts_in_yaw_corrected_map_frame():
+    """方位ドリフト補正を掛けたとき, 2 周目開始時の odom -> map 補正は最後の記録断面の odom 姿勢を
+    補正後の姿勢へ移す (補正を掛けないときは恒等変換)."""
+    from oit_navigation.lane_nav.boundary_recorder import BoundarySample
+    from oit_navigation.lane_nav.course_map import LapDetectorParams, corrected_poses, odom_to_map_correction
+    # 半径 10m の円を 1 周. odom の方位は走行距離に比例して 0.1 rad ドリフトしている
+    drift = 0.1
+    samples, pose = [], np.array([0.0, 0.0, 0.0])
+    n, r = 60, 10.0
+    ds = 2 * math.pi * r / n
+    for i in range(n + 1):
+        samples.append(BoundarySample(i * ds, tuple(pose), (0.0, 0.0), (0.0, 0.0), 0.1, True, True))
+        yaw_rate = 1.0 / r + drift / (n * ds)
+        pose = pose + np.array([ds * math.cos(pose[2] + 0.5 * yaw_rate * ds), ds * math.sin(pose[2] + 0.5 * yaw_rate * ds),
+                                yaw_rate * ds])
+    p = LapDetectorParams(yaw_drift_correction=True)
+    corr = odom_to_map_correction(samples, p, drift)
+    nav = LaneNavigator(NavigatorParams())
+    nav.corr = corr
+    mapped = np.array(nav.map_pose(samples[-1].pose))
+    assert np.allclose(mapped, corrected_poses(samples, drift)[-1], atol=1e-9)
+    assert corr[2] == pytest.approx(-drift)
+    assert np.hypot(mapped[0], mapped[1]) < 0.2        # ドリフトを除くと 1 周後はほぼ開始点に戻る
+    assert np.hypot(samples[-1].pose[0], samples[-1].pose[1]) > 0.5   # odom のままではずれている
+    assert np.all(odom_to_map_correction(samples, LapDetectorParams(), drift) == 0.0)
+
+
 def test_without_avoidance_the_car_hits_the_centre_cone():
     """比較: 回避なしだと 1 周目 (中央線の上を走る) で中央線上のコーンに当たる (テストが意味を持つことの確認)."""
     _, _, clear = run_lap_with_cones([(15.0, 0.0)], seconds=40.0, avoid=False)

@@ -20,7 +20,7 @@ from typing import Optional, Tuple
 import numpy as np
 
 from .boundary_recorder import BoundaryRecorder, RecorderParams
-from .course_map import CourseMap, LapDetectorParams, build_course_map, lap_completed
+from .course_map import CourseMap, LapDetectorParams, build_course_map, lap_completed, odom_to_map_correction
 from .line_tracker import TrackedLines
 from .path_tracker import RacelineFollower, TrackerParams, arc_curvature, rate_limit
 from .raceline_qp import Raceline, RacelineParams, optimize_raceline
@@ -80,6 +80,7 @@ class LaneNavigator:
         self.cmd = Command(0.0, 0.0)
         self._curv_filt: Optional[float] = None   # 1 周目の減速用曲率 (ローパス後)
         self.corr = np.zeros(3)            # 2 周目の自己位置補正 odom -> map (tx, ty, theta)
+        self._corr_init = np.zeros(3)      # RACING 開始時の corr (方位ドリフト補正した地図に今の姿勢を合わせる)
         self.last_lines_time: Optional[float] = None
         self.last_index: Optional[int] = None
         self.lap_start_s = 0.0
@@ -90,6 +91,7 @@ class LaneNavigator:
         """保存済みマップから直接 RACING を始める (開始位置・向きは 1 周目の開始時と同じにすること)."""
         self.course_map = course_map
         self.start_pose = tuple(course_map.start_pose)
+        self._corr_init = np.zeros(3)      # 1 周目の開始姿勢から再開するので odom = map
         self._start_racing()
 
     def finish_mapping(self, pose, s: float) -> bool:
@@ -205,6 +207,7 @@ class LaneNavigator:
         try:
             self.course_map = build_course_map(self.recorder.samples, self.start_pose, self.p.lap,
                                                self.yaw_drift, self.p.recorder.x_rec)
+            self._corr_init = odom_to_map_correction(self.recorder.samples, self.p.lap, self.yaw_drift)
             if self.async_optimize:
                 self.message = f"QP 計算中: 断面 {len(self.course_map.left)} 点"
                 return
@@ -228,7 +231,7 @@ class LaneNavigator:
         m = self.course_map
         self.raceline = raceline if raceline is not None else optimize_raceline(m.left, m.right, self.p.raceline)
         self.follower = RacelineFollower(self.raceline.points, self.raceline.speed, self.p.tracker)
-        self.corr = np.zeros(3)
+        self.corr = self._corr_init.copy()
         self.state = RACING
         self.lap = 2
         self.last_index = None
