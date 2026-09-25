@@ -117,7 +117,9 @@ lane_navigator:
     cone_avoidance.landmark_correction: true # 2 周目: 見えたコーンと地図のコーンの照合で自己位置を補正
     cone_avoidance.landmark_gate: 1.0        # [m] これより離れた照合は捨てる
 
-    lines_timeout: 0.8               # 1 周目: 中央線がこれ以上見えなければ減速停止 [s]
+    lines_timeout: 0.8               # 1 周目: 中央線がこれ以上見えなければ「白線ロスト」 [s]
+    lines_hold_distance: 3.0         # 白線ロスト中も最後の中央線をオドメトリで追って走る距離 [m] (超えたら減速停止)
+    lines_lost_speed: 0.5            # 白線ロスト中の速度上限 [m/s]
     stop_decel: 1.5
     heading_window: 15               # 方位ドリフト推定に使うフレーム数
     map_matching_gain: 0.1           # 2 周目以降: 白線観測による自己位置補正 (0 で無効)

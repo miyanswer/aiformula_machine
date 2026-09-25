@@ -742,7 +742,7 @@ export const MAPPING = 'MAPPING', OPTIMIZING = 'OPTIMIZING', RACING = 'RACING', 
 
 export const NAVIGATOR_PARAMS = {
   recorder: RECORDER_PARAMS, lap: LAP_PARAMS, raceline: RACELINE_PARAMS, tracker: TRACKER_PARAMS,
-  headingWindow: 15, linesTimeout: 0.8, stopDecel: 1.5,
+  headingWindow: 15, linesTimeout: 0.8, linesHoldDistance: 3.0, linesLostSpeed: 0.5, stopDecel: 1.5,
   mapMatchingGain: 0.1, mapMatchingMaxError: 0.8, matchXMin: 1.0, matchXMax: 6.0, matchXStep: 1.0,
   matchDamping: [2.0, 2.0, 20.0],
   matchMaxStepXy: 0.03, matchMaxStepYaw: 0.005, matchMinLines: 2,
@@ -791,7 +791,8 @@ export class LaneNavigator {
     this.lastIndex = null;
     this.lapStartS = 0;
     this.sNow = 0;
-    this.centerFit = null;
+    this.centerAnchor = null; // 最後に見えた中央線と、その時の odom 姿勢・走行距離 {fit, pose, s}
+    this.linesLost = false;
     this.message = '';
   }
 
@@ -834,7 +835,7 @@ export class LaneNavigator {
       const xr = this.p.recorder.xRec;
       this.recorder.update(s, pose, vMeas, omegaMeas, L ? L.yAt(xr) : null, R ? R.yAt(xr) : null,
         !!lines.detected.left, !!lines.detected.right, C ? C.curvatureAt(xr) : null);
-      this.centerFit = C;
+      if (C) this.centerAnchor = { fit: C, pose: [...pose], s };
     }
     if (lapCompleted(this.recorder.samples, pose, s, this.startPose, this.startS, this.p.lap)) {
       if (this.startHeadingSamples.length >= 3 && this.lineHeadingBuf.length >= 3) {
@@ -845,27 +846,56 @@ export class LaneNavigator {
       this._buildAndOptimize();
       if (this.state === RACING) return this._stepRacing(dt, pose, vMeas, lines, s);
     }
-    if (this.lastLinesTime === null || now - this.lastLinesTime > this.p.linesTimeout) {
+    const cmd = this._centerTracking(now, dt, pose, vMeas, s);
+    if (!this.linesLost) {
+      this.message = `1周目 記録中: 断面 ${this.recorder.samples.length} 点 / 間隔 ${this.recorder.nextSpacing().toFixed(1)}m`;
+    }
+    return cmd;
+  }
+
+  // 中央白線のレーントラッキング (1 周目)。navigator.py の _center_tracking() と同じ計算。
+  // 最後に見えた中央線 (その時の車体座標のフィット) を、それ以降のオドメトリの移動分だけ
+  // 座標変換して追う。検出が途切れ途切れの場所 (コーナー等) で毎回減速停止→再加速を
+  // 繰り返すと実機が前後にガクガクするため、白線ロスト (linesTimeout 超過) 後も
+  // linesHoldDistance [m] までは linesLostSpeed 以下で記憶した線を走り、それでも
+  // 見えなければ減速停止する。
+  _centerTracking(now, dt, pose, vMeas, s) {
+    const tp = this.p.tracker;
+    const lost = this.lastLinesTime === null || now - this.lastLinesTime > this.p.linesTimeout;
+    this.linesLost = lost;
+    if (!this.centerAnchor) return this._stop(dt);
+    const { fit: C, pose: ap, s: aS } = this.centerAnchor;
+    if (lost && s - aS > this.p.linesHoldDistance) {
       this.message = '白線ロスト: 減速停止';
       return this._stop(dt);
     }
-    const C = this.centerFit;
-    if (!C) return this._stop(dt);
-    let la = Math.min(Math.max(vMeas * tp.lookaheadTime, tp.lookaheadMin), tp.lookaheadMax);
-    la = Math.max(la, C.xMin);
-    const kappa = arcCurvature(la, C.yAt(la));
+    // 現在の車体位置を、中央線を観測した時の車体座標で表す
+    const dx = pose[0] - ap[0], dy = pose[1] - ap[1];
+    const ca = Math.cos(ap[2]), sa = Math.sin(ap[2]);
+    const px = ca * dx + sa * dy, py = -sa * dx + ca * dy;
+    const dyaw = wrap(pose[2] - ap[2]);
+    const la = Math.min(Math.max(vMeas * tp.lookaheadTime, tp.lookaheadMin), tp.lookaheadMax);
+    const xa = Math.max(px + la, C.xMin);
+    const ya = C.yAt(xa);
+    // 注視点を現在の車体座標へ
+    const cy = Math.cos(dyaw), sy = Math.sin(dyaw);
+    const tx = xa - px, ty = ya - py;
+    const kappa = arcCurvature(cy * tx + sy * ty, -sy * tx + cy * ty);
     // フレーム毎の中央線フィットの曲率は検出ノイズで揺れるため、そのまま速度にすると
     // 目標速度が毎フレーム上下し前後にガクガクする。曲率をローパスし、速度も 2 周目と
     // 同じ加減速制限 (raceline.aAccel / aDecel) で変化させる (navigator.py と同じ)。
-    const curv = Math.abs(C.curvatureAt(la));
+    const curv = Math.abs(C.curvatureAt(xa));
     if (this.curvFilt === null || !(tp.curvatureFilterTau > 0)) this.curvFilt = curv;
     else this.curvFilt += (curv - this.curvFilt) * Math.min(1, dt / tp.curvatureFilterTau);
-    const vTarget = tp.mappingSpeed / (1 + tp.curveSlowdown * this.curvFilt * 4);
+    let vTarget = tp.mappingSpeed / (1 + tp.curveSlowdown * this.curvFilt * 4);
+    if (lost) {
+      vTarget = Math.min(vTarget, this.p.linesLostSpeed);
+      this.message = '白線ロスト: 記憶した中央線で走行';
+    }
     const rp = this.p.raceline;
     const v = rateLimit(this.cmd.v, vTarget, vTarget > this.cmd.v ? rp.aAccel : rp.aDecel, dt);
     let omega = Math.max(-tp.maxAngularSpeed, Math.min(tp.maxAngularSpeed, v * kappa));
     omega = rateLimit(this.cmd.omega, omega, tp.maxAngularAccel, dt);
-    this.message = `1周目 記録中: 断面 ${this.recorder.samples.length} 点 / 間隔 ${this.recorder.nextSpacing().toFixed(1)}m`;
     return { v, omega };
   }
 

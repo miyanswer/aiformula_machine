@@ -35,7 +35,9 @@ class NavigatorParams:
     raceline: RacelineParams = field(default_factory=RacelineParams)
     tracker: TrackerParams = field(default_factory=TrackerParams)
     heading_window: int = 15           # 方位ドリフト推定に使う中央線方位の平均フレーム数
-    lines_timeout: float = 0.8         # 1 周目: これ以上白線が来なければ減速停止 [s]
+    lines_timeout: float = 0.8         # 1 周目: これ以上白線が来なければ「白線ロスト」 [s]
+    lines_hold_distance: float = 3.0   # 白線ロスト中も最後の中央線をオドメトリで追って走る距離 [m]
+    lines_lost_speed: float = 0.5      # 白線ロスト中 (上の距離以内) の速度上限 [m/s]
     stop_decel: float = 1.5
     map_matching_gain: float = 0.1     # 2 周目: 白線観測による自己位置補正ゲイン (0 で無効)
     map_matching_max_error: float = 0.8  # これ以上離れた観測点は対応付けない [m]
@@ -79,6 +81,9 @@ class LaneNavigator:
         self.lap = 1
         self.cmd = Command(0.0, 0.0)
         self._curv_filt: Optional[float] = None   # 1 周目の減速用曲率 (ローパス後)
+        # 最後に見えた中央線と, その時の odom 姿勢・走行距離 (fit, pose, s)
+        self._center_anchor = None
+        self._lines_lost = False
         self.corr = np.zeros(3)            # 2 周目の自己位置補正 odom -> map (tx, ty, theta)
         self._corr_init = np.zeros(3)      # RACING 開始時の corr (方位ドリフト補正した地図に今の姿勢を合わせる)
         self.last_lines_time: Optional[float] = None
@@ -112,9 +117,9 @@ class LaneNavigator:
         if self.state == MAPPING:
             cmd = self._step_mapping(now, dt, pose, v_meas, omega_meas, s, lines)
         elif self.state == OPTIMIZING:
-            if lines is not None:
-                self._center_fit = lines.lines.get("center")
-            cmd = self._center_tracking(now, dt, v_meas)
+            if lines is not None and lines.lines.get("center") is not None:
+                self._center_anchor = (lines.lines["center"], tuple(pose), s)
+            cmd = self._center_tracking(now, dt, pose, v_meas, s)
         elif self.state == RACING:
             cmd = self._step_racing(dt, pose, v_meas, lines, s)
         else:
@@ -155,7 +160,8 @@ class LaneNavigator:
                 bool(lines.detected.get("left")), bool(lines.detected.get("right")),
                 None if C is None else C.curvature_at(xr),
             )
-            self._center_fit = C
+            if C is not None:
+                self._center_anchor = (C, tuple(pose), s)
 
         if lap_completed(self.recorder.samples, pose, s, self.start_pose, self.start_s, self.p.lap):
             if len(self._start_heading_samples) >= 3 and len(self._line_heading_buf) >= 3:
@@ -169,33 +175,55 @@ class LaneNavigator:
             if self.state == RACING:
                 return self._step_racing(dt, pose, v_meas, lines, s)
 
-        cmd = self._center_tracking(now, dt, v_meas)
-        if self.state == MAPPING and self.message != "白線ロスト: 減速停止":
+        cmd = self._center_tracking(now, dt, pose, v_meas, s)
+        if self.state == MAPPING and not self._lines_lost:
             self.message = f"1周目 記録中: 断面 {len(self.recorder.samples)} 点 / 間隔 {self.recorder.next_spacing():.1f}m"
         return cmd
 
-    def _center_tracking(self, now, dt, v_meas) -> Command:
-        """中央白線のレーントラッキング (1 周目 / QP 計算待ちの間)."""
+    def _center_tracking(self, now, dt, pose, v_meas, s) -> Command:
+        """中央白線のレーントラッキング (1 周目 / QP 計算待ちの間).
+
+        最後に見えた中央線 (その時の車体座標のフィット) を, それ以降のオドメトリの
+        移動分だけ座標変換して追う. 検出が途切れ途切れの場所 (コーナー等) で毎回
+        減速停止→再加速を繰り返すと実機が前後にガクガクするため, 白線ロスト
+        (lines_timeout 超過) 後も lines_hold_distance [m] までは lines_lost_speed 以下で
+        記憶した線を走り, それでも見えなければ減速停止する.
+        web_simulator/js/lane_navigator.js の _centerTracking() と同じ計算.
+        """
         tp = self.p.tracker
-        if self.last_lines_time is None or now - self.last_lines_time > self.p.lines_timeout:
+        lost = self.last_lines_time is None or now - self.last_lines_time > self.p.lines_timeout
+        self._lines_lost = lost
+        if self._center_anchor is None:
+            return self._stop(dt)
+        C, apose, a_s = self._center_anchor
+        if lost and s - a_s > self.p.lines_hold_distance:
             self.message = "白線ロスト: 減速停止"
             return self._stop(dt)
 
-        C = getattr(self, "_center_fit", None)
-        if C is None:
-            return self._stop(dt)
+        # 現在の車体位置を, 中央線を観測した時の車体座標で表す
+        dx, dy = pose[0] - apose[0], pose[1] - apose[1]
+        ca, sa = math.cos(apose[2]), math.sin(apose[2])
+        px, py = ca * dx + sa * dy, -sa * dx + ca * dy
+        dyaw = math.atan2(math.sin(pose[2] - apose[2]), math.cos(pose[2] - apose[2]))
         la = min(max(v_meas * tp.lookahead_time, tp.lookahead_min), tp.lookahead_max)
-        la = max(la, C.x_min)
-        kappa = arc_curvature(la, float(C.y_at(la)))
+        xa = max(px + la, C.x_min)
+        ya = float(C.y_at(xa))
+        # 注視点を現在の車体座標へ
+        cy, sy = math.cos(dyaw), math.sin(dyaw)
+        tx, ty = xa - px, ya - py
+        kappa = arc_curvature(cy * tx + sy * ty, -sy * tx + cy * ty)
         # フレーム毎の中央線フィットの曲率は検出ノイズで揺れるため、そのまま速度に
         # すると目標速度が毎フレーム上下し前後にガクガクする。曲率をローパスし、
         # 速度も 2 周目と同じ加減速制限 (raceline.a_accel / a_decel) で変化させる。
-        curv = abs(float(C.curvature_at(la)))
+        curv = abs(float(C.curvature_at(xa)))
         if self._curv_filt is None or tp.curvature_filter_tau <= 0.0:
             self._curv_filt = curv
         else:
             self._curv_filt += (curv - self._curv_filt) * min(1.0, dt / tp.curvature_filter_tau)
         v_target = tp.mapping_speed / (1.0 + tp.curve_slowdown * self._curv_filt * 4.0)
+        if lost:
+            v_target = min(v_target, self.p.lines_lost_speed)
+            self.message = "白線ロスト: 記憶した中央線で走行"
         rp = self.p.raceline
         v = rate_limit(self.cmd.v, v_target, rp.a_accel if v_target > self.cmd.v else rp.a_decel, dt)
         omega = max(-tp.max_angular_speed, min(tp.max_angular_speed, v * kappa))

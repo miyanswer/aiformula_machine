@@ -164,7 +164,7 @@ class LaneNavigatorNode(Node):
         load(p.lap, "lap.")
         load(p.raceline, "raceline.")
         load(p.tracker, "tracker.")
-        for name in ("heading_window", "lines_timeout", "stop_decel", "map_matching_gain",
+        for name in ("heading_window", "lines_timeout", "lines_hold_distance", "lines_lost_speed", "stop_decel", "map_matching_gain",
                      "map_matching_max_error", "match_x_min", "match_x_max", "match_x_step",
                      "match_max_step_xy", "match_max_step_yaw", "match_min_lines"):
             default = getattr(p, name)
