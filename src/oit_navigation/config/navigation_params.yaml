@@ -36,7 +36,7 @@ lane_detector:
     camera_ref_height: 1080
     camera_height: 0.56              # 地面からの高さ [m] (base_link 0.12 + 0.44)
     camera_x: 0.055                  # base_link からの前方オフセット [m]
-    camera_pitch_down_deg: 7.3
+    camera_pitch_down_deg: 1.8
     # 線の役割割り当て (lane_nav/line_tracker.py)
     lane_width: 3.5                  # 中央線 <-> 境界線の距離の初期値 [m] (走行中に推定更新)
     tracker_x_ref: 2.0
@@ -75,7 +75,7 @@ cone_detector:
     camera_ref_height: 1080
     camera_height: 0.56
     camera_x: 0.055
-    camera_pitch_down_deg: 7.3
+    camera_pitch_down_deg: 1.8
 
 odom_imu_localizer:
   ros__parameters:
