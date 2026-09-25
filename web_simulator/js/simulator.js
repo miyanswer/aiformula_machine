@@ -744,15 +744,30 @@ function disconnect() {
   setStatus('', '未接続');
 }
 
+// 接続先に届かない (IP 違い・相手の電源断・別ネットワーク) と、ブラウザの
+// WebSocket は何十秒も CONNECTING のまま 'error' も 'close' も出さず、
+// 「接続中...」で止まって見える。一定時間でつながらなければ打ち切って知らせる。
+const ROS_CONNECT_TIMEOUT_MS = 5000;
+
 function connect() {
   setStatus('connecting', '接続中...');
   connectBtn.disabled = true;
 
-  ros = new ROSLIB.Ros({ url: urlInput.value });
+  const thisRos = new ROSLIB.Ros({ url: urlInput.value });
+  ros = thisRos;
   teleopOnly = teleopOnlyInput.checked;
   teleopOnlyInput.disabled = true;
+  let connected = false;
+  let timedOut = false;
+  const connectTimer = setTimeout(() => {
+    if (connected || ros !== thisRos) return;
+    timedOut = true;
+    thisRos.close();
+  }, ROS_CONNECT_TIMEOUT_MS);
 
-  ros.on('connection', () => {
+  thisRos.on('connection', () => {
+    connected = true;
+    clearTimeout(connectTimer);
     setStatus('connected', teleopOnly ? '接続済み (実機操縦)' : '接続済み');
     connectBtn.disabled = false;
     connectBtn.textContent = '切断';
@@ -829,17 +844,29 @@ function connect() {
     rosRightBoundarySub.subscribe((msg) => onRosMapPath('right', msg));
   });
 
-  ros.on('error', () => {
-    setStatus('error', 'エラー');
+  thisRos.on('error', () => {
+    clearTimeout(connectTimer);
+    setStatus('error', 'エラー (URL・rosbridge の起動を確認)');
     connectBtn.disabled = false;
     connectBtn.textContent = '接続';
   });
 
-  ros.on('close', () => {
+  thisRos.on('close', () => {
+    clearTimeout(connectTimer);
+    // 既に別の接続に置き換わっていれば何もしない
+    if (ros !== thisRos) return;
+    // 閉じた接続を残すと、次の「接続」クリックが disconnect() 扱いになり
+    // 2 回押さないと繋がらないので破棄する。
+    ros = null;
     clearRosTopics();
     connectBtn.disabled = false;
     connectBtn.textContent = '接続';
-    setStatus('', '未接続');
+    if (timedOut) {
+      setStatus('error', `接続タイムアウト (${ROS_CONNECT_TIMEOUT_MS / 1000}秒): 相手の IP・電源・同じネットワークか確認`);
+    } else if (connected) {
+      setStatus('', '未接続');
+    }
+    // 接続前のエラーで閉じた場合は 'error' の表示を残す
   });
 }
 
