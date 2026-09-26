@@ -165,16 +165,16 @@ sudo apt install fonts-noto-cjk
 ros2 launch oit_navigation six_lane.launch.py use_device:=0 use_tensorrt:=true      # 6レーン
 ros2 launch oit_navigation navigation.launch.py use_device:=0 use_tensorrt:=true    # 周回マップ + QP
 
-# 記録 -> rosbag/<日付_時刻>/<名前>/{data,image}. 1 コマンドで両方 (中では別プロセス, Ctrl+C で両方止まる):
+# 記録 -> rosbag/<日付_時刻>/<名前>/{data,video}. 1 コマンドで両方 (中では別プロセス, Ctrl+C で両方止まる):
+#   data  = rosbag (画像以外), video = H.264 の MP4 (camera.mp4 = ZED 左画像, panel.mp4 = 判断パネル) + *_stamps.csv
+#   Jetson が出す JPEG 版 (.../compressed) を受けて MP4 にするので別 PC (Dell 等) で記録できる. 要 ffmpeg
 bash launchers/sample_launchers/shellscript/record_rosbag.sh 6lane     # 6lane / qp / gamepad
-# 別々の端末で取る場合:
-bash launchers/sample_launchers/shellscript/record_rosbag_6lane.sh     # 端末A: 6lane/data   (qp / gamepad も同様)
-bash launchers/sample_launchers/shellscript/record_rosbag_image.sh 6lane   # 端末B: 6lane/image (ZED 画像 + 判断パネル)
-#   画像は既定で Jetson が出す JPEG 版 (.../compressed) を取る = 別 PC (Dell 等) で記録できる.
-#   Jetson 上で生画像を取るなら RAW=1. RECORD_ANNOTATED=1 で検出器の注釈付き画像も取る
-#   データと画像は 2 分以内に起動すれば同じ <日付_時刻>/<名前> に揃う
+# 別々の端末で取る場合 (2 分以内に起動すれば同じ <日付_時刻>/<名前> に揃う):
+bash launchers/sample_launchers/shellscript/record_rosbag_6lane.sh        # 端末A: 6lane/data   (qp / gamepad も同様)
+bash launchers/sample_launchers/shellscript/record_rosbag_video.sh 6lane  # 端末B: 6lane/video (MP4)
+#   画像を rosbag で取りたいときは record_rosbag_image.sh 6lane (RAW=1 で生画像, RECORD_ANNOTATED=1 で注釈付き画像も)
 
-# 再生して確認 (画像は別端末で ros2 bag play rosbag/<日付_時刻>/6lane/image)
+# 再生して確認 (動画は camera.mp4 を普通の動画プレーヤーで. フレームの ROS 時刻は camera_stamps.csv)
 ros2 bag play rosbag/<日付_時刻>/6lane/data --clock
 rviz2 -d $(ros2 pkg prefix oit_navigation)/share/oit_navigation/config/six_lane.rviz --ros-args -p use_sim_time:=true
 rviz2 -d $(ros2 pkg prefix oit_navigation)/share/oit_navigation/config/oit_navigation.rviz --ros-args -p use_sim_time:=true

@@ -1,5 +1,5 @@
 #!/bin/bash
-# record_rosbag_{6lane,qp,gamepad,image}.sh から source する共通部分 (単体では実行しない).
+# record_rosbag_{6lane,qp,gamepad,image,video}.sh から source する共通部分 (単体では実行しない).
 #   - COMMON_TOPICS: 6lane/qp/gamepad すべてに入れるセンサ + 最終指令 (画像は record_rosbag_image.sh で別に取る)
 #   - record_bag <名前> <data|image> <トピック...>: <ROSBAG_ROOT>/<日付_時刻>/<名前>/<data|image> に記録.
 #       ROSBAG_ROOT の既定はワークスペース直下の rosbag/ (Jetson では SSD 上)
@@ -40,19 +40,13 @@ start_bg_node() {
     trap 'kill "${BG_PIDS[@]}" 2>/dev/null' EXIT
 }
 
-record_bag() {
+# 保存先 <ROSBAG_ROOT>/<日付_時刻>/<名前> を決めて出力する (<名前>/<kind> はまだ作らない).
+# データと画像/動画は別端末で少しずれて起動するので, 相方が PAIR_WINDOW 秒以内に作った同名の走行
+# (まだ自分の <kind> が無いもの) があればそこに入る. 無ければ今の時刻で新しく作る
+# (record_rosbag.sh から同時に起動するときは RUN_DIR で保存先が渡される)
+resolve_run_dir() {
     local name=$1
     local kind=$2
-    shift 2
-    # read_yaml が失敗 (PyYAML なし等) するとトピック名が空になり /tf だけの bag になるので止める
-    if [ -z "$(read_yaml "['sensing']['input_can_data']")" ]; then
-        echo "[record_rosbag] ${topic_list_yaml_path} を読めません (python3 -c 'import yaml' を確認)" >&2
-        exit 1
-    fi
-    # 保存先 rosbag/<日付_時刻>/<名前>/<data|image>.
-    # データと画像は別端末で少しずれて起動するので, 相方が PAIR_WINDOW 秒以内に作った同名の走行
-    # (まだ自分の <kind> が無いもの) があればそこに入る. 無ければ今の時刻で新しく作る
-    # (record_rosbag.sh から両方を同時に起動するときは RUN_DIR で保存先が渡される)
     local root="${ROSBAG_ROOT}"
     local run_dir="${RUN_DIR:-}"
     local latest
@@ -72,6 +66,24 @@ record_bag() {
         done
     fi
     mkdir -p "${run_dir}"
+    echo "${run_dir}"
+}
+
+check_topic_list() {
+    # read_yaml が失敗 (PyYAML なし等) するとトピック名が空になり /tf だけの bag になるので止める
+    if [ -z "$(read_yaml "['sensing']['input_can_data']")" ]; then
+        echo "[record_rosbag] ${topic_list_yaml_path} を読めません (python3 -c 'import yaml' を確認)" >&2
+        exit 1
+    fi
+}
+
+record_bag() {
+    local name=$1
+    local kind=$2
+    shift 2
+    check_topic_list
+    local run_dir
+    run_dir=$(resolve_run_dir "${name}" "${kind}")
     echo "[record_rosbag] -> ${run_dir}/${kind}"
     # 標準入力は端末から切り離す: ros2 bag record は SPACE で一時停止するために起動時に端末の設定を変えるが,
     # record_rosbag.sh から背景のプロセスグループで動かすと, 端末に触れた時点で OS に止められ (SIGTTOU)
