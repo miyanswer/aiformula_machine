@@ -170,7 +170,8 @@ bash launchers/sample_launchers/shellscript/record_rosbag.sh 6lane     # 6lane /
 # 別々の端末で取る場合:
 bash launchers/sample_launchers/shellscript/record_rosbag_6lane.sh     # 端末A: 6lane/data   (qp / gamepad も同様)
 bash launchers/sample_launchers/shellscript/record_rosbag_image.sh 6lane   # 端末B: 6lane/image (ZED 画像 + 判断パネル)
-#   JPEG=1 で画像を JPEG で取る (約 1/10 以下). RECORD_ANNOTATED=1 で検出器の注釈付き画像も取る
+#   画像は既定で Jetson が出す JPEG 版 (.../compressed) を取る = 別 PC (Dell 等) で記録できる.
+#   Jetson 上で生画像を取るなら RAW=1. RECORD_ANNOTATED=1 で検出器の注釈付き画像も取る
 #   データと画像は 2 分以内に起動すれば同じ <日付_時刻>/<名前> に揃う
 
 # 再生して確認 (画像は別端末で ros2 bag play ~/rosbag/<日付_時刻>/6lane/image)

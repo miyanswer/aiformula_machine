@@ -6,6 +6,7 @@
     lane_navigator      1 周目: 中央線トラッキング + 境界記録 -> QP -> 2 周目以降: レーシングライン
                         cmd_vel は twist_mux の "mpc" 入力 (/aiformula_control/extremum_seeking_mpc/cmd_vel)
     traffic_light_distance_node / image_compressor_node / RViz2
+    lane_navigator_panel_compressor  判断パネルの JPEG 版 (.../lane_navigator/panel/compressed, 別 PC で記録・表示する用)
     cone_detector       cone.pt でコーンを検出し位置 (距離) を推定 (RViz 確認用. QP 走行はまだコーン回避しない)
 
 例 (Jetson):
@@ -32,7 +33,7 @@ def _cleanup_old_processes():
     try:
         subprocess.run(
             ["pkill", "-9", "-f",
-             "lane_detector|lane_navigator|odom_imu_localizer|traffic_light_distance_node|image_compressor_node|cone_detector|"
+             "lane_detector|lane_navigator|odom_imu_localizer|traffic_light_distance_node|__node:=image_compressor_node|cone_detector|"
              "rviz2|robot_state_publisher|joint_state_publisher"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
         )
@@ -133,10 +134,17 @@ def generate_launch_description():
         output="screen", condition=IfCondition(LaunchConfiguration("image_compressor")),
         parameters=[{"input_topic": LaunchConfiguration("input_image_topic")}],
     )
+    # 判断パネル画像 (約 5MB/s の生画像) の JPEG 版. 別 PC で記録・表示するときはこちらを使う (購読者がいる間だけ変換)
+    panel_topic = get_frame_ids_and_topic_names()[1]["visualization"]["lane_navigator"]["panel"]
+    panel_compressor = Node(
+        package="oit_navigation", executable="image_compressor_node", name="lane_navigator_panel_compressor",
+        output="screen",
+        parameters=[{"input_topic": panel_topic, "output_topic": panel_topic + "/compressed", "jpeg_quality": 80}],
+    )
     rviz = Node(
         package="rviz2", executable="rviz2", name="rviz2", output="screen",
         arguments=["-d", osp.join(pkg, "config", "oit_navigation.rviz")],
         condition=IfCondition(LaunchConfiguration("rviz")), on_exit=Shutdown(),
     )
     return LaunchDescription(args + [lane_detector, localizer, navigator, traffic_light, cone_detector,
-                                     image_compressor, rviz])
+                                     image_compressor, panel_compressor, rviz])

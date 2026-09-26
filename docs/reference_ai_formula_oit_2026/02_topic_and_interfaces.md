@@ -59,6 +59,8 @@
 | :--- | :--- | :--- | :--- |
 | `/aiformula_visualization/object_road_detector/annotated_image` | `sensor_msgs/msg/Image` | `object_road_detector` | 検出枠とマスクを描画したカメラ映像 |
 | `/aiformula_visualization/zed/left_image/compressed` | `sensor_msgs/msg/CompressedImage` | `image_compressor` | 遠隔監視用のJPEG圧縮映像 |
+| `/aiformula_sensing/zed_node/left_image/undistorted/compressed` | `sensor_msgs/msg/CompressedImage` | `zed_image_compressor` (hardware_bringup) | ZED 左画像の JPEG 版 (品質 90). 別 PC で記録・表示する用 |
+| `/aiformula_visualization/{six_lane_planner,lane_navigator}/panel/compressed` | `sensor_msgs/msg/CompressedImage` | `six_lane_panel_compressor` / `lane_navigator_panel_compressor` | 判断パネル画像の JPEG 版. 別 PC で記録・表示する用 |
 | `/lane_target_marker` | `visualization_msgs/msg/Marker` | `multi_line_follower` | RViz表示用の目標注視点（Lookahead Point）マーカー |
 
 ---

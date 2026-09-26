@@ -62,12 +62,17 @@ bash launchers/sample_launchers/shellscript/record_rosbag.sh 6lane     # 6lane /
 bash launchers/sample_launchers/shellscript/record_rosbag_6lane.sh     # 6レーン走行
 bash launchers/sample_launchers/shellscript/record_rosbag_qp.sh        # 周回マップ+QP
 bash launchers/sample_launchers/shellscript/record_rosbag_gamepad.sh   # 手動走行 (odom_imu_localizer も記録中だけ起動)
-# 端末B: 画像 -> ~/rosbag/<日付_時刻>/<名前>/image   (JPEG=1 で JPEG, RECORD_ANNOTATED=1 で注釈付き画像も)
+# 端末B: 画像 -> ~/rosbag/<日付_時刻>/<名前>/image   (既定は JPEG 版, RAW=1 で生画像, RECORD_ANNOTATED=1 で注釈付き画像も)
 bash launchers/sample_launchers/shellscript/record_rosbag_image.sh 6lane   # 6lane / qp / gamepad
 ```
 画像以外は3種類とも IMU (ZED / VectorNav)・CANフレーム (車輪の実RPM)・gyro オドメトリ・TF・twist_mux の最終指令を共通で記録し、
 それぞれの走行方式の認識・判断トピックを追加で記録します (共通部分は `record_rosbag_common.sh`)。
 画像 (ZED 左画像・判断パネル) は別プロセスで記録し、小さいトピックの記録が画像の書き込みに引きずられないようにしています。
+
+**別 PC (Dell 等) で記録・表示する場合**: Jetson と同じ LAN・`ROS_DOMAIN_ID=100` の Humble から上のスクリプトを実行する。
+画像は既定で Jetson が出している JPEG 版 (`.../left_image/undistorted/compressed`, `.../panel/compressed`) を記録する。
+生画像 (640x360 BGRA 約 0.9MB) は LAN 越しの DDS では 15Hz を運べず数 Hz に落ちる (Jetson 内では 15Hz 出ている) ので、
+RViz2 / rqt_image_view でも別 PC では `/compressed` の方を表示すること。
 
 ---
 

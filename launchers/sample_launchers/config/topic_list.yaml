@@ -2,6 +2,7 @@ sensing:
   zedx:
     left_image:
       undistorted: "/aiformula_sensing/zed_node/left_image/undistorted"
+      compressed: "/aiformula_sensing/zed_node/left_image/undistorted/compressed"   # JPEG (hardware_bringup の zed_image_compressor). 別 PC で記録・表示する用. web_simulator の IMAGE_TOPIC_NAME と同名
     right_image:
       undistorted: "/aiformula_sensing/zed_node/right_image/undistorted"
     imu: "/aiformula_sensing/zed_node/imu"
@@ -69,11 +70,13 @@ visualization:
     right_boundary: "/aiformula_visualization/lane_navigator/right_boundary"
     target_trajectory: "/aiformula_visualization/target_trajectory"
     panel: "/aiformula_visualization/lane_navigator/panel"            # 判断パネル画像 (日本語)
+    panel_compressed: "/aiformula_visualization/lane_navigator/panel/compressed"   # 同 JPEG (別 PC で記録・表示する用)
     markers: "/aiformula_visualization/lane_navigator/markers"
   six_lane_planner:
     target_path: "/aiformula_visualization/six_lane_planner/target_path"
     markers: "/aiformula_visualization/six_lane_planner/markers"       # 仮想6レーン・目標レーン・確率
     panel: "/aiformula_visualization/six_lane_planner/panel"           # 判断パネル画像 (俯瞰図 + 日本語の理由)
+    panel_compressed: "/aiformula_visualization/six_lane_planner/panel/compressed"   # 同 JPEG (別 PC で記録・表示する用)
   cone_detector:
     markers: "/aiformula_visualization/cone_detector/markers"
     annotated_image: "/aiformula_visualization/cone_detector/annotated_image"

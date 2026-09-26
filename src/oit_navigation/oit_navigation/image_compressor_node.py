@@ -2,7 +2,10 @@
 """
 image_compressor_node.py - Republishes a raw camera image as a JPEG CompressedImage.
 Used for spectator/monitoring feeds (e.g. visualization.aiformula_pilot) that don't
-need the full-resolution raw stream perception nodes subscribe to.
+need the full-resolution raw stream perception nodes subscribe to, and for recording /
+viewing camera and decision-panel images from another PC over the network
+(a raw 640x360 BGRA frame is ~0.9MB, which DDS cannot carry at 15Hz over the LAN).
+Encodes only while the output topic has subscribers.
 """
 
 import cv2
@@ -47,6 +50,9 @@ class ImageCompressorNode(Node):
         self.resize_height = int(p('resize_height').value)
 
     def _image_callback(self, msg: Image):
+        # 購読者がいない間は JPEG 化しない (hardware_bringup で常に起動しているので Jetson の CPU を使わない)
+        if self.pub.get_subscription_count() == 0:
+            return
         frame = imgmsg_to_cv2(msg, desired_encoding='bgr8')
         if frame is None:
             return

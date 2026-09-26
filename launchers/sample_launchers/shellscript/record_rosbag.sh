@@ -2,11 +2,11 @@
 << COMMENTOUT
 データと画像を 1 つのコマンドで記録する. 中では record_rosbag_<名前>.sh と record_rosbag_image.sh <名前> を
 別プロセスで同時に動かすので, 画像の書き込みが小さいトピックの記録を引きずらないのは別端末のときと同じ.
-Ctrl+C で両方止まる.
+Ctrl+C で両方止まる. 画像は既定で Jetson が出す JPEG 版を取るので, 別 PC (Dell 等) からでも記録できる.
     bash record_rosbag.sh 6lane      # -> ~/rosbag/<日付_時刻>/6lane/{data,image}
     bash record_rosbag.sh qp         # -> ~/rosbag/<日付_時刻>/qp/{data,image}
     bash record_rosbag.sh gamepad    # -> ~/rosbag/<日付_時刻>/gamepad/{data,image}
-    JPEG=1 bash record_rosbag.sh 6lane             # 画像を JPEG で取る (record_rosbag_image.sh と同じ)
+    RAW=1 bash record_rosbag.sh 6lane              # 画像を JPEG 版ではなく生画像で取る (Jetson 上で記録するとき)
     RECORD_ANNOTATED=1 bash record_rosbag.sh 6lane # 検出器の注釈付き画像も取る
 COMMENTOUT
 

@@ -7,6 +7,7 @@
     traffic_light_distance_node  traffic_light.pt で赤/青信号を検出し距離を推定 (traffic_light:=false で無効)
     cone_detector      cone.pt でコーンを検出し位置を推定 -> six_lane_planner が塞がれたレーンを避ける (cone_detector:=false で無効)
     rviz2              config/six_lane.rviz: 仮想6レーン・目標レーン・確率・コーン・信号・判断パネル (rviz:=false で無効)
+    six_lane_panel_compressor  判断パネルの JPEG 版 (.../six_lane_planner/panel/compressed, 別 PC で記録・表示する用)
 
 周回マップ + QP の navigation.launch.py (lane_navigator) とは同じ cmd_vel に出すので同時に起動しないこと.
 
@@ -31,7 +32,7 @@ from common_python.workspace_paths import default_workspace_asset
 def _cleanup_old_processes():
     """前回起動のゾンビプロセスを掃除する."""
     try:
-        subprocess.run(["pkill", "-9", "-f", "lane_detector|lane_navigator|six_lane_planner|traffic_light_distance_node|cone_detector|rviz2"],
+        subprocess.run(["pkill", "-9", "-f", "lane_detector|lane_navigator|six_lane_planner|six_lane_panel_compressor|traffic_light_distance_node|cone_detector|rviz2"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     except Exception:
         pass
@@ -71,7 +72,13 @@ def _nodes(context):
             {"v_max": 1.5, "max_angular_speed": 1.2} if simulator else {},
         ],
     )
-    nodes = [lane_detector, planner]
+    # 判断パネル画像 (約 5MB/s の生画像) の JPEG 版. 別 PC で記録・表示するときはこちらを使う (購読者がいる間だけ変換)
+    panel_topic = get_frame_ids_and_topic_names()[1]["visualization"]["six_lane_planner"]["panel"]
+    panel_compressor = Node(
+        package="oit_navigation", executable="image_compressor_node", name="six_lane_panel_compressor", output="screen",
+        parameters=[{"input_topic": panel_topic, "output_topic": panel_topic + "/compressed", "jpeg_quality": 80}],
+    )
+    nodes = [lane_detector, planner, panel_compressor]
     if get("traffic_light").lower() == "true":
         tl_params = {
             "image_topic": image_topic,

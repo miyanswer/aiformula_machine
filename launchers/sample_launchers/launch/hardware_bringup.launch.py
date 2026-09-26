@@ -3,7 +3,9 @@ from launch import LaunchDescription
 from launch.actions import IncludeLaunchDescription, DeclareLaunchArgument
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration
+from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
+from common_python.launch_util import get_frame_ids_and_topic_names
 
 
 def generate_launch_description():
@@ -20,6 +22,9 @@ def generate_launch_description():
       7. ゲームパッド手動操縦 (gamepad_joy & gamepad_teleop)
       8. 車輪速・ジャイロオドメトリ (odometry_publisher)
       9. 後輪ポテンショメータ (rear_potentiometer)
+     10. ZED 左画像の JPEG 版 (zed_image_compressor): 別 PC (Dell 等) で記録・表示する用.
+         生画像 (640x360 BGRA, 約 0.9MB) は LAN 越しだと DDS が 15Hz を運べないので, 別 PC は .../compressed を見る.
+         購読者がいる間だけ JPEG 化する
     """
     VEHICLE_NAME = "ai_car1"
 
@@ -106,6 +111,13 @@ def generate_launch_description():
         ),
     )
 
+    # 11. ZED 左画像の JPEG 版 (別 PC で記録・表示する用. 購読者がいる間だけ変換)
+    zed_left = get_frame_ids_and_topic_names()[1]["sensing"]["zedx"]["left_image"]
+    zed_image_compressor = Node(
+        package="oit_navigation", executable="image_compressor_node", name="zed_image_compressor", output="screen",
+        parameters=[{"input_topic": zed_left["undistorted"], "output_topic": zed_left["compressed"], "jpeg_quality": 90}],
+    )
+
     return LaunchDescription([
         vehicle_tf_broadcaster,
         zed_node,
@@ -117,4 +129,5 @@ def generate_launch_description():
         can_receiver_and_sender,
         gyro_odometry_publisher,
         rear_potentiometer,
+        zed_image_compressor,
     ])
