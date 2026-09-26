@@ -73,7 +73,10 @@ record_bag() {
     fi
     mkdir -p "${run_dir}"
     echo "[record_rosbag] -> ${run_dir}/${kind}"
+    # 標準入力は端末から切り離す: ros2 bag record は SPACE で一時停止するために起動時に端末の設定を変えるが,
+    # record_rosbag.sh から背景のプロセスグループで動かすと, 端末に触れた時点で OS に止められ (SIGTTOU)
+    # 何も記録しないまま Ctrl+C も効かなくなる. /dev/null なら端末ではないのでキー操作が無効になるだけ
     ros2 bag record -o "${run_dir}/${kind}" \
         --qos-profile-overrides-path "${SHELLSCRIPT_DIR}/../config/qos_setting.yaml" \
-        "$@"
+        "$@" < /dev/null
 }
