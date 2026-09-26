@@ -16,6 +16,9 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=all
+      # ベースイメージが Cyclone DDS なので, 画像用に受信バッファを広げる設定を読ませる (docker/cyclonedds.xml).
+      # ホスト側でも sudo sysctl -w net.core.rmem_max=2147483647 が必要
+      - CYCLONEDDS_URI=file:///aiformula_machine/docker/cyclonedds.xml
     volumes:
       # USB 機器 (VectorNav /dev/ttyUSB0, Kvaser CAN, ゲームパッド /dev/input/js*)
       # はコンテナ起動後に抜き差しされることがあるため /dev ごと共有する。

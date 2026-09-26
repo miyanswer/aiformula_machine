@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Cyclone DDS 設定 (Jetson コンテナ: ベースイメージ dustynv/ros が RMW_IMPLEMENTATION=rmw_cyclonedds_cpp).
+  compose.jetson.yaml の CYCLONEDDS_URI で読み込む.
+
+  Cyclone は既定で共有メモリを使わず, 同じ Jetson 内でも画像を UDP で細切れに送る.
+  ZED 左画像 (640x360 BGRA 約 0.9MB) は既定の受信バッファ (約 200KB) に 1 枚も収まらず,
+  15Hz で出ている画像が購読側では約 12Hz に落ちていた (JPEG 版も元の生画像が落ちるので同じ).
+  受信バッファを 10MB 要求する. 実際の上限はホストの net.core.rmem_max で決まるので, ホストで
+      sudo sysctl -w net.core.rmem_max=2147483647
+  も必要 (network_mode: host なのでホストの値が効く). min を付けていないので, rmem_max が小さいままでも
+  起動は失敗せず, 取れる分だけ確保する.
+-->
+<CycloneDDS xmlns="https://cdds.io/config"
+            xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+            xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+  <Domain Id="any">
+    <Internal>
+      <SocketReceiveBufferSize max="10MB"/>
+    </Internal>
+  </Domain>
+</CycloneDDS>
