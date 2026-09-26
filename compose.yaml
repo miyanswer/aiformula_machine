@@ -20,7 +20,7 @@ services:
       - "8091:8091"
       - "9090:9090"
     environment:
-      - ROS_DOMAIN_ID=100
+      - ROS_DOMAIN_ID=40   # ROS 2 のドメイン. 別 PC (Dell 等) も同じ値にする. Dockerfile の .bashrc はこの値に従う
       - PYTHONUNBUFFERED=1
       - HISTFILE=/home/rosuser/.bash_history_dir/.bash_history
       - DISPLAY=:1

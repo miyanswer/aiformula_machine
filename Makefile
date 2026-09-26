@@ -214,6 +214,9 @@ bash shell exec:
 		echo "[INFO] Container is not running. Starting $(SERVICE_NAME)..."; \
 		$(DOCKER_COMPOSE) up -d; \
 	fi
+	@# 古いイメージの .bashrc は ROS_DOMAIN_ID=100 固定なので, compose.yaml の値 (40) に従うよう書き換える
+	@# (イメージを作り直せば不要. 対話シェルだけが .bashrc を読むので, bringup-* などは compose の値のまま)
+	@$(DOCKER_COMPOSE) exec -T $(SERVICE_NAME) sed -i 's/^export ROS_DOMAIN_ID=100$$/export ROS_DOMAIN_ID=$${ROS_DOMAIN_ID:-40}/' /home/rosuser/.bashrc || true
 	$(DOCKER_COMPOSE) exec -it $(SERVICE_NAME) bash
 
 root root-bash:

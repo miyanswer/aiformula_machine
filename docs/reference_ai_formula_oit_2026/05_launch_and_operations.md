@@ -72,7 +72,7 @@ bash launchers/sample_launchers/shellscript/record_rosbag_image.sh 6lane   # 6la
 保存先はワークスペース直下の `rosbag/` (git 管理外)。Jetson ではコンテナの `/aiformula_machine` がホストの SSD 上のリポジトリなので、
 内蔵ストレージを使わず、コンテナを作り直しても消えない。別の場所に保存するなら `ROSBAG_ROOT=/path/to/dir` を付けて実行する。
 
-**別 PC (Dell 等) で記録・表示する場合**: Jetson と同じ LAN・`ROS_DOMAIN_ID=100` の Humble から上のスクリプトを実行する。
+**別 PC (Dell 等) で記録・表示する場合**: Jetson と同じ LAN・`ROS_DOMAIN_ID=40` の Humble から上のスクリプトを実行する。
 画像は既定で Jetson が出している JPEG 版 (`.../left_image/undistorted/compressed`, `.../panel/compressed`) を記録する。
 生画像 (640x360 BGRA 約 0.9MB) は LAN 越しの DDS では 15Hz を運べず数 Hz に落ちる (Jetson 内では 15Hz 出ている) ので、
 RViz2 / rqt_image_view でも別 PC では `/compressed` の方を表示すること。

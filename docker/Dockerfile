@@ -165,7 +165,7 @@ RUN sed -i '1i source /opt/ros/humble/setup.bash' /home/$USERNAME/.bashrc \
     && echo "if [ -f /aiformula_machine/install/setup.bash ]; then source /aiformula_machine/install/setup.bash; fi" >> /home/$USERNAME/.bashrc \
     && echo "eval \"\$(register-python-argcomplete3 ros2)\"" >> /home/$USERNAME/.bashrc \
     && echo "eval \"\$(register-python-argcomplete3 colcon)\"" >> /home/$USERNAME/.bashrc \
-    && echo "export ROS_DOMAIN_ID=100" >> /home/$USERNAME/.bashrc
+    && echo "export ROS_DOMAIN_ID=\${ROS_DOMAIN_ID:-40}" >> /home/$USERNAME/.bashrc
 
 # Set default shell environment variables
 ENV ROS_DISTRO=humble
