@@ -1,12 +1,16 @@
 #!/bin/bash
 # record_rosbag_{6lane,qp,gamepad,image}.sh から source する共通部分 (単体では実行しない).
 #   - COMMON_TOPICS: 6lane/qp/gamepad すべてに入れるセンサ + 最終指令 (画像は record_rosbag_image.sh で別に取る)
-#   - record_bag <名前> <data|image> <トピック...>: ~/rosbag/<日付_時刻>/<名前>/<data|image> に記録.
+#   - record_bag <名前> <data|image> <トピック...>: <ROSBAG_ROOT>/<日付_時刻>/<名前>/<data|image> に記録.
+#       ROSBAG_ROOT の既定はワークスペース直下の rosbag/ (Jetson では SSD 上)
 #       データと画像を別端末で 2 分以内に起動すれば同じ <日付_時刻>/<名前> の下に揃う (起動順は問わない)
 #   - start_bg_node <pgrep パターン> <コマンド...>: 記録中だけ動かす補助ノード (未起動なら起動, 終了時に止める)
 
 SHELLSCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")"; pwd)
 topic_list_yaml_path="${SHELLSCRIPT_DIR}/../config/topic_list.yaml"
+# 保存先の親. 既定はワークスペース直下の rosbag/ (Jetson ではコンテナの /aiformula_machine = ホストの SSD 上の
+# リポジトリなので, 内蔵ストレージを使わず, コンテナを作り直しても消えない). 別の場所なら ROSBAG_ROOT=... で指定
+ROSBAG_ROOT="${ROSBAG_ROOT:-$(cd "${SHELLSCRIPT_DIR}/../../.."; pwd)/rosbag}"
 read_yaml() {
     node_path=$1
     python3 -c "import yaml; print(yaml.safe_load(open('$topic_list_yaml_path'))${node_path})" 2>/dev/null
@@ -45,11 +49,11 @@ record_bag() {
         echo "[record_rosbag] ${topic_list_yaml_path} を読めません (python3 -c 'import yaml' を確認)" >&2
         exit 1
     fi
-    # 保存先 ~/rosbag/<日付_時刻>/<名前>/<data|image>.
+    # 保存先 rosbag/<日付_時刻>/<名前>/<data|image>.
     # データと画像は別端末で少しずれて起動するので, 相方が PAIR_WINDOW 秒以内に作った同名の走行
     # (まだ自分の <kind> が無いもの) があればそこに入る. 無ければ今の時刻で新しく作る
     # (record_rosbag.sh から両方を同時に起動するときは RUN_DIR で保存先が渡される)
-    local root="${HOME}/rosbag"
+    local root="${ROSBAG_ROOT}"
     local run_dir="${RUN_DIR:-}"
     local latest
     latest=$(ls -1d "${root}"/*/"${name}" 2>/dev/null | sort | tail -n 1)

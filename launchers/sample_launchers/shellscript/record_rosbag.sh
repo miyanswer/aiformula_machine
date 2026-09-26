@@ -3,14 +3,15 @@
 データと画像を 1 つのコマンドで記録する. 中では record_rosbag_<名前>.sh と record_rosbag_image.sh <名前> を
 別プロセスで同時に動かすので, 画像の書き込みが小さいトピックの記録を引きずらないのは別端末のときと同じ.
 Ctrl+C で両方止まる. 画像は既定で Jetson が出す JPEG 版を取るので, 別 PC (Dell 等) からでも記録できる.
-    bash record_rosbag.sh 6lane      # -> ~/rosbag/<日付_時刻>/6lane/{data,image}
-    bash record_rosbag.sh qp         # -> ~/rosbag/<日付_時刻>/qp/{data,image}
-    bash record_rosbag.sh gamepad    # -> ~/rosbag/<日付_時刻>/gamepad/{data,image}
+    bash record_rosbag.sh 6lane      # -> rosbag/<日付_時刻>/6lane/{data,image}
+    bash record_rosbag.sh qp         # -> rosbag/<日付_時刻>/qp/{data,image}
+    bash record_rosbag.sh gamepad    # -> rosbag/<日付_時刻>/gamepad/{data,image}
     RAW=1 bash record_rosbag.sh 6lane              # 画像を JPEG 版ではなく生画像で取る (Jetson 上で記録するとき)
     RECORD_ANNOTATED=1 bash record_rosbag.sh 6lane # 検出器の注釈付き画像も取る
 COMMENTOUT
 
 SCRIPT_DIR=$(cd "$(dirname "$0")"; pwd)
+source "${SCRIPT_DIR}/record_rosbag_common.sh"   # ROSBAG_ROOT (保存先の親)
 
 name=$1
 case "${name}" in
@@ -19,7 +20,8 @@ case "${name}" in
 esac
 
 # 2 つが同時に保存先を決めると別の秒のディレクトリに分かれうるので, ここで 1 つに決めて渡す
-export RUN_DIR="${HOME}/rosbag/$(date '+%Y%m%d_%H%M%S')/${name}"
+export ROSBAG_ROOT
+export RUN_DIR="${ROSBAG_ROOT}/$(date '+%Y%m%d_%H%M%S')/${name}"
 
 # ジョブ制御を有効にして各記録を別プロセスグループで動かす (無効だと非対話シェルの背景ジョブは
 # SIGINT を無視する設定で起動され, ros2 bag record が Ctrl+C で止まらない). Ctrl+C はここで受けて両方へ送る

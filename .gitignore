@@ -91,3 +91,6 @@ web_simulator/models/traffic_light.onnx
 # Test dataset images
 jpeg/
 
+
+# rosbag の記録 (launchers/sample_launchers/shellscript/record_rosbag*.sh の既定の保存先)
+/rosbag/

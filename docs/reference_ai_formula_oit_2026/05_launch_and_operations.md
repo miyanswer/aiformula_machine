@@ -55,19 +55,22 @@ ros2 launch sample_launchers gamepad_teleop.launch.py
 
 ### ⑤ 走行データの rosbag 記録
 ```bash
-# 1 コマンドでデータと画像の両方 -> ~/rosbag/<日付_時刻>/<名前>/{data,image} (Ctrl+C で両方止まる)
+# 1 コマンドでデータと画像の両方 -> rosbag/<日付_時刻>/<名前>/{data,image} (Ctrl+C で両方止まる)
 bash launchers/sample_launchers/shellscript/record_rosbag.sh 6lane     # 6lane / qp / gamepad
 # 別々の端末で取る場合
-# 端末A: 画像以外 (走行方式ごと) -> ~/rosbag/<日付_時刻>/<名前>/data
+# 端末A: 画像以外 (走行方式ごと) -> rosbag/<日付_時刻>/<名前>/data
 bash launchers/sample_launchers/shellscript/record_rosbag_6lane.sh     # 6レーン走行
 bash launchers/sample_launchers/shellscript/record_rosbag_qp.sh        # 周回マップ+QP
 bash launchers/sample_launchers/shellscript/record_rosbag_gamepad.sh   # 手動走行 (odom_imu_localizer も記録中だけ起動)
-# 端末B: 画像 -> ~/rosbag/<日付_時刻>/<名前>/image   (既定は JPEG 版, RAW=1 で生画像, RECORD_ANNOTATED=1 で注釈付き画像も)
+# 端末B: 画像 -> rosbag/<日付_時刻>/<名前>/image   (既定は JPEG 版, RAW=1 で生画像, RECORD_ANNOTATED=1 で注釈付き画像も)
 bash launchers/sample_launchers/shellscript/record_rosbag_image.sh 6lane   # 6lane / qp / gamepad
 ```
 画像以外は3種類とも IMU (ZED / VectorNav)・CANフレーム (車輪の実RPM)・gyro オドメトリ・TF・twist_mux の最終指令を共通で記録し、
 それぞれの走行方式の認識・判断トピックを追加で記録します (共通部分は `record_rosbag_common.sh`)。
 画像 (ZED 左画像・判断パネル) は別プロセスで記録し、小さいトピックの記録が画像の書き込みに引きずられないようにしています。
+
+保存先はワークスペース直下の `rosbag/` (git 管理外)。Jetson ではコンテナの `/aiformula_machine` がホストの SSD 上のリポジトリなので、
+内蔵ストレージを使わず、コンテナを作り直しても消えない。別の場所に保存するなら `ROSBAG_ROOT=/path/to/dir` を付けて実行する。
 
 **別 PC (Dell 等) で記録・表示する場合**: Jetson と同じ LAN・`ROS_DOMAIN_ID=100` の Humble から上のスクリプトを実行する。
 画像は既定で Jetson が出している JPEG 版 (`.../left_image/undistorted/compressed`, `.../panel/compressed`) を記録する。

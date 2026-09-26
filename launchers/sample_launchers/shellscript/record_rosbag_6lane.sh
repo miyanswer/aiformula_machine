@@ -1,10 +1,10 @@
 #!/bin/bash
 << COMMENTOUT
-6レーン動的選択走行 (six_lane.launch.py) の rosbag. ~/rosbag/<日付_時刻>/6lane/data に保存
-画像は別端末で: bash record_rosbag_image.sh 6lane   (-> ~/rosbag/<日付_時刻>/6lane/image)
+6レーン動的選択走行 (six_lane.launch.py) の rosbag. rosbag/<日付_時刻>/6lane/data に保存
+画像は別端末で: bash record_rosbag_image.sh 6lane   (-> rosbag/<日付_時刻>/6lane/image)
     bash record_rosbag_6lane.sh
 共通 (record_rosbag_common.sh): ZED IMU, vectornav IMU, CAN, gyro odom, /tf, /tf_static, twist_mux 出力
-再生: ros2 bag play ~/rosbag/<日付_時刻>/6lane/data --clock   (画像は別端末で ros2 bag play ~/rosbag/<日付_時刻>/6lane/image)
+再生: ros2 bag play rosbag/<日付_時刻>/6lane/data --clock   (画像は別端末で ros2 bag play rosbag/<日付_時刻>/6lane/image)
       rviz2 -d $(ros2 pkg prefix oit_navigation)/share/oit_navigation/config/six_lane.rviz --ros-args -p use_sim_time:=true
 COMMENTOUT
 
