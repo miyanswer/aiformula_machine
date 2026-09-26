@@ -2,13 +2,13 @@
   ros__parameters:
     # 1. YOLO モデル設定
     model_path: "/aiformula_machine/models/traffic_light.pt"
-    device: "cpu"                 # "cpu" / "mps" (Apple Silicon) / "0" (CUDA)
+    device: "0"                   # "0" (CUDA, 実機 Jetson) / "cpu" / "mps" (Apple Silicon)
     imgsz: 640
     conf_threshold: 0.35
     iou_threshold: 0.45
 
     # 2. トピック設定
-    image_topic: "/aiformula_sensing/zed_node/left_image/undistorted/compressed"
+    image_topic: "/aiformula_sensing/zed_node/left_image/undistorted"   # 実機 ZED の非圧縮画像 (six_lane.launch.py と同じ)
     base_topic: "/aiformula_perception/traffic_light"
     visualization_topic: "/aiformula_visualization/traffic_light"
     publish_annotated_image: true

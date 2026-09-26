@@ -21,8 +21,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "image_topic",
-            default_value="/aiformula_sensing/zed_node/left_image/undistorted/compressed",
-            description="Input camera image topic (Image or CompressedImage)",
+            default_value="/aiformula_sensing/zed_node/left_image/undistorted",
+            description="Input camera image topic (実機 ZED の非圧縮画像. 名前に compressed を含めば CompressedImage)",
         ),
         DeclareLaunchArgument(
             "model_path",
@@ -31,8 +31,8 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "device",
-            default_value="cpu",
-            description="Inference device: 'cpu', 'mps', or '0' (CUDA)",
+            default_value="0",
+            description="Inference device: '0' (CUDA, 実機 Jetson), 'cpu', or 'mps'",
         ),
     ]
 
