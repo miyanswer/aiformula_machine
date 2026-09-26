@@ -30,15 +30,35 @@ bash "${SCRIPT_DIR}/record_rosbag_${name}.sh" &
 data_pid=$!
 bash "${SCRIPT_DIR}/record_rosbag_image.sh" "${name}" &
 image_pid=$!
-trap 'kill -INT -- -${data_pid} -${image_pid} 2>/dev/null' INT TERM
+# 止め方: 1 回目 SIGINT (ros2 bag record が bag を閉じて終わる) -> 止まらなければ 2 回目 SIGTERM -> 3 回目 SIGKILL.
+# Ctrl+C を押すたびに 1 段進み, 押さなくても 10 秒ごとに自動で次へ進む (固まったまま残らないように)
+stop_level=0
+stop_children() {
+    stop_level=$((stop_level + 1))
+    local sig=INT
+    case ${stop_level} in
+        1) echo "[record_rosbag] 停止中 (bag を閉じています). 止まらなければもう一度 Ctrl+C" >&2 ;;
+        2) sig=TERM; echo "[record_rosbag] SIGTERM で止めます. まだ止まらなければもう一度 Ctrl+C" >&2 ;;
+        *) sig=KILL; echo "[record_rosbag] SIGKILL で強制終了します (ros2 bag reindex <bag> で復旧できる)" >&2 ;;
+    esac
+    kill -${sig} -- -${data_pid} -${image_pid} 2>/dev/null
+    stop_t=${SECONDS}
+}
+trap stop_children INT TERM
 
 # どちらかが先に終わった (Ctrl+C / トピック名が読めない等) ら, もう片方も止めて終わる.
 # (前景の sleep で待つと Ctrl+C がそちらにだけ届くので, sleep も背景に回して組み込みの wait で待つ)
-while kill -0 "${data_pid}" 2>/dev/null && kill -0 "${image_pid}" 2>/dev/null; do
+while [ ${stop_level} -eq 0 ] && kill -0 "${data_pid}" 2>/dev/null && kill -0 "${image_pid}" 2>/dev/null; do
     sleep 1 &
     wait $!
 done
-kill -INT -- -${data_pid} -${image_pid} 2>/dev/null
+[ ${stop_level} -eq 0 ] && stop_children
+# 生死はプロセスグループ単位で見る (bash だけ先に終わって ros2 bag record が残ることがあるので)
+while kill -0 -- -"${data_pid}" 2>/dev/null || kill -0 -- -"${image_pid}" 2>/dev/null; do
+    sleep 1 &
+    wait $!
+    [ $((SECONDS - stop_t)) -ge 10 ] && stop_children
+done
 wait
 if [ -d "${RUN_DIR}/data" ] && [ -d "${RUN_DIR}/image" ]; then
     echo "[record_rosbag] 保存先: ${RUN_DIR}/{data,image}"
