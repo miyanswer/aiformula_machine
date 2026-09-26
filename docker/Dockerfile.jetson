@@ -195,10 +195,14 @@ RUN find /usr/local/lib/python3.8/dist-packages -maxdepth 1 \( -iname 'cv2*' -o 
 # exactly the GPU-support regression this Dockerfile is designed to avoid
 # (see the comment above the apt block). torchvision's version string
 # ("0.15.1a0+42759b1") is PEP 440-valid, so pip leaves it alone either way.
+# filelock は下限付き: 新しい ultralytics は filelock.AsyncFileLock (3.15.0 以降) を import するが,
+# ベースイメージの古い filelock が入っていると pip は更新しないので YOLO(...) が
+# "cannot import name 'AsyncFileLock' from 'filelock'" で失敗する (cone/traffic_light の検出が止まる).
+# 3.17 以降は Python 3.8 (このイメージ) を切ったので 3.16 までにする.
 RUN pip3 install --no-cache-dir --no-deps ultralytics ultralytics-thop && \
     pip3 install --no-cache-dir \
     cloudpickle \
-    filelock \
+    'filelock>=3.15,<3.17' \
     matplotlib \
     psutil \
     polars \
