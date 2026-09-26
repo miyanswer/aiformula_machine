@@ -54,7 +54,7 @@ cone_detector:
   ros__parameters:
     # コーン検出 (models/cone.pt) + バウンディングボックス下辺中央の地面投影 (web_simulator/js/cone_detector.js と同じ)
     image_topic: "/aiformula_sensing/zed_node/left_image/undistorted"
-    device: "cpu"                    # "cpu" / "0" (CUDA)
+    device: "0"                      # "0" (CUDA, 実機 Jetson) / "cpu"
     conf_threshold: 0.4
     max_inference_hz: 10.0
     frame_id: "base_link"
