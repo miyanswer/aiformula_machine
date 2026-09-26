@@ -249,7 +249,7 @@ export class SixLanePlanner {
         s.omegaCmd = this._rate(s.omegaCmd, 0, dt);
         s.FFilt = null; // 長く見失ったら横位置は観測から取り直す
       }
-      this.last = { ...this.last, phase: LOST, v: s.vCmd, omega: s.omegaCmd, lostTime: s.lostTime };
+      this.last = { ...this.last, phase: LOST, v: s.vCmd, omega: s.omegaCmd, lostTime: s.lostTime, vMeas };
       return this.last;
     }
     s.lostTime = 0;
@@ -309,7 +309,7 @@ export class SixLanePlanner {
       phase: ph.phase, sign: ph.sign, teacherTarget: ph.target, intensity: ph.intensity,
       F: F0, FMeas, lateralRejected: rejected, currentLane: curLane, targetLane: s.targetLane, pendingLane: s.pendingLane, pendingCount: s.pendingCount,
       kappas: [...s.kappas], kappasMeas: meas, confidence: conf, features: x, hidden, nnProbs, probs,
-      blocked: [...blocked].sort((a, b) => a - b), lookahead: [tx, ty], v: s.vCmd, omega: s.omegaCmd, lostTime: 0,
+      blocked: [...blocked].sort((a, b) => a - b), lookahead: [tx, ty], v: s.vCmd, omega: s.omegaCmd, lostTime: 0, vMeas,
     };
     return this.last;
   }

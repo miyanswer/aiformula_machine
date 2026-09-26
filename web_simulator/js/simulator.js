@@ -1840,7 +1840,7 @@ function stepSixLane(lines, now) {
   latestAutonomousCmd = cmd;
   twistMux.update('mpc', cmd.v, cmd.omega, performance.now());
   publishAutonomousCmd(cmd);
-  if (sixLaneStatusTopic) sixLaneStatusTopic.publish(new ROSLIB.Message({ data: JSON.stringify(sixLaneStatusJson(st)) }));
+  if (sixLaneStatusTopic) sixLaneStatusTopic.publish(new ROSLIB.Message({ data: JSON.stringify(sixLaneStatusJson(st, avoided.debug)) }));
   if (sixLaneTargetPathTopic && lines && st.targetLane) {
     const pts = [];
     for (let x = 0; x <= 10 + 1e-6; x += 0.5) pts.push([x, laneY(lines, x, st.targetLane - 0.5)]);
@@ -1851,7 +1851,7 @@ function stepSixLane(lines, now) {
 }
 
 // 実機ノード (six_lane_planner_node.py) の status JSON と同じキー。
-function sixLaneStatusJson(st) {
+function sixLaneStatusJson(st, avoid = '') {
   const r = (v, d = 3) => (typeof v === 'number' ? +v.toFixed(d) : v);
   return {
     phase: st.phase, current_lane: st.currentLane ?? null, target_lane: st.targetLane ?? null,
@@ -1861,6 +1861,10 @@ function sixLaneStatusJson(st) {
     kappas: (st.kappas || []).map((k) => r(k, 4)), confidence: r(st.confidence),
     nn_probs: (st.nnProbs || []).map((q) => r(q)), probs: (st.probs || []).map((q) => r(q)),
     blocked: st.blocked || [], v: r(st.v), omega: r(st.omega), lost_time: r(st.lostTime),
+    // NN の入力 (features: [速度/vMax, 曲率 近/中/遠 x kappaScale, (F-3)/3, 信頼度], ±2 でクリップ) と実車速 (実機ノードと同じキー)
+    features: (st.features || []).map((f) => r(f, 4)), v_meas: r(st.vMeas),
+    explain: st.phase ? explainJa(st, sixLanePlanner ? sixLanePlanner.p : SIX_LANE_PARAMS) : [],
+    avoid,
   };
 }
 

@@ -92,6 +92,17 @@ def test_lost_lines_stop(planner):
     assert st['v'] == 0.0 and st['target_lane'] == 6
 
 
+def test_status_has_nn_features_and_measured_speed(planner):
+    """status に NN の入力 (features) と実車速 (v_meas) が入り, features で NN を回すと nn_probs が再現できる
+    (rosbag から判断を 1 フレームずつ追える). 見失い中も v_meas は更新される."""
+    st = planner.step(1 / 15, make_lines(offset=-2.9, kappa=0.03), 1.3)
+    assert st['v_meas'] == 1.3 and len(st['features']) == 6
+    assert st['features'][0] == pytest.approx(1.3 / planner.p.v_max)
+    probs, _ = planner.net.forward(np.array(st['features']))
+    assert probs == pytest.approx(st['nn_probs'])
+    assert planner.step(0.1, None, 0.9)['v_meas'] == 0.9
+
+
 def test_policy_agrees_with_teacher():
     p = core.SixLaneParams()
     net = core.LanePolicyNet.load(POLICY)

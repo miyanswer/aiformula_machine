@@ -73,6 +73,8 @@ def status_json(st: Dict) -> Dict:
         'kappas': [_round(k, 4) for k in st.get('kappas', [])], 'confidence': _round(st.get('confidence')),
         'nn_probs': [_round(q) for q in st.get('nn_probs', [])], 'probs': [_round(q) for q in st.get('probs', [])],
         'blocked': st.get('blocked', []), 'v': _round(st.get('v')), 'omega': _round(st.get('omega')),
+        # NN の入力 (six_lane_core.features: [速度/v_max, 曲率 近/中/遠 x kappa_scale, (F-3)/3, 信頼度], ±2 でクリップ) と CAN の実車速
+        'features': [_round(f, 4) for f in st.get('features', [])], 'v_meas': _round(st.get('v_meas')),
         'lost_time': _round(st.get('lost_time', 0.0)),
         'explain': st.get('explain', []),
         'avoid': st.get('avoid', ''),

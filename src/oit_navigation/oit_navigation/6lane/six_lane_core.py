@@ -327,7 +327,7 @@ class SixLanePlanner:
                 s.v_cmd = max(0.0, s.v_cmd - p.decel * dt)
                 s.omega_cmd = self._rate(s.omega_cmd, 0.0, dt)
                 s.F_filt = None  # 長く見失ったら横位置は観測から取り直す
-            self.last = {**self.last, 'phase': LOST, 'v': s.v_cmd, 'omega': s.omega_cmd, 'lost_time': s.lost_time}
+            self.last = {**self.last, 'phase': LOST, 'v': s.v_cmd, 'omega': s.omega_cmd, 'lost_time': s.lost_time, 'v_meas': v_meas}
             return self.last
         s.lost_time = 0.0
         # 現在の横位置 (追跡済み). shift = 白線の役割取り違えによる観測のずれ [レーン].
@@ -400,7 +400,7 @@ class SixLanePlanner:
             'pending_lane': s.pending_lane, 'pending_count': s.pending_count,
             'kappas': list(s.kappas), 'kappas_meas': meas, 'confidence': conf,
             'features': x.tolist(), 'nn_probs': nn_probs.tolist(), 'probs': probs.tolist(),
-            'blocked': sorted(blocked), 'lookahead': [tx, ty], 'v': s.v_cmd, 'omega': s.omega_cmd,
+            'blocked': sorted(blocked), 'lookahead': [tx, ty], 'v': s.v_cmd, 'omega': s.omega_cmd, 'v_meas': v_meas,
         }
         return self.last
 
