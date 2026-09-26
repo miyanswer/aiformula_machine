@@ -165,11 +165,16 @@ sudo apt install fonts-noto-cjk
 ros2 launch oit_navigation six_lane.launch.py use_device:=0 use_tensorrt:=true      # 6レーン
 ros2 launch oit_navigation navigation.launch.py use_device:=0 use_tensorrt:=true    # 周回マップ + QP
 
-# 記録 (別端末). センサ + 上の認識/判断トピック. 注釈付き画像 (フル解像度で重い) も残すなら RECORD_ANNOTATED=1
-launchers/sample_launchers/shellscript/record_rosbag.sh run1
+# 記録 -> ~/rosbag/<日付_時刻>/<名前>/{data,image}. 1 コマンドで両方 (中では別プロセス, Ctrl+C で両方止まる):
+bash launchers/sample_launchers/shellscript/record_rosbag.sh 6lane     # 6lane / qp / gamepad
+# 別々の端末で取る場合:
+bash launchers/sample_launchers/shellscript/record_rosbag_6lane.sh     # 端末A: 6lane/data   (qp / gamepad も同様)
+bash launchers/sample_launchers/shellscript/record_rosbag_image.sh 6lane   # 端末B: 6lane/image (ZED 画像 + 判断パネル)
+#   JPEG=1 で画像を JPEG で取る (約 1/10 以下). RECORD_ANNOTATED=1 で検出器の注釈付き画像も取る
+#   データと画像は 2 分以内に起動すれば同じ <日付_時刻>/<名前> に揃う
 
-# 再生して確認
-ros2 bag play ~/rosbag/<日付>/run1 --clock
+# 再生して確認 (画像は別端末で ros2 bag play ~/rosbag/<日付_時刻>/6lane/image)
+ros2 bag play ~/rosbag/<日付_時刻>/6lane/data --clock
 rviz2 -d $(ros2 pkg prefix oit_navigation)/share/oit_navigation/config/six_lane.rviz --ros-args -p use_sim_time:=true
 rviz2 -d $(ros2 pkg prefix oit_navigation)/share/oit_navigation/config/oit_navigation.rviz --ros-args -p use_sim_time:=true
 ```

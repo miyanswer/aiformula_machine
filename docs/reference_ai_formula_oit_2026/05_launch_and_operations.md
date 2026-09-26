@@ -55,9 +55,19 @@ ros2 launch sample_launchers gamepad_teleop.launch.py
 
 ### ⑤ 走行データの rosbag 記録
 ```bash
-bash src/launchers/sample_launchers/shellscript/record_rosbag.sh
+# 1 コマンドでデータと画像の両方 -> ~/rosbag/<日付_時刻>/<名前>/{data,image} (Ctrl+C で両方止まる)
+bash launchers/sample_launchers/shellscript/record_rosbag.sh 6lane     # 6lane / qp / gamepad
+# 別々の端末で取る場合
+# 端末A: 画像以外 (走行方式ごと) -> ~/rosbag/<日付_時刻>/<名前>/data
+bash launchers/sample_launchers/shellscript/record_rosbag_6lane.sh     # 6レーン走行
+bash launchers/sample_launchers/shellscript/record_rosbag_qp.sh        # 周回マップ+QP
+bash launchers/sample_launchers/shellscript/record_rosbag_gamepad.sh   # 手動走行 (odom_imu_localizer も記録中だけ起動)
+# 端末B: 画像 -> ~/rosbag/<日付_時刻>/<名前>/image   (JPEG=1 で JPEG, RECORD_ANNOTATED=1 で注釈付き画像も)
+bash launchers/sample_launchers/shellscript/record_rosbag_image.sh 6lane   # 6lane / qp / gamepad
 ```
-カメラ画像、オドメトリ、CANフレーム、制御指令などがタイムスタンプ付きで自動記録されます。
+画像以外は3種類とも IMU (ZED / VectorNav)・CANフレーム (車輪の実RPM)・gyro オドメトリ・TF・twist_mux の最終指令を共通で記録し、
+それぞれの走行方式の認識・判断トピックを追加で記録します (共通部分は `record_rosbag_common.sh`)。
+画像 (ZED 左画像・判断パネル) は別プロセスで記録し、小さいトピックの記録が画像の書き込みに引きずられないようにしています。
 
 ---
 
