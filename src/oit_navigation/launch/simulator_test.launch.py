@@ -35,9 +35,11 @@ def _cleanup_old_processes():
     """前回起動のゾンビプロセスを掃除する (rosbridge_server は対象外)."""
     try:
         subprocess.run(
+            # 実行ファイルのパス (lib/oit_navigation/<名前>) で探す: 名前だけだと, 同名の引数 (cone_detector:=false 等) を
+            # 含むこの ros2 launch 自身のコマンドラインにも一致して自分を kill -9 してしまう
             ["pkill", "-9", "-f",
-             "lane_detector|lane_navigator|odom_imu_localizer|traffic_light_distance_node|cone_detector|rviz2|"
-             "robot_state_publisher|joint_state_publisher"],
+             "lib/oit_navigation/(lane_detector|lane_navigator|odom_imu_localizer|traffic_light_distance_node|cone_detector)|"
+             "rviz2|robot_state_publisher|joint_state_publisher"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
         )
     except Exception:

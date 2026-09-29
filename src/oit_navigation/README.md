@@ -93,11 +93,13 @@ ros2 service call /lane_navigator/finish_mapping std_srvs/srv/Trigger
 - ブラウザ内だけで完結: `web_simulator/` の「自動運転」タブで検出器 (YOLOP / UFLD / 理想検出) を選び「スタート位置へ」→「自動運転: ON」
 - ROS 2 ノードで動かす: `make rosbridge` → シミュレータで「接続」→ `make sim-nav` → 「ROS2連携」
 
-### 動画 (白線検出の確認のみ)
+### 動画 (白線 YOLOP・コーン・信号機の検出の確認)
 ```bash
-ros2 launch oit_navigation video_test.launch.py backend:=yolop traffic_light:=false
-ros2 run oit_navigation verification_gui   # http://localhost:8090
+ros2 run oit_navigation verification_gui   # http://localhost:8090 で 白線 YOLOP / コーン / 信号機 / 統合 / UFLD を選んで起動
+ros2 launch oit_navigation video_test.launch.py lane_detector:=true cone_detector:=true traffic_light:=true   # 直接起動する場合
 ```
+動画は既定で実機 ZED X の配信画像と同じ 640x360 に縮小して流す (`image_width:=0` で元のまま).
+YOLOP の前処理は `roi_mode` (既定 `crop_bottom` = ファインチューニング時と同じ. `mask_top` で比較できる).
 
 ### 6レーン動的選択走行 (地図なし・オドメトリなし)
 周回マップ + QP とは別の走行方式. 白線から仮想6レーンを作り, NN がアウト・イン・アウトになるレーンを選ぶ.

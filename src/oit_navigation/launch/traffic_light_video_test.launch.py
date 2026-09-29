@@ -22,8 +22,9 @@ def _cleanup_old_processes():
     """前回起動のゾンビプロセスを掃除する。"""
     try:
         subprocess.run(
+            # 実行ファイルのパスで探す (名前だけだと同名の引数を含む ros2 launch 自身にも一致しうる)
             ["pkill", "-9", "-f",
-             "video_publisher|traffic_light_distance_node|rviz2"],
+             "lib/oit_navigation/(video_publisher|traffic_light_distance_node)|rviz2"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=False,

@@ -1,10 +1,12 @@
 """
-MP4 動画で白線検出 (左境界/中央線/右境界の割り当てまで) と信号機検出をデバッグする起動ファイル (実機不要).
+MP4 動画で白線検出 (左境界/中央線/右境界の割り当てまで)・コーン検出・信号機検出をデバッグする起動ファイル (実機不要).
+verification_gui.py (検証GUI) の各パイプラインもこの launch を使う.
 
-    MP4 -> video_publisher -> .../left_image/undistorted(/compressed)
-        -> lane_detector (backend: yolop / ufld) -> LaneLines, Path x3, 注釈画像
-        -> traffic_light_distance_node (traffic_light:=true のとき)
-        -> RViz2
+    MP4 -> video_publisher (既定で 640x360 に縮小 = 実機 ZED X の配信画像と同じ) -> .../left_image/undistorted(/compressed)
+        -> lane_detector (lane_detector:=true. backend: yolop / ufld, YOLOP の前処理は roi_mode) -> LaneLines, Path x3, 注釈画像
+        -> cone_detector (cone_detector:=true) -> コーン位置, 注釈画像
+        -> traffic_light_distance_node (traffic_light:=true) -> 信号までの距離, 注釈画像
+        -> RViz2 (config/video_test.rviz: 元の動画 Camera (video) と Lane Detector / Cone Detector / Traffic Light の注釈画像)
 
 動画にはオドメトリ (CAN/IMU) が無いため, 周回マップ作成と QP 走行 (odom_imu_localizer / lane_navigator)
 は起動しない. それらは Web シミュレータ (simulator_test.launch.py) か実機で検証する.
@@ -12,6 +14,8 @@ MP4 動画で白線検出 (左境界/中央線/右境界の割り当てまで) �
 例:
     ros2 launch oit_navigation video_test.launch.py backend:=yolop traffic_light:=false
     ros2 launch oit_navigation video_test.launch.py backend:=ufld video_path:=/aiformula_machine/mp4/xxx.mp4
+    ros2 launch oit_navigation video_test.launch.py lane_detector:=false traffic_light:=false cone_detector:=true   # コーンだけ
+    ros2 launch oit_navigation video_test.launch.py roi_mode:=mask_top   # YOLOP の前処理を比べる
 """
 
 import os.path as osp
@@ -32,8 +36,11 @@ from common_python.workspace_paths import default_workspace_asset
 def _cleanup_old_processes():
     try:
         subprocess.run(
+            # 実行ファイルのパス (lib/oit_navigation/<名前>) で探す: 名前だけだと, 同名の引数 (cone_detector:=false 等) を
+            # 含むこの ros2 launch 自身のコマンドラインにも一致して自分を kill -9 してしまう
             ["pkill", "-9", "-f",
-             "video_publisher|lane_detector|traffic_light_distance_node|rviz2|robot_state_publisher|joint_state_publisher"],
+             "lib/oit_navigation/(video_publisher|lane_detector|cone_detector|traffic_light_distance_node)|"
+             "rviz2|robot_state_publisher|joint_state_publisher"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
         )
     except Exception:
@@ -55,6 +62,12 @@ def generate_launch_description():
         DeclareLaunchArgument("use_device", default_value="cpu", description="'cpu' / '0' (CUDA) / 'mps'"),
         DeclareLaunchArgument("fps", default_value="15.0"),
         DeclareLaunchArgument("loop", default_value="true"),
+        DeclareLaunchArgument("image_width", default_value="640",
+                              description="動画をこの幅に縮小して配信 (実機 ZED X の配信画像 640x360 と同じにする). 0 で元のまま"),
+        DeclareLaunchArgument("image_height", default_value="360"),
+        DeclareLaunchArgument("lane_detector", default_value="true", description="白線検出 (lane_detector) を起動する"),
+        DeclareLaunchArgument("roi_mode", default_value="crop_bottom",
+                              description="YOLOP の前処理: 'crop_bottom' (学習時と同じ, 既定) / 'mask_top' / 'none'"),
         DeclareLaunchArgument("backend", default_value="yolop", description="'yolop' / 'ufld'"),
         DeclareLaunchArgument("weight_path",
                               default_value=default_workspace_asset("models", "honda_shihou_finetuned_best.pth"),
@@ -72,6 +85,8 @@ def generate_launch_description():
                               default_value=default_workspace_asset("models", "traffic_light.pt")),
         DeclareLaunchArgument("traffic_light_params_file",
                               default_value=osp.join(pkg, "config", "traffic_light_params.yaml")),
+        DeclareLaunchArgument("cone_detector", default_value="false", description="コーン検出 (cone_detector) を起動する"),
+        DeclareLaunchArgument("cone_model_path", default_value=default_workspace_asset("models", "cone.pt")),
     ]
 
     vehicle_tf = IncludeLaunchDescription(
@@ -84,11 +99,17 @@ def generate_launch_description():
             "video_path": LaunchConfiguration("video_path"), "topic_name": camera_topic,
             "frame_id": FRAME_IDS["zedx"]["left"], "fps": LaunchConfiguration("fps"),
             "loop": LaunchConfiguration("loop"),
+            "resize_width": LaunchConfiguration("image_width"), "resize_height": LaunchConfiguration("image_height"),
+            # 生画像も出す: RViz2 で元の動画を見る用 (Jetson のイメージには compressed を表示する
+            # image_transport プラグインが無い). 検出器は従来どおり /compressed を使う
+            "publish_raw": True,
         }],
     )
     lane_detector = Node(
         package="oit_navigation", executable="lane_detector", name="lane_detector", output="screen",
+        condition=IfCondition(LaunchConfiguration("lane_detector")),
         parameters=[LaunchConfiguration("params_file"), {
+            "roi_mode": LaunchConfiguration("roi_mode"),
             "backend": LaunchConfiguration("backend"),
             "use_device": LaunchConfiguration("use_device"),
             "weight_path": LaunchConfiguration("weight_path"),
@@ -110,9 +131,18 @@ def generate_launch_description():
             "publish_annotated_image": True,
         }],
     )
+    cone_detector = Node(
+        package="oit_navigation", executable="cone_detector", name="cone_detector", output="screen",
+        condition=IfCondition(LaunchConfiguration("cone_detector")),
+        parameters=[LaunchConfiguration("params_file"), {
+            "image_topic": LaunchConfiguration("input_image_topic"),
+            "model_path": LaunchConfiguration("cone_model_path"),
+            "device": LaunchConfiguration("use_device"),
+        }],
+    )
     rviz = Node(
         package="rviz2", executable="rviz2", name="rviz2", output="screen",
-        arguments=["-d", osp.join(pkg, "config", "oit_navigation.rviz")],
+        arguments=["-d", osp.join(pkg, "config", "video_test.rviz")],
         condition=IfCondition(LaunchConfiguration("rviz")), on_exit=Shutdown(),
     )
-    return LaunchDescription(args + [vehicle_tf, video, lane_detector, traffic_light, rviz])
+    return LaunchDescription(args + [vehicle_tf, video, lane_detector, cone_detector, traffic_light, rviz])

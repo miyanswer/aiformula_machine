@@ -10,11 +10,15 @@ verification_gui.py - 検証用launch選択GUI (ブラウザ版)
 文字化けするため、ホスト側ブラウザで描画することで文字化けを回避する。
 noVNC (RViz用, :8080) とは別のポート (既定 :8090) で待受ける。
 
-検証パイプライン (既存launchの組み合わせで表現):
-    1. YOLO単体        (信号機検出)                 -> traffic_light_video_test.launch.py
-    2. 白線検出 YOLOP  (左/中央/右の割り当てまで)   -> video_test.launch.py backend:=yolop traffic_light:=false
-    3. 白線検出 UFLD   (同上, UFLD の重みが必要)    -> video_test.launch.py backend:=ufld traffic_light:=false
-    4. 統合 (白線 YOLOP + 信号機)                   -> video_test.launch.py backend:=yolop traffic_light:=true
+検証パイプライン (どれも video_test.launch.py. 結果は RViz2 の注釈付き画像
+Lane Detector / Cone Detector / Traffic Light で見る):
+    1. 白線検出 YOLOP  (左/中央/右の割り当てまで)   lane_detector:=true  backend:=yolop
+    2. コーン検出 YOLO (cone.pt, 位置の推定まで)    cone_detector:=true
+    3. 信号機検出 YOLO (traffic_light.pt, 距離まで) traffic_light:=true
+    4. 統合 (YOLOP + コーン + 信号機)
+    5. 白線検出 UFLD   (UFLD の重みが必要)          lane_detector:=true  backend:=ufld
+    画面で選べるもの: YOLOP の前処理 (roi_mode: crop_bottom = 学習時と同じ / mask_top で比較),
+    画像サイズ (640x360 = 実機 ZED X の配信画像と同じ / 元のまま), デバイス, FPS, ループ.
     ※ 動画にはオドメトリが無いため, 周回マップ作成/QP走行 (lane_navigator) は
       Web シミュレータ or 実機で検証する.
 """
@@ -55,33 +59,48 @@ def _find_default_mp4_dir() -> str:
 
 DEFAULT_MP4_DIR = _find_default_mp4_dir()
 
-# (表示ラベル, launchファイル名, 固定引数, デバイス引数名)
+# (表示ラベル, launchファイル名, 固定引数, デバイス引数名). どれも video_test.launch.py (白線/コーン/信号機を個別に ON/OFF)
+_OFF = {"lane_detector": "false", "cone_detector": "false", "traffic_light": "false", "rviz": "true"}
 PIPELINES = [
     {
-        "label": "① YOLO単体 (信号機検出)",
-        "launch_file": "traffic_light_video_test.launch.py",
-        "fixed_args": {"rviz": "true"},
-        "device_arg": "device",
+        "label": "① 白線検出 YOLOP (左/中央/右)",
+        "launch_file": "video_test.launch.py",
+        "fixed_args": {**_OFF, "lane_detector": "true", "backend": "yolop"},
+        "device_arg": "use_device",
+        "uses_yolop": True,
     },
     {
-        "label": "② 白線検出 YOLOP (左/中央/右)",
+        "label": "② コーン検出 YOLO (cone.pt)",
         "launch_file": "video_test.launch.py",
-        "fixed_args": {"backend": "yolop", "traffic_light": "false", "rviz": "true"},
+        "fixed_args": {**_OFF, "cone_detector": "true"},
         "device_arg": "use_device",
     },
     {
-        "label": "③ 白線検出 UFLD (左/中央/右)",
+        "label": "③ 信号機検出 YOLO (traffic_light.pt)",
         "launch_file": "video_test.launch.py",
-        "fixed_args": {"backend": "ufld", "traffic_light": "false", "rviz": "true"},
+        "fixed_args": {**_OFF, "traffic_light": "true"},
         "device_arg": "use_device",
     },
     {
-        "label": "④ 統合 (白線 YOLOP + 信号機)",
+        "label": "④ 統合 (白線 YOLOP + コーン + 信号機)",
         "launch_file": "video_test.launch.py",
-        "fixed_args": {"backend": "yolop", "traffic_light": "true", "rviz": "true"},
+        "fixed_args": {**_OFF, "lane_detector": "true", "backend": "yolop", "cone_detector": "true", "traffic_light": "true"},
+        "device_arg": "use_device",
+        "uses_yolop": True,
+    },
+    {
+        "label": "⑤ 白線検出 UFLD (左/中央/右, UFLD の重みが必要)",
+        "launch_file": "video_test.launch.py",
+        "fixed_args": {**_OFF, "lane_detector": "true", "backend": "ufld"},
         "device_arg": "use_device",
     },
 ]
+
+# YOLOP の前処理 (lane_detector の roi_mode). crop_bottom = ファインチューニング時と同じ (上部 top_cut_ratio を切り落として
+# 640x640 に引き伸ばす). mask_top は以前の実機の既定 (上部を黒塗りして letterbox) で, 比較用
+ROI_MODES = ["crop_bottom", "mask_top"]
+# 動画を配信するサイズ (video_publisher の resize). 640x360 = 実機 ZED X の配信画像と同じ
+IMAGE_SIZES = {"640x360 (実機 ZED と同じ)": ("640", "360"), "元のまま": ("0", "0")}
 
 DEVICES = ["cpu", "mps", "0"]
 
@@ -105,7 +124,8 @@ class LaunchRunner:
         with self._lock:
             return self.logs[offset:], len(self.logs)
 
-    def start(self, pipeline_index: int, video_path: str, device: str, fps: str, loop: bool):
+    def start(self, pipeline_index: int, video_path: str, device: str, fps: str, loop: bool,
+              roi_mode: str = ROI_MODES[0], image_size: str = next(iter(IMAGE_SIZES))):
         with self._lock:
             if self.proc is not None and self.proc.poll() is None:
                 raise RuntimeError("既にlaunchが実行中です。先に停止してください。")
@@ -120,6 +140,12 @@ class LaunchRunner:
             ]
             for key, value in pipeline["fixed_args"].items():
                 cmd.append(f"{key}:={value}")
+            if roi_mode not in ROI_MODES:
+                raise ValueError(f"roi_mode は {ROI_MODES} のどれか: {roi_mode}")
+            if pipeline.get("uses_yolop"):
+                cmd.append(f"roi_mode:={roi_mode}")
+            width, height = IMAGE_SIZES.get(image_size, next(iter(IMAGE_SIZES.values())))
+            cmd += [f"image_width:={width}", f"image_height:={height}"]
 
             self.logs = [f"$ {' '.join(cmd)}"]
             self.label = pipeline["label"]
@@ -227,6 +253,17 @@ INDEX_HTML = """<!doctype html>
       </div>
     </div>
 
+    <div class="row">
+      <div>
+        <label for="roiMode">YOLOP の前処理 (白線検出のとき)</label>
+        <select id="roiMode"></select>
+      </div>
+      <div>
+        <label for="imageSize">画像サイズ</label>
+        <select id="imageSize"></select>
+      </div>
+    </div>
+
     <div class="checkbox-row">
       <input type="checkbox" id="loop" checked>
       <label for="loop" style="margin:0;">ループ再生</label>
@@ -271,6 +308,18 @@ async function loadDevices() {
     opt.textContent = d;
     sel.appendChild(opt);
   });
+}
+
+async function loadOptions() {
+  const res = await fetch('/api/options');
+  const data = await res.json();
+  const fill = (id, values) => {
+    const sel = document.getElementById(id);
+    sel.innerHTML = '';
+    values.forEach(v => { const opt = document.createElement('option'); opt.value = v; opt.textContent = v; sel.appendChild(opt); });
+  };
+  fill('roiMode', data.roi_modes);
+  fill('imageSize', data.image_sizes);
 }
 
 async function loadVideos() {
@@ -327,6 +376,8 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     device: document.getElementById('device').value,
     fps: document.getElementById('fps').value,
     loop: document.getElementById('loop').checked,
+    roi_mode: document.getElementById('roiMode').value,
+    image_size: document.getElementById('imageSize').value,
   };
   if (!body.video_path) { alert('検証動画を選択してください'); return; }
   const res = await fetch('/api/start', {
@@ -345,7 +396,7 @@ document.getElementById('stopBtn').addEventListener('click', async () => {
 });
 
 (async function init() {
-  await Promise.all([loadPipelines(), loadDevices(), loadVideos()]);
+  await Promise.all([loadPipelines(), loadDevices(), loadOptions(), loadVideos()]);
   pollTimer = setInterval(pollLogsAndStatus, 1000);
 })();
 </script>
@@ -393,6 +444,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(DEVICES)
             return
 
+        if path == "/api/options":
+            self._send_json({"roi_modes": ROI_MODES, "image_sizes": list(IMAGE_SIZES)})
+            return
+
         if path == "/api/videos":
             mp4_dir = query.get("dir", [DEFAULT_MP4_DIR])[0]
             paths = sorted(glob.glob(os.path.join(mp4_dir, "*.mp4")))
@@ -421,6 +476,8 @@ class Handler(BaseHTTPRequestHandler):
                     device=str(body.get("device", "cpu")),
                     fps=str(body.get("fps", "15.0")),
                     loop=bool(body.get("loop", True)),
+                    roi_mode=str(body.get("roi_mode", ROI_MODES[0])),
+                    image_size=str(body.get("image_size", next(iter(IMAGE_SIZES)))),
                 )
                 self._send_json(result)
             except Exception as exc:

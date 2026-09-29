@@ -95,7 +95,9 @@ make bash
 動画にはオドメトリが無いため、周回マップ作成と QP 走行は Web シミュレータ（`web_simulator/`、「理想検出/YOLOP/UFLD/ROS2連携」モード）で検証します。
 
 #### 【方法 A】Web 検証 GUI を使う（おすすめ）
-ブラウザ上で動画選択、検証パイプライン（信号機単体 / 白線検出 YOLOP / 白線検出 UFLD / 統合）の選択、起動・停止を直感的に行えます。
+ブラウザ上で動画選択、検証パイプライン（白線検出 YOLOP / コーン検出 / 信号機検出 / 統合 / 白線検出 UFLD）、
+YOLOP の前処理（crop_bottom / mask_top）と画像サイズ（640x360 = 実機 ZED と同じ / 元のまま）の選択、起動・停止を行えます。
+結果は RViz2 の注釈付き画像（Lane Detector / Cone Detector / Traffic Light）で確認します。
 
 ```bash
 # Docker コンテナ内で実行 (またはホスト側で 2_test_pc_standalone.sh 実行)
