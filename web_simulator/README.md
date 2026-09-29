@@ -84,6 +84,10 @@ Web シミュレータの HUD の「詳細」タブ →「rosbridge」で以下�
   実機をシミュレータの車と同じ指令で走らせます（OFF・タブ非表示で速度 0 を送って停止）。
   シミュレータのセンサ・画像・twist_mux 出力は一切送りません（オフのまま実機に繋ぐと、
   それらが実機の同名トピックに流れ込みます）。
+  このモードでは「詳細」タブの **実機 車輪速 (理論 / 実測)** に、実機の左右輪の
+  理論 RPM（motor_controller の目標 RPM, `/aiformula_control/motor_controller/reference_signal` の CAN 0x210）と
+  実測 RPM（`/aiformula_sensing/vehicle_info` の CAN 1809）・誤差 %・直近 10 秒のグラフを表示します
+  （購読のみ。`js/real_wheel_monitor.js`）。
   以下の説明はオフ（ローカルの ROS 2 スタックとシミュレータを連携させる通常モード）のものです。
 
 ステータスが緑の「接続済み」になれば成功です。接続した時点で、停止中でも

@@ -756,6 +756,27 @@
           <dd><span id="can-rpm-l">0 rpm</span> / <span id="can-target-rpm-l">0 rpm</span></dd>
         </dl>
 
+        <div class="section-title">実機 車輪速 (理論 / 実測)</div>
+        <div id="real-wheel-status" style="font-size:11px;color:#aab2bd">未接続 (実機操縦で接続すると表示)</div>
+        <dl class="panel-grid" title="理論 = motor_controller の目標 RPM (CAN 0x210), 実測 = 車輪 RPM (CAN 1809). 括弧内は m/s. 誤差 = (実測-理論)/理論">
+          <dt>右 理論</dt>
+          <dd id="real-wheel-ref-r">-</dd>
+          <dt>右 実測</dt>
+          <dd id="real-wheel-meas-r">-</dd>
+          <dt>右 誤差</dt>
+          <dd id="real-wheel-err-r">-</dd>
+          <dt>左 理論</dt>
+          <dd id="real-wheel-ref-l">-</dd>
+          <dt>左 実測</dt>
+          <dd id="real-wheel-meas-l">-</dd>
+          <dt>左 誤差</dt>
+          <dd id="real-wheel-err-l">-</dd>
+        </dl>
+        <canvas id="real-wheel-chart" style="width:100%;height:110px;display:block;margin-top:4px;background:#1b1e23;border-radius:4px"></canvas>
+        <div style="font-size:10px;color:#8b929c">
+          直近10秒 [rpm]: <span style="color:#ff9f43">右</span> / <span style="color:#7fd1ff">左</span>, 破線 = 理論, 実線 = 実測
+        </div>
+
         <div class="section-title">制御の調停 (twist_mux)</div>
         <dl class="panel-grid">
           <dt>gamepad (150)</dt>

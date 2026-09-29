@@ -8,6 +8,7 @@ import { addMyLapsGantry, MYLAPS_COLLIDERS, mylapsPoseOnPath, worldColliders, se
 import { createConeEditor } from './cone_editor.js';
 import { loadConeTemplate, addCone, coneWorldColliders } from './cone_props.js';
 import { TwistMux } from './twist_mux.js';
+import { RealWheelMonitor } from './real_wheel_monitor.js';
 import { UfldLaneDetector } from './ufld_lane_detector.js';
 import { IdealLaneDetector } from './ideal_lane_detector.js';
 import { ModelLaneDetector } from './lane_model_detector.js';
@@ -711,6 +712,16 @@ function syncTeleopOnlyDefault() {
 urlInput.addEventListener('input', syncTeleopOnlyDefault);
 syncTeleopOnlyDefault();
 const statusText = document.getElementById('status-text');
+const realWheelMonitor = new RealWheelMonitor({
+  status: document.getElementById('real-wheel-status'),
+  refR: document.getElementById('real-wheel-ref-r'),
+  measR: document.getElementById('real-wheel-meas-r'),
+  errR: document.getElementById('real-wheel-err-r'),
+  refL: document.getElementById('real-wheel-ref-l'),
+  measL: document.getElementById('real-wheel-meas-l'),
+  errL: document.getElementById('real-wheel-err-l'),
+  canvas: document.getElementById('real-wheel-chart'),
+});
 
 function setStatus(state, label) {
   statusDot.className = state;
@@ -719,6 +730,7 @@ function setStatus(state, label) {
 
 function clearRosTopics() {
   teleopOnlyInput.disabled = false;
+  realWheelMonitor.stop();
   cmdVelTopic = null;
   compressedImageTopic = null;
   imuTopic = null;
@@ -796,6 +808,9 @@ function connect() {
     // null のままなので各 publish 関数は no-op になる。
     if (teleopOnly) {
       autonomousCmdVelTopic = new ROSLIB.Topic({ ros, name: AUTONOMOUS_CMD_VEL_TOPIC, messageType: 'geometry_msgs/msg/Twist' });
+      // 実機の車輪速 (理論 = motor_controller 指令 RPM, 実測 = CAN RPM) を購読して
+      // HUD に並べる (js/real_wheel_monitor.js)。購読のみで実機側へは何も送らない。
+      realWheelMonitor.start(ros);
       return;
     }
     compressedImageTopic = new ROSLIB.Topic({
@@ -2319,6 +2334,7 @@ window.__sim = {
   seedLineTrackerFromLane: (F) => lineTracker.seedLanePosition(F),
   trafficLightDetector, trafficStop, latestTrafficLight: () => latestTrafficLight,
   setSignalMode: (m) => setSignalMode(m), currentSignal: () => currentSignal(),
+  realWheelMonitor,
   signalClock: () => signalClock, setSignalClock: (t) => { signalClock = t; advanceSignal(0); },
 };
 resetLocalizer();
@@ -2619,6 +2635,7 @@ function animate() {
   const targetSpeeds = physics.targetWheelSpeeds(activeKeys);
   if (canTargetRpmRVal) canTargetRpmRVal.textContent = `${Math.round(toRpm(targetSpeeds.right))} rpm`;
   if (canTargetRpmLVal) canTargetRpmLVal.textContent = `${Math.round(toRpm(targetSpeeds.left))} rpm`;
+  realWheelMonitor.update();
 
   render();
 }
