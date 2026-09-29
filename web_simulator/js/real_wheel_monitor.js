@@ -94,7 +94,7 @@ export class RealWheelMonitor {
     this.latest[kind] = rpm;
     this.lastMs[kind] = t;
     const h = this.history[kind];
-    // グラフ用は 20ms 間隔に間引く (CAN は ~100Hz)
+    // グラフ用は 20ms 間隔に間引く (指令 0x210・実RPM 1809 とも ~100Hz)
     if (h.length === 0 || t - h[h.length - 1].t >= 20) h.push({ t, ...rpm });
     while (h.length && t - h[0].t > HISTORY_SEC * 1000) h.shift();
   }
@@ -108,7 +108,11 @@ export class RealWheelMonitor {
       status.textContent = '未接続 (実機操縦で接続すると表示)';
     } else {
       const f = (k) => (fresh(k) ? '受信中' : '受信なし');
-      status.textContent = `理論 ${f('reference')} / 実測 ${f('measured')}`;
+      // 届いていない側の原因の目安 (0x210 は motor_controller が出す、1809 はモータドライバが can0 に出す)
+      const hints = [];
+      if (!fresh('reference')) hints.push('理論 (0x210) なし = motor_controller 未起動?');
+      if (!fresh('measured')) hints.push('実測 (1809) なし = can0 / モータドライバ / socket_can_bridge?');
+      status.textContent = `理論 ${f('reference')} / 実測 ${f('measured')}` + (hints.length ? ` — ${hints.join(' / ')}` : '');
     }
     const ref = fresh('reference') ? this.latest.reference : null;
     const meas = fresh('measured') ? this.latest.measured : null;
@@ -148,37 +152,80 @@ export class RealWheelMonitor {
     const padL = 30;
     const plotW = w - padL - 4;
     const x = (t) => padL + plotW * (1 - (now - t) / (HISTORY_SEC * 1000));
-    const y = (rpm) => h / 2 - (rpm / maxAbs) * (h / 2 - 6);
 
-    ctx.strokeStyle = '#3a3f47';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(padL, y(0));
-    ctx.lineTo(w - 4, y(0));
-    ctx.stroke();
-    ctx.fillStyle = '#8b929c';
-    ctx.font = '10px sans-serif';
-    ctx.textAlign = 'right';
-    ctx.fillText(`${maxAbs}`, padL - 3, y(maxAbs) + 8);
-    ctx.fillText('0', padL - 3, y(0) + 3);
-    ctx.fillText(`-${maxAbs}`, padL - 3, y(-maxAbs));
-
-    const series = [
-      { kind: 'reference', side: 'right', color: '#ff9f43', dash: [4, 3] },
-      { kind: 'measured', side: 'right', color: '#ff9f43', dash: [] },
-      { kind: 'reference', side: 'left', color: '#7fd1ff', dash: [4, 3] },
-      { kind: 'measured', side: 'left', color: '#7fd1ff', dash: [] },
+    // 右輪 (上段) と 左輪 (下段) に分け、各段で 理論 = 灰色の細い破線, 実測 = 色付きの太い実線。
+    const panels = [
+      { side: 'right', label: '右輪', color: '#ff9f43' },
+      { side: 'left', label: '左輪', color: '#7fd1ff' },
     ];
-    ctx.lineWidth = 1.5;
-    for (const s of series) {
-      const pts = this.history[s.kind];
-      if (pts.length < 2) continue;
-      ctx.strokeStyle = s.color;
-      ctx.setLineDash(s.dash);
+    const panelH = h / panels.length;
+    panels.forEach((pn, i) => {
+      const top = i * panelH;
+      // 上 14px は凡例用に空け、残りをグラフに使う
+      const legendH = 14;
+      const mid = top + legendH + (panelH - legendH) / 2;
+      const y = (rpm) => mid - (rpm / maxAbs) * ((panelH - legendH) / 2 - 4);
+
+      if (i > 0) {
+        ctx.strokeStyle = '#2b2f36';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(0, top);
+        ctx.lineTo(w, top);
+        ctx.stroke();
+      }
+      ctx.strokeStyle = '#3a3f47';
+      ctx.lineWidth = 1;
       ctx.beginPath();
-      pts.forEach((p, i) => (i ? ctx.lineTo(x(p.t), y(p[s.side])) : ctx.moveTo(x(p.t), y(p[s.side]))));
+      ctx.moveTo(padL, y(0));
+      ctx.lineTo(w - 4, y(0));
       ctx.stroke();
-    }
+      ctx.fillStyle = '#8b929c';
+      ctx.font = '10px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(`${maxAbs}`, padL - 3, y(maxAbs) + 8);
+      ctx.fillText('0', padL - 3, y(0) + 3);
+      ctx.fillText(`-${maxAbs}`, padL - 3, y(-maxAbs));
+
+      const series = [
+        { kind: 'reference', color: '#9aa0a8', dash: [5, 4], width: 1.2 },
+        { kind: 'measured', color: pn.color, dash: [], width: 2.2 },
+      ];
+      for (const s of series) {
+        const pts = this.history[s.kind];
+        if (pts.length < 2) continue;
+        ctx.strokeStyle = s.color;
+        ctx.lineWidth = s.width;
+        ctx.setLineDash(s.dash);
+        ctx.beginPath();
+        pts.forEach((p, k) => (k ? ctx.lineTo(x(p.t), y(p[pn.side])) : ctx.moveTo(x(p.t), y(p[pn.side]))));
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+
+      // 段ごとの凡例 (左上): 輪の名前, 理論 = 灰破線, 実測 = 色実線
+      const ly = top + 11;
+      let lx = padL + 4;
+      ctx.textAlign = 'left';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.fillStyle = pn.color;
+      ctx.fillText(pn.label, lx, ly);
+      lx += 30;
+      ctx.font = '10px sans-serif';
+      for (const s of series) {
+        ctx.strokeStyle = s.color;
+        ctx.lineWidth = s.width;
+        ctx.setLineDash(s.dash);
+        ctx.beginPath();
+        ctx.moveTo(lx, ly - 3);
+        ctx.lineTo(lx + 16, ly - 3);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = '#c8cdd4';
+        ctx.fillText(s.kind === 'reference' ? '理論' : '実測', lx + 19, ly);
+        lx += 48;
+      }
+    });
     ctx.setLineDash([]);
   }
 }
