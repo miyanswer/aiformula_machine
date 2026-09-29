@@ -4,16 +4,18 @@
 //   occupancy = bbox_h / image_h,  distance = coeff / occupancy,  coeff = real_height * fy / reference_height
 // MyLaps パネルは実機と同じ 32cm 角 (models/MyLaps.obj の Panel_Body)。
 // 焦点距離は実機 (traffic_light_params.yaml の focal_length_y = 実測校正値) と同じく実測で校正した値:
-// シミュレータのカメラの幾何的な fy は 763.17px @1080 (縦画角 70.6deg) だが、YOLO のボックスは小さい物体ほど
+// シミュレータのカメラの幾何的な fy は実機と同じ 733.26px @1080 (縦画角 72.7deg) だが、YOLO のボックスは小さい物体ほど
 // 実物より数 px 大きく出る (640 入力に縮小するため。実機も同じ) ので、そのままだと距離を 1〜2m 短く見積もる。
-// 3〜18m に置いた赤/緑パネル 120 枚で合わせ、停止帯 4〜8m で誤差平均 ±0.1m になる 900px を使う
+// 旧カメラ (fy 763.17, 縦画角 70.6deg) で 3〜18m に置いた赤/緑パネル 120 枚で合わせ、停止帯 4〜8m で
+// 誤差平均 ±0.1m になったのが 900px。カメラを実機 ZED X (SN47800407) に合わせたので画角の比で換算した
+// 900 x 733.26 / 763.17 = 864.7px を使う (暫定. 同じ手順で測り直すこと)。
 // (12m より遠いとボックスが 8〜10px で頭打ちになり短めに出る = 早めに減速するだけで安全側)。
 // 生成: python3 src/oit_navigation/oit_navigation/export_cone_onnx.py \
 //         --weights models/traffic_light.pt --output web_simulator/models/traffic_light.onnx
 
 import { decodeYoloOutput, unletterbox } from './cone_detector.js';
 
-export const SIM_TRAFFIC_LIGHT_FOCAL_LENGTH_Y = 900.0; // [px @1080]
+export const SIM_TRAFFIC_LIGHT_FOCAL_LENGTH_Y = 864.7; // [px @1080]
 
 const MODEL_INPUT_SIZE = 640;
 

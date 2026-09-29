@@ -8,12 +8,15 @@
 // identical -- this isolates "does the driving method work" from "does UFLD
 // generalize to this simulator's rendering".
 
-import { fitLine } from './lane_navigator.js';
+import { fitLine, DEFAULT_CAMERA } from './lane_navigator.js';
 
 export const IDEAL_DETECTOR_PARAMS = {
   xMin: 1.2, // [m] closest visible ground point (camera FOV)
   xMax: 12.0, // [m]
-  halfFovTan: Math.tan((51.5 * Math.PI) / 180), // horizontal half FOV of the 16:9, 70.6deg-vFOV camera
+  // horizontal field of view of the onboard camera (DEFAULT_CAMERA): tan of the left / right half angles.
+  // The principal point is right of centre (cx 980.22), so the camera sees a little more to the left.
+  leftFovTan: DEFAULT_CAMERA.cx / DEFAULT_CAMERA.fx,
+  rightFovTan: (DEFAULT_CAMERA.refWidth - DEFAULT_CAMERA.cx) / DEFAULT_CAMERA.fx,
   noiseBase: 0.03, // [m] lateral noise sigma at the vehicle
   noisePerMeter: 0.01, // [m/m] extra sigma per meter of distance
   dropProb: 0.15, // per-line, per-frame dropout probability
@@ -58,7 +61,7 @@ export class IdealLaneDetector {
         const dy = q[1] - pose.y;
         const vx = c * dx + s * dy;
         const vy = -s * dx + c * dy;
-        if (vx < p.xMin || vx > p.xMax || Math.abs(vy) > vx * p.halfFovTan) continue;
+        if (vx < p.xMin || vx > p.xMax || vy > vx * p.leftFovTan || -vy > vx * p.rightFovTan) continue;
         xs.push(vx);
         ys.push(vy);
       }

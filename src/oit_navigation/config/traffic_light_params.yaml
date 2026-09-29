@@ -22,10 +22,11 @@
     # --- カメラ: 実機 ZED X の垂直焦点距離 (画像高さ 360px 基準) ---
     # 距離係数は real_height_m * focal_length_y / reference_image_height で、
     # focal_length_y と reference_image_height の「比」だけが効く (入力画像の解像度には依存しない)。
-    # 確認: ros2 topic echo -f /aiformula_sensing/zed_node/left_image/camera_info --field k  (K[4] = fy)
+    # 確認: ros2 topic echo --once /aiformula_sensing/zed_node/left/camera_info  (k[4] = fy)
+    #   実機 ZED X SN47800407 (2026-09-29): 640x360 で k[4] = 244.418
     # 別解像度の fy を使う場合は reference_image_height もその画像高さに合わせること。
     # (旧値: mp4/shihou_video_2026_08_24_15_37_28.mp4 で 20m 実測逆算した 2238.5px @1080)
-    focal_length_y: 248.7        # 垂直焦点距離 [px] (@ reference_image_height)
+    focal_length_y: 244.42       # 垂直焦点距離 [px] (@ reference_image_height) = camera_info の k[4]
     reference_image_height: 360  # focal_length_y の基準画像高さ [px]
 
     vertical_fov_deg: 0.0        # focal_length_y<=0 のときの代替: 垂直画角 [deg] (ZED X HD1080 ~= 72.7)

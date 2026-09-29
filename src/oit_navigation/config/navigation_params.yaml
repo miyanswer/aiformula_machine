@@ -27,11 +27,14 @@ lane_detector:
     lane_line_right_topic: "/aiformula_perception/lane_line_publisher/lane_lines/right"
     annotated_image_topic: "/aiformula_visualization/lane_detector/annotated_image"
     fit_x_max: 12.0                  # これより遠い点はフィットに使わない [m]
-    # カメラ (ZED X HD1080 intrinsic SN48442725 / extrinsic.yaml)
-    camera_fx: 763.17
-    camera_fy: 763.17
-    camera_cx: 990.04
-    camera_cy: 543.45
+    # カメラ内部パラメータ: 実機 ZED X の camera_info (2026-09-29 取得. 配信画像 640x360 の値 x3 で 1920x1080 基準).
+    #   ros2 topic echo --once /aiformula_sensing/zed_node/left/camera_info  -> k = [244.418, 0, 326.739, 0, 244.418, 172.209, ...]
+    #   (以前の 763.17 / 990.04 / 543.45 は SN48442725 の HD1080.yaml の値で, 今のカメラの配信画像と合わず
+    #    4〜6m 先のコーン・白線の距離が 1〜2m 遠く出ていた). 外部 (高さ・傾き) は実測どおり
+    camera_fx: 733.26
+    camera_fy: 733.26
+    camera_cx: 980.22
+    camera_cy: 516.63
     camera_ref_width: 1920
     camera_ref_height: 1080
     camera_height: 0.56              # 地面からの高さ [m] (base_link 0.12 + 0.44)
@@ -66,11 +69,11 @@ cone_detector:
     valid_x_min: 0.3
     valid_x_max: 8.0
     valid_y_abs_max: 3.0
-    # カメラ: lane_detector と同じ値にすること (同じ ZED X)
-    camera_fx: 763.17
-    camera_fy: 763.17
-    camera_cx: 990.04
-    camera_cy: 543.45
+    # カメラ: lane_detector と同じ値にすること (同じ ZED X. 実機 camera_info の値)
+    camera_fx: 733.26
+    camera_fy: 733.26
+    camera_cx: 980.22
+    camera_cy: 516.63
     camera_ref_width: 1920
     camera_ref_height: 1080
     camera_height: 0.56

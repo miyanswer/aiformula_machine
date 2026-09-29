@@ -45,8 +45,6 @@ def _nodes(context):
     params = {"image_topic": image_topic, "model_path": get("model_path"), "device": get("device")}
     if get("conf_threshold"):
         params["conf_threshold"] = float(get("conf_threshold"))
-    if simulator:
-        params.update({"camera_cx": 960.0, "camera_cy": 540.0})  # シミュレータの理想ピンホール (six_lane.launch.py と同じ)
 
     return [Node(
         package="oit_navigation", executable="cone_detector", name="cone_detector", output="screen",

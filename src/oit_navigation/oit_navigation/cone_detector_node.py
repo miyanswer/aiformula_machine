@@ -60,8 +60,8 @@ class ConeDetectorNode(Node):
         self.x_max = float(d('valid_x_max', 8.0).value)
         self.y_abs_max = float(d('valid_y_abs_max', 3.0).value)
         self.camera = CameraModel(
-            fx=float(d('camera_fx', 763.17).value), fy=float(d('camera_fy', 763.17).value),
-            cx=float(d('camera_cx', 960.0).value), cy=float(d('camera_cy', 540.0).value),
+            fx=float(d('camera_fx', 733.26).value), fy=float(d('camera_fy', 733.26).value),
+            cx=float(d('camera_cx', 980.22).value), cy=float(d('camera_cy', 516.63).value),
             ref_width=int(d('camera_ref_width', 1920).value), ref_height=int(d('camera_ref_height', 1080).value),
             cam_height=float(d('camera_height', 0.56).value), cam_x=float(d('camera_x', 0.055).value),
             pitch_down=np.deg2rad(float(d('camera_pitch_down_deg', 1.8).value)),

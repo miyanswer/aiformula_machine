@@ -53,9 +53,24 @@ const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerH
 camera.position.set(-2.5, 2.0, 2.5);
 
 // Onboard (vehicle-mounted) camera, rendered picture-in-picture top-right.
-// Vertical FOV = 70.6 deg, matching the real ZED X HD1080 intrinsic parameters
-// (see config/zedx/intrinsic/SN48442725/HD1080.yaml: 2 * atan(540 / 763.17) ≈ 70.6 deg).
-const onboardCamera = new THREE.PerspectiveCamera(70.6, 16 / 9, 0.05, 500);
+// Same intrinsics as the real ZED X (DEFAULT_CAMERA = its camera_info, see
+// config/zedx/intrinsic/SN47800407/HD1080.yaml): vertical FOV 2*atan(540/733.26) ≈ 72.7 deg and
+// the principal point off the image centre (cx 980.22, cy 516.63 @1920x1080).
+const onboardCamera = new THREE.PerspectiveCamera(
+  THREE.MathUtils.radToDeg(2 * Math.atan(DEFAULT_CAMERA.refHeight / 2 / DEFAULT_CAMERA.fy)),
+  DEFAULT_CAMERA.refWidth / DEFAULT_CAMERA.refHeight, 0.05, 500);
+
+// updateProjectionMatrix() + shift the principal point to (cx, cy) like the real camera.
+// three.js: a point on the optical axis lands at NDC (-te[8], -te[9]), i.e. pixel
+// u = (1 - te[8]) / 2 * W and v = (1 + te[9]) / 2 * H (v downwards).
+function applyOnboardIntrinsics(aspect) {
+  onboardCamera.aspect = aspect;
+  onboardCamera.updateProjectionMatrix();
+  const te = onboardCamera.projectionMatrix.elements;
+  te[8] = 1 - (2 * DEFAULT_CAMERA.cx) / DEFAULT_CAMERA.refWidth;
+  te[9] = (2 * DEFAULT_CAMERA.cy) / DEFAULT_CAMERA.refHeight - 1;
+  onboardCamera.projectionMatrixInverse.copy(onboardCamera.projectionMatrix).invert();
+}
 const pipFrame = document.getElementById('pip-frame');
 
 // Offscreen capture of the onboard camera, published as a compressed image
@@ -942,8 +957,7 @@ const IMAGE_PUBLISH_HZ = 15;
 // rosbridge connection state, so the two panels work locally even when not
 // connected -- same as the existing camera PiP).
 function renderOnboardCapture() {
-  onboardCamera.aspect = CAPTURE_WIDTH / CAPTURE_HEIGHT;
-  onboardCamera.updateProjectionMatrix();
+  applyOnboardIntrinsics(CAPTURE_WIDTH / CAPTURE_HEIGHT);
   captureRenderer.render(scene, onboardCamera);
 }
 
@@ -2296,7 +2310,7 @@ setInterval(() => {
 const physics = new VehiclePhysics();
 // Debug hook for automated verification (browser console / test harness).
 window.__sim = {
-  physics, captureCanvas, renderOnboardCapture, updateOnboardCameraPose, laneNavigator, lineTracker, localizer, ufldDetector,
+  physics, captureCanvas, renderOnboardCapture, updateOnboardCameraPose, onboardCamera, laneNavigator, lineTracker, localizer, ufldDetector,
   idealDetector, laneTrace, localizerTrail, fastForward: (sec) => fastForward(sec),
   setDetectorMode: (m) => setDetectorMode(m), resetNavigation: () => resetNavigation(),
   course, obstacles, mylapsRoot, pathTracker, departureMonitor, coneEditor,
@@ -2624,8 +2638,7 @@ function render() {
   const pipW = rect.width;
   const pipH = rect.height;
 
-  onboardCamera.aspect = pipW / pipH;
-  onboardCamera.updateProjectionMatrix();
+  applyOnboardIntrinsics(pipW / pipH);
 
   renderer.setScissorTest(true);
   renderer.setScissor(pipX, pipY, pipW, pipH);

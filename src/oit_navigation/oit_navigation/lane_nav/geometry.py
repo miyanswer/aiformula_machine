@@ -19,10 +19,11 @@ import numpy as np
 class CameraModel:
     """カメラ内部/外部パラメータ. fx, fy, cx, cy は ref_width x ref_height 画像での値."""
 
-    fx: float = 763.17
-    fy: float = 763.17
-    cx: float = 960.0
-    cy: float = 540.0
+    # 既定値 = 実機 ZED X (SN47800407) の camera_info (640x360 の値 x3). web_simulator の DEFAULT_CAMERA と同じ
+    fx: float = 733.26
+    fy: float = 733.26
+    cx: float = 980.22
+    cy: float = 516.63
     ref_width: int = 1920
     ref_height: int = 1080
     cam_height: float = 0.56   # 地面からの高さ [m]

@@ -56,9 +56,8 @@ def _nodes(context):
         # 発進位置の横ずれ (中央線から, 左正). 中央線の上と仮定すると右端発進で右白線を中央線と取り違える
         "tracker_init_offset": float(get("init_offset")),
     }
-    if simulator:
-        # シミュレータのカメラ: 理想ピンホール (光軸 = 画像中心). simulator_test.launch.py と同じ
-        detector_params.update({"camera_cx": 960.0, "camera_cy": 540.0})
+    # カメラの内部パラメータはシミュレータも実機と同じ (web_simulator の車載カメラは実機 ZED X の camera_info で描画)
+    # なので, navigation_params.yaml の値をそのまま使う
     lane_detector = Node(
         package="oit_navigation", executable="lane_detector", name="lane_detector", output="screen",
         parameters=[osp.join(pkg, "config", "navigation_params.yaml"), detector_params],
@@ -88,18 +87,16 @@ def _nodes(context):
             "publish_annotated_image": True,
         }
         if simulator:
-            # シミュレータのカメラ用に実測校正した焦点距離 (幾何的には 763.17px だが, 小さい物体の YOLO ボックスは
-            # 大きめに出るので停止帯 4〜8m で合うよう校正. web_simulator/js/traffic_light_detector.js と同じ).
+            # シミュレータの YOLO ボックス用に校正した焦点距離 (幾何的には実機と同じ 733.26px だが, 小さい物体の
+            # YOLO ボックスは大きめに出るので停止帯 4〜8m で合うよう校正. web_simulator/js/traffic_light_detector.js と同じ).
             # MyLaps パネルは実機と同じ 32cm 角 (web_simulator/models/MyLaps.obj の Panel_Body)
-            tl_params.update({"focal_length_y": 900.0, "reference_image_height": 1080})
+            tl_params.update({"focal_length_y": 864.7, "reference_image_height": 1080})
         nodes.append(Node(
             package="oit_navigation", executable="traffic_light_distance_node", name="traffic_light_distance_node",
             output="screen", parameters=[get("traffic_light_params_file"), tl_params],
         ))
     if get("cone_detector").lower() == "true":
         cone_params = {"image_topic": image_topic, "model_path": get("cone_model_path"), "device": get("use_device")}
-        if simulator:
-            cone_params.update({"camera_cx": 960.0, "camera_cy": 540.0})  # lane_detector と同じ理想ピンホール
         nodes.append(Node(
             package="oit_navigation", executable="cone_detector", name="cone_detector", output="screen",
             parameters=[osp.join(pkg, "config", "navigation_params.yaml"), cone_params],

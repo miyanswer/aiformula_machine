@@ -12,7 +12,7 @@ Web シミュレータ (web_simulator/) と rosbridge_server 経由で連携す�
 
 手順: `make rosbridge` -> ブラウザで http://localhost:8000/web_simulator/ を開き「接続」
      -> このファイルを起動 -> シミュレータの「自動運転」タブで「ROS2連携」を選び「自動運転: ON」.
-シミュレータのカメラは歪みなし・光軸中心の理想ピンホールなので camera_cx/cy は画像中心,
+シミュレータの車載カメラは実機 ZED X と同じ内部パラメータ (navigation_params.yaml) で描画する,
 コースの中央線 <-> 境界線は約 3.1m (web_simulator/js/simulator.js の SIM_LANE_WIDTH と同じ).
 """
 
@@ -92,9 +92,7 @@ def generate_launch_description():
             "tensorrt_engine_path": LaunchConfiguration("tensorrt_engine_path"),
             "input_image_topic": LaunchConfiguration("input_image_topic"),
             "lane_width": LaunchConfiguration("lane_width"),
-            # シミュレータのカメラ: 理想ピンホール (光軸 = 画像中心), 縦画角 70.6deg
-            "camera_cx": 960.0,
-            "camera_cy": 540.0,
+            # カメラの内部パラメータはシミュレータも実機 ZED X と同じ (navigation_params.yaml の値をそのまま使う)
         }],
     )
     localizer = Node(
@@ -122,9 +120,9 @@ def generate_launch_description():
             "device": LaunchConfiguration("use_device"),
             "real_height_m": 0.32,
             "publish_annotated_image": True,
-            # シミュレータのカメラ用に実測校正した焦点距離 (幾何的には 763.17px だが, 小さい物体の YOLO ボックスは
-            # 大きめに出るので停止帯 4〜8m で合うよう校正. web_simulator/js/traffic_light_detector.js と同じ)
-            "focal_length_y": 900.0,
+            # シミュレータの YOLO ボックス用に校正した焦点距離 (幾何的には実機と同じ 733.26px だが, 小さい物体の
+            # YOLO ボックスは大きめに出るので停止帯 4〜8m で合うよう校正. web_simulator/js/traffic_light_detector.js と同じ)
+            "focal_length_y": 864.7,
             "reference_image_height": 1080,
         }],
     )
@@ -135,9 +133,7 @@ def generate_launch_description():
             "image_topic": LaunchConfiguration("input_image_topic"),
             "model_path": LaunchConfiguration("cone_model_path"),
             "device": LaunchConfiguration("use_device"),
-            # シミュレータのカメラ: 理想ピンホール (光軸 = 画像中心). lane_detector と同じ
-            "camera_cx": 960.0,
-            "camera_cy": 540.0,
+            # カメラの内部パラメータは lane_detector と同じく navigation_params.yaml (実機 ZED X) の値
         }],
     )
     rviz = Node(

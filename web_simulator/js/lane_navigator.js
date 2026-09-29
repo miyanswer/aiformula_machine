@@ -17,8 +17,10 @@
 // ---------------------------------------------------------------------------
 // geometry.py
 // ---------------------------------------------------------------------------
+// 実機 ZED X (SN47800407) の camera_info (640x360 の値 x3). シミュレータの車載カメラもこの内部パラメータで描画する
+// (simulator.js applyOnboardIntrinsics). geometry.py CameraModel / navigation_params.yaml と同じ値
 export const DEFAULT_CAMERA = {
-  fx: 763.17, fy: 763.17, cx: 960.0, cy: 540.0, refWidth: 1920, refHeight: 1080,
+  fx: 733.26, fy: 733.26, cx: 980.22, cy: 516.63, refWidth: 1920, refHeight: 1080,
   camHeight: 0.56, camX: 0.055, pitchDown: (1.8 * Math.PI) / 180,
 };
 
