@@ -5,8 +5,10 @@ yolop_lane_backend.py - YOLOP の白線セグメンテーション (ll_seg) だ�
 models/honda_shihou_finetuned_best.pth (YOLOP) を白線検出に使う. lane_detector ノードの
 backend=yolop で使われ, 出力マスクは lane_nav/mask_lines.py で白線ごとの点列に変換される.
 
-    - 前処理: 画像上部 (top_cut_ratio) を黒塗り (roi_mode=mask_top) または切り落とし (crop_bottom),
-      640x640 に letterbox, BGR のまま ImageNet mean/std で正規化 (学習時と同じ).
+    - 前処理: roi_mode=crop_bottom (既定. 学習時と同じ) は画像上部 top_cut_ratio を切り落とし, 残りを
+      縦横比を無視して 640x640 に引き伸ばす (ファインチューニング時の前処理そのもの. web_simulator の
+      js/lane_model_detector.js も同じ). mask_top (上部を黒塗り) / none は縦横比を保って 640x640 に letterbox.
+      どれも BGR のまま ImageNet mean/std で正規化 (学習時と同じ).
     - 推論: PyTorch, または use_tensorrt=True なら TensorRT エンジン (Jetson).
       エンジンが無ければ export_tensorrt.py で GPU 用にその場でビルドしてキャッシュする.
       TensorRT が使えない環境では自動的に PyTorch にフォールバック.
@@ -35,7 +37,7 @@ class YOLOPLaneModel:
         self,
         weight_path: str,
         device: str = "cpu",
-        roi_mode: str = "mask_top",
+        roi_mode: str = "crop_bottom",
         top_cut_ratio: float = 0.45,
         norm_mean=(0.485, 0.456, 0.406),
         norm_std=(0.229, 0.224, 0.225),
@@ -136,13 +138,19 @@ class YOLOPLaneModel:
             proc = bgr
         ph, pw = proc.shape[:2]
 
-        # letterbox (縦横比維持で 640 に収め, 余白は 114 で埋める)
-        r = min(INPUT_SIZE / ph, INPUT_SIZE / pw)
-        nh, nw = int(round(ph * r)), int(round(pw * r))
-        top = (INPUT_SIZE - nh) // 2
-        left = (INPUT_SIZE - nw) // 2
-        canvas = np.full((INPUT_SIZE, INPUT_SIZE, 3), 114, np.uint8)
-        canvas[top:top + nh, left:left + nw] = cv2.resize(proc, (nw, nh), interpolation=cv2.INTER_AREA)
+        if self.roi_mode == "crop_bottom":
+            # 学習時と同じく, 切り落とした残り (例 640x198) を縦横比を無視して 640x640 に引き伸ばす
+            # (letterbox だと白線が学習時の約 1/3 の縦幅で写り, 上下に灰色の帯が付く)
+            nh, nw, top, left = INPUT_SIZE, INPUT_SIZE, 0, 0
+            canvas = cv2.resize(proc, (INPUT_SIZE, INPUT_SIZE), interpolation=cv2.INTER_LINEAR)
+        else:
+            # letterbox (縦横比維持で 640 に収め, 余白は 114 で埋める)
+            r = min(INPUT_SIZE / ph, INPUT_SIZE / pw)
+            nh, nw = int(round(ph * r)), int(round(pw * r))
+            top = (INPUT_SIZE - nh) // 2
+            left = (INPUT_SIZE - nw) // 2
+            canvas = np.full((INPUT_SIZE, INPUT_SIZE, 3), 114, np.uint8)
+            canvas[top:top + nh, left:left + nw] = cv2.resize(proc, (nw, nh), interpolation=cv2.INTER_AREA)
         x = (canvas.astype(np.float32) / 255.0 - self.mean) / self.std   # BGR のまま (学習時と同じ)
         x = torch.from_numpy(np.ascontiguousarray(x.transpose(2, 0, 1)[None]))
 

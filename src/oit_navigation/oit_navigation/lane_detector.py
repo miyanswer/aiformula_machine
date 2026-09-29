@@ -108,7 +108,7 @@ class LaneDetectorNode(Node):
         self.ufld_weight_path = d("ufld_weight_path", default_workspace_asset("models", "ufld_honda_finetuned_best.pth")).value
         self.use_device = str(d("use_device", "cpu").value)
         # YOLOP 用
-        self.roi_mode = str(d("roi_mode", "mask_top").value)
+        self.roi_mode = str(d("roi_mode", "crop_bottom").value)
         self.top_cut_ratio = float(d("top_cut_ratio", 0.45).value)
         self.use_tensorrt = bool(d("use_tensorrt", False).value)
         self.tensorrt_engine_path = str(d("tensorrt_engine_path", "").value)

@@ -15,7 +15,8 @@ lane_detector:
     use_device: "cpu"                # "cpu" / "0" (CUDA) / "mps"
     max_inference_hz: 15.0
     # YOLOP
-    roi_mode: "mask_top"             # "none" / "mask_top" / "crop_bottom"
+    roi_mode: "crop_bottom"          # 上部を切り落として 640x640 に引き伸ばす (YOLOP のファインチューニング時と同じ前処理.
+                                     # web_simulator も同じ). "mask_top" / "none" は letterbox で学習時と縮尺が合わない
     top_cut_ratio: 0.45
     use_tensorrt: false              # Jetson: true (エンジンが無ければ初回起動時にビルド)
     tensorrt_engine_path: ""
