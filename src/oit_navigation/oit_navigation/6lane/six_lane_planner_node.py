@@ -6,7 +6,7 @@ six_lane_planner_node.py - 6レーン動的選択走行ノード (地図なし�
           can_msgs/Frame (CAN 車輪回転数, id=1809)            - 速度のみ (自己位置は使わない)
           geometry_msgs/PoseArray (任意, cones_topic)         - コーン位置 (base_link). 空文字なら無効
           std_msgs/Float32 赤/青信号までの距離 (traffic_light_distance_node) - 赤なら信号の 5〜10m 手前で停止
-    出力: geometry_msgs/Twist -> twist_mux の "mpc" 入力 (/aiformula_control/extremum_seeking_mpc/cmd_vel)
+    出力: geometry_msgs/Twist -> twist_mux の "autonomous" 入力 (/aiformula_control/six_lane_planner/cmd_vel)
           std_msgs/String (JSON) 判断状態 (/aiformula_control/six_lane_planner/status)
           nav_msgs/Path          目標レーンの中心線 (base_link, /aiformula_visualization/six_lane_planner/target_path)
           visualization_msgs/MarkerArray 仮想6レーン・現在/目標レーン・確率・注視点 (base_link, .../six_lane_planner/markers)
@@ -15,8 +15,15 @@ six_lane_planner_node.py - 6レーン動的選択走行ノード (地図なし�
 
 毎フレーム, 3本の白線から仮想6レーン (左白線〜中央線を3等分 = レーン1〜3, 中央線〜右白線 = レーン4〜6) を作り,
 前方の曲率 (近/中/遠) と速度から MLP (six_lane_policy.json) が行くべきレーンを選ぶ (左回りコースでの
-アウト・イン・アウト: 直線=レーン6, カーブ中=イン側, 脱出=アウト側). lane_navigator (周回マップ + QP) の
-代わりに起動する (同じ cmd_vel トピックに出すので同時起動しないこと).
+アウト・イン・アウト: 直線=レーン6, カーブ中=イン側, 脱出=アウト側).
+
+速度上限 (手動切替): ROS パラメータ speed_limit (launch 引数 speed_limit:=), 走行中は
+    /aiformula_control/six_lane_planner/speed_limit (std_msgs/Float64) か ros2 param set で変えられる.
+    前方注視点・コーン回避の減速開始距離・白線ロスト判定は上限に合わせて自動補正する (six_lane_core.effective_control).
+観測の遅れ補償: 白線・コーンは検出時刻 (header.stamp) の base_link で測られているので, 遅れの間に進んだ分
+    (車速・ヨーレート) だけ今の base_link に変換してから使う (six_lane_core.compensate_lines / compensate_points).
+    次の白線フレームが来ない間の指令維持は hold_distance [m] / 車速 [s] まで (速いほど短い).
+車速推定: CAN 車輪速 (スリップ ~8%) を IMU の前後加速度で補う相補フィルタ (six_lane_core.SpeedEstimator).
 
 アルゴリズム本体は six_lane_core.py (web_simulator/js/six_lane_planner.js と同一).
 """
@@ -29,23 +36,27 @@ import threading
 from typing import Dict, Optional
 
 import rclpy
+from rcl_interfaces.msg import SetParametersResult
 from ament_index_python.packages import get_package_share_directory
 from rclpy.node import Node
 from can_msgs.msg import Frame
 from geometry_msgs.msg import PoseArray, PoseStamped, Twist
 from nav_msgs.msg import Path
-from sensor_msgs.msg import Image
+from sensor_msgs.msg import Image, Imu
 from std_msgs.msg import Float64, Header, String
 from visualization_msgs.msg import MarkerArray
 
 from aiformula_interfaces.msg import LaneLine, LaneLines
 from oit_navigation.utils.traffic_light_stop_ros import TrafficLightStopRos
 
-from oit_navigation.lane_nav.cone_avoidance import ReactiveAvoider
+from oit_navigation.lane_core.cone_avoidance import ReactiveAvoider
 from oit_navigation.utils.debug_panel import JapaneseText, six_lane_panel
 from oit_navigation.utils.image_util import cv2_to_imgmsg
 from oit_navigation.utils.viz_markers import cone_markers, marker_array, six_lane_markers
-from .six_lane_core import LOST, ROLES, LanePolicyNet, LineObs, SixLaneParams, SixLanePlanner, explain_ja, lane_y
+from .six_lane_core import (
+    LOST, ROLES, LanePolicyNet, LatencyGate, LineObs, SixLaneParams, SixLanePlanner, SpeedEstimator,
+    clamp_speed_limit, compensate_lines, compensate_points, effective_control, explain_ja, lane_y,
+)
 
 RPM_ID = 1809  # odometry_publisher/wheel.hpp と同じ
 
@@ -76,6 +87,10 @@ def status_json(st: Dict) -> Dict:
         # NN の入力 (six_lane_core.features: [速度/v_max, 曲率 近/中/遠 x kappa_scale, (F-3)/3, 信頼度], ±2 でクリップ) と CAN の実車速
         'features': [_round(f, 4) for f in st.get('features', [])], 'v_meas': _round(st.get('v_meas')),
         'lost_time': _round(st.get('lost_time', 0.0)),
+        # 速度上限と自動補正 (前方注視点の範囲), 車速推定, 観測の遅れ
+        'speed_limit': _round(st.get('speed_limit')), 'speed_scale': _round(st.get('speed_scale')),
+        'lookahead_range': [_round(v) for v in st.get('lookahead_range', [])],
+        'v_wheel': _round(st.get('v_wheel')), 'imu_ok': st.get('imu_ok'), 'latency': _round(st.get('latency'), 3),
         'explain': st.get('explain', []),
         'avoid': st.get('avoid', ''),
     }
@@ -88,7 +103,17 @@ class SixLanePlannerNode(Node):
         net = LanePolicyNet.load(self.policy_path)
         self.planner = SixLanePlanner(net, params)
 
-        self.v = 0.0
+        self.v = 0.0            # 推定車速 (車輪速 + IMU の相補フィルタ)
+        self.v_wheel = 0.0      # CAN 車輪速 (wheel_speed_scale 前)
+        self.yaw_rate = 0.0     # IMU のヨーレート (遅れ補償用. IMU が無ければ直前の指令の omega)
+        self.speed_est = SpeedEstimator(tau=self.speed_tau, scale=self.wheel_speed_scale)
+        self._imu_acc_sum, self._imu_acc_n, self._imu_t = 0.0, 0, -1e9
+        self._last_est_t: Optional[float] = None
+        self.gate_lines = LatencyGate(params.latency_max)
+        self.gate_cones = LatencyGate(params.latency_max)
+        self._lines_stamp: Optional[float] = None
+        self._cones_stamp: Optional[float] = None
+        self._latency = 0.0
         self._lock = threading.Lock()
         self._pending: Optional[Dict[str, Optional[LineObs]]] = None
         self._reanchored = False
@@ -103,6 +128,11 @@ class SixLanePlannerNode(Node):
         self.create_subscription(Frame, self.can_topic, self._can_cb, 50)
         if self.cones_topic:
             self.create_subscription(PoseArray, self.cones_topic, self._cones_cb, 5)
+        if self.imu_topic:
+            self.create_subscription(Imu, self.imu_topic, self._imu_cb, 50)
+        # 速度上限の手動切替 (ros2 topic pub / Web シミュレータ). ros2 param set speed_limit でも変えられる
+        self.create_subscription(Float64, self.speed_limit_topic, self._speed_limit_cb, 1)
+        self.add_on_set_parameters_callback(self._on_params)
         self.cmd_pub = self.create_publisher(Twist, self.cmd_vel_topic, 1)
         self.status_pub = self.create_publisher(String, self.status_topic, 1)
         self.path_pub = self.create_publisher(Path, self.target_path_topic, 1)
@@ -114,14 +144,15 @@ class SixLanePlannerNode(Node):
             self.get_logger().warning('判断パネル用の日本語フォントがありません (sudo apt install fonts-noto-cjk). 日本語は ? になります')
         self._last_panel_t = -1e9
         self._last_lines: Optional[Dict[str, Optional[LineObs]]] = None
-        # 赤信号停止: 最終 cmd_vel に速度上限を掛ける (lane_navigator と共通, utils/traffic_light_stop.py)
+        # 赤信号停止: 最終 cmd_vel に速度上限を掛ける (utils/traffic_light_stop.py)
         self.tl_stop = TrafficLightStopRos(self)
         # コーンの反応的回避: レーン除外 (planner) の上に重ねる最終安全層 (シミュレータの stepSixLane と同じ)
         self.avoider = ReactiveAvoider(enabled=bool(self.declare_parameter('cone_avoidance.reactive', True).value))
         self.create_timer(1.0 / self.control_rate, self._control)
         self.get_logger().info(
             f'six_lane_planner: lines={self.lane_lines_topic} CAN={self.can_topic} '
-            f'cones={self.cones_topic or "(なし)"} -> cmd_vel={self.cmd_vel_topic} (policy {self.policy_path})')
+            f'cones={self.cones_topic or "(なし)"} -> cmd_vel={self.cmd_vel_topic} (policy {self.policy_path}) '
+            f'speed_limit={self.planner.p.v_max:.2f} m/s')
 
     # ------------------------------------------------------------------ params
     def _load_params(self) -> SixLaneParams:
@@ -129,7 +160,14 @@ class SixLanePlannerNode(Node):
         self.lane_lines_topic = d('lane_lines_topic', '/aiformula_perception/lane_detector/lane_lines').value
         self.can_topic = d('can_topic', '/aiformula_sensing/vehicle_info').value
         self.cones_topic = str(d('cones_topic', '').value)
-        self.cmd_vel_topic = d('cmd_vel_topic', '/aiformula_control/extremum_seeking_mpc/cmd_vel').value
+        self.cmd_vel_topic = d('cmd_vel_topic', '/aiformula_control/six_lane_planner/cmd_vel').value
+        self.speed_limit_topic = d('speed_limit_topic', '/aiformula_control/six_lane_planner/speed_limit').value
+        self.imu_topic = str(d('imu_topic', '/aiformula_sensing/vectornav/imu').value)  # 空文字なら IMU なし (車輪速だけ)
+        # IMU の前後加速度の軸 (x/y/z) と符号. 取り付け向きが違うときに合わせる (実機で前へ押して確認)
+        self.imu_accel_axis = str(d('imu_accel_axis', 'x').value)
+        self.imu_accel_sign = float(d('imu_accel_sign', 1.0).value)
+        self.speed_tau = float(d('speed_estimator_tau', 1.0).value)
+        self.wheel_speed_scale = float(d('wheel_speed_scale', 1.0).value)  # 車輪速 -> 実速度の校正係数 (スリップ・径の実測校正)
         self.status_topic = d('status_topic', '/aiformula_control/six_lane_planner/status').value
         self.target_path_topic = d('target_path_topic', '/aiformula_visualization/six_lane_planner/target_path').value
         # 白線の役割取り違えを検出したら, 追跡済みの横位置 F を lane_detector に送って線の並びを置き直させる
@@ -141,14 +179,17 @@ class SixLanePlannerNode(Node):
         self.panel_font_path = str(d('panel_font_path', '').value)  # 空なら Noto CJK などを自動で探す
         self.frame_id = d('frame_id', 'base_link').value
         self.control_rate = float(d('control_rate', 20.0).value)
-        self.lines_timeout = float(d('lines_timeout', 0.3).value)  # これより新しい白線が来なければ「観測なし」で1周期進める
         self.cones_timeout = float(d('cones_timeout', 0.5).value)
         self.wheel_diameter = float(d('wheel.diameter', 0.254).value)
         default_policy = os.path.join(get_package_share_directory('oit_navigation'), '6lane', 'six_lane_policy.json')
         self.policy_path = os.path.expanduser(str(d('policy_path', default_policy).value))
 
         p = SixLaneParams()
+        # 速度上限は speed_limit パラメータ 1 つで切り替える (SixLaneParams.v_max に入る)
+        p.v_max = clamp_speed_limit(d('speed_limit', p.v_max).value)
         for name in p.__dataclass_fields__:
+            if name == 'v_max':
+                continue
             default = getattr(p, name)
             if isinstance(default, tuple):
                 setattr(p, name, tuple(float(v) for v in d(name, [float(v) for v in default]).value))
@@ -157,50 +198,114 @@ class SixLanePlannerNode(Node):
         return p
 
     # ------------------------------------------------------------------ io
+    @staticmethod
+    def _stamp_sec(stamp) -> Optional[float]:
+        t = stamp.sec + stamp.nanosec * 1e-9
+        return t if t > 0.0 else None
+
     def _lines_cb(self, msg: LaneLines):
         lines = {r: lane_line_to_obs(getattr(msg, r)) for r in ROLES}
         with self._lock:
             # 付け直しフラグは次の制御周期まで取りこぼさないよう OR で溜める
             self._reanchored = self._reanchored or bool(getattr(msg, 'reanchored', False))
             self._pending = lines
+            self._lines_stamp = self._stamp_sec(msg.header.stamp)
 
     def _can_cb(self, msg: Frame):
         if msg.id != RPM_ID or len(msg.data) < 8:
             return
         rpm_right, rpm_left = struct.unpack('<ii', bytes(msg.data[:8]))
-        self.v = 0.5 * (rpm_left + rpm_right) / 60.0 * math.pi * self.wheel_diameter
+        self.v_wheel = 0.5 * (rpm_left + rpm_right) / 60.0 * math.pi * self.wheel_diameter
+
+    def _imu_cb(self, msg: Imu):
+        a = getattr(msg.linear_acceleration, self.imu_accel_axis, 0.0) * self.imu_accel_sign
+        with self._lock:
+            self._imu_acc_sum += a
+            self._imu_acc_n += 1
+            self._imu_t = self._now()
+        self.yaw_rate = msg.angular_velocity.z
 
     def _cones_cb(self, msg: PoseArray):
         with self._lock:
             self._cones = [(ps.position.x, ps.position.y) for ps in msg.poses]
             self._cones_t = self._now()
+            self._cones_stamp = self._stamp_sec(msg.header.stamp)
+
+    def _speed_limit_cb(self, msg: Float64):
+        self._set_speed_limit(msg.data)
+
+    def _on_params(self, params):
+        for p in params:
+            if p.name == 'speed_limit':
+                self._set_speed_limit(float(p.value))
+        return SetParametersResult(successful=True)
+
+    def _set_speed_limit(self, v: float):
+        old = self.planner.p.v_max
+        new = self.planner.set_speed_limit(v)
+        if abs(new - old) > 1e-6:
+            eff = effective_control(self.planner.p)
+            self.get_logger().info(
+                f'速度上限 {old:.2f} -> {new:.2f} m/s (補正倍率 x{eff["scale"]:.2f}: 前方注視点 '
+                f'{eff["lookahead_min"]:.1f}〜{eff["lookahead_max"]:.1f} m)')
 
     def _now(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
 
+    def _age(self, stamp: Optional[float], now: float) -> Optional[float]:
+        return None if stamp is None else now - stamp
+
+    def _update_speed(self, now: float):
+        """車速推定を制御周期ごとに更新 (IMU の加速度はその周期の平均)."""
+        with self._lock:
+            acc = self._imu_acc_sum / self._imu_acc_n if self._imu_acc_n else None
+            self._imu_acc_sum, self._imu_acc_n = 0.0, 0
+            imu_fresh = now - self._imu_t < 0.3
+        dt = 0.0 if self._last_est_t is None else now - self._last_est_t
+        self._last_est_t = now
+        self.v = self.speed_est.update(self.v_wheel, acc if imu_fresh else None, dt)
+
     # ------------------------------------------------------------------ control
     def _control(self):
         now = self._now()
+        self._update_speed(now)
+        omega_est = self.yaw_rate if now - self._imu_t < 0.3 else self._last_raw_cmd[1]
         with self._lock:
             lines, self._pending = self._pending, None
+            lines_stamp = self._lines_stamp
             reanchored, self._reanchored = self._reanchored, False
             cones = list(self._cones) if now - self._cones_t < self.cones_timeout else []
+            cones_stamp = self._cones_stamp
+        p = self.planner.p
+        hold_time = min(0.3, p.hold_distance / max(self.v, 0.1))  # 速いほど短く維持する (走る距離で決める)
         if lines is not None:
-            self._last_lines_t = now
-        elif self._last_lines_t is not None and now - self._last_lines_t < self.lines_timeout:
-            # 次の白線フレーム待ち: 直前の指令を維持 (信号の速度上限は毎周期掛け直す)
-            self._publish_cmd(now, self._last_raw_cmd, cones)
-            return
+            # 検出時刻から今までの遅れの間に進んだ分を補償して使う. 古すぎる観測は捨てる
+            age, ok = self.gate_lines.check(self._age(lines_stamp, now))
+            if ok:
+                self._latency = age
+                lines = {r: lines[r] for r in ROLES}
+                if all(lines[r] is not None for r in ROLES):
+                    lines = compensate_lines(lines, self.v, omega_est, age, p.latency_max)
+                self._last_lines_t = now
+            else:
+                lines = None
+        if lines is None:
+            if self._last_lines_t is not None and now - self._last_lines_t < hold_time:
+                # 次の白線フレーム待ち: 直前の指令を維持 (信号の速度上限は毎周期掛け直す)
+                self._publish_cmd(now, self._last_raw_cmd, self._cones_now(cones, cones_stamp, now, omega_est))
+                return
         dt = 0.0 if self._last_step_t is None else min(now - self._last_step_t, 0.5)
         self._last_step_t = now
+        cones_now = self._cones_now(cones, cones_stamp, now, omega_est)
         usable = lines if lines is not None and all(lines[r] is not None for r in ROLES) else None
-        st = self.planner.step(dt, usable, self.v, cones, reanchored)
+        st = self.planner.step(dt, usable, self.v, cones_now, reanchored)
         st['explain'] = explain_ja(st, self.planner.p)
+        st['v_wheel'], st['imu_ok'], st['latency'] = self.v_wheel * self.speed_est.scale, self.speed_est.imu_ok, self._latency
         if usable is not None:
             self._last_lines = usable
 
         self._last_raw_cmd = (float(st['v']), float(st['omega']))
-        self._publish_cmd(now, self._last_raw_cmd, cones)
+        self._publish_cmd(now, self._last_raw_cmd, cones_now)
         st['avoid'] = self.avoider.debug
         self.status_pub.publish(String(data=json.dumps(status_json(st), ensure_ascii=False)))
         if st.get('lateral_rejected'):
@@ -209,7 +314,16 @@ class SixLanePlannerNode(Node):
             self._publish_target_path(usable, st['target_lane'])
         if st['phase'] == LOST:
             self.get_logger().warning('白線を見失っています', throttle_duration_sec=2.0)
-        self._publish_viz(now, usable, st, cones)
+        self._publish_viz(now, usable, st, cones_now)
+
+    def _cones_now(self, cones, stamp: Optional[float], now: float, omega_est: float):
+        """コーン (検出時刻の base_link) を今の base_link へ. 検出が来ない間も車の動きに合わせて動かし続ける."""
+        if not cones:
+            return cones
+        age, ok = self.gate_cones.check(self._age(stamp, now))
+        if not ok:
+            return []
+        return compensate_points(cones, self.v, omega_est, age, self.planner.p.latency_max)
 
     def _publish_viz(self, now: float, lines, st: Dict, cones):
         header = Header(stamp=self.get_clock().now().to_msg(), frame_id=self.frame_id)
@@ -231,7 +345,7 @@ class SixLanePlannerNode(Node):
     def _publish_cmd(self, now: float, raw, cones):
         dt = 0.0 if self._last_cmd_t is None else min(now - self._last_cmd_t, 0.5)
         self._last_cmd_t = now
-        v, omega = self.avoider.step(now, dt, raw[0], raw[1], cones)
+        v, omega = self.avoider.step(now, dt, raw[0], raw[1], cones, effective_control(self.planner.p)['react_scale'])
         v, omega = self.tl_stop.apply(now, dt, self.v, v, omega)
         tw = Twist()
         tw.linear.x = float(v)

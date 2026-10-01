@@ -7,7 +7,10 @@
 
   <xacro:property name="PI" value="3.1415926"/>
   <xacro:property name="D2R" value="${PI/180}"/>
-  <xacro:property name="WHEEL_RADIUS" value="0.12"/>
+  <!-- 車輪半径 = config/wheel.yaml の diameter 0.254 / 2 (motor_controller / odometry の速度換算と同じ) -->
+  <xacro:property name="WHEEL_RADIUS" value="0.127"/>
+  <!-- base_link の地上高 (実測. ZED X の高さ 0.12 + 0.44 = 0.56 m の基準. 車輪半径とは別) -->
+  <xacro:property name="BASE_HEIGHT" value="0.12"/>
   <xacro:property name="CASTER_RADIUS" value="0.10"/>
   <!-- Front drive-wheel axle to rear caster axle. -->
   <xacro:property name="WHEELBASE" value="0.815"/>
@@ -25,7 +28,7 @@
   <!-- base -->
   <xacro:base_macro
     base="${BASE}" parent_link="${BASE_FOOTPRINT}"
-    x="0.0" y="0.0" z="${WHEEL_RADIUS}"
+    x="0.0" y="0.0" z="${BASE_HEIGHT}"
     roll="0.0" pitch="0.0" yaw="${180.0*D2R}"/>
 
   <!-- zedx -->
@@ -35,7 +38,7 @@
   <!-- wheel -->
   <xacro:wheel_joint_macro
     wheel="${WHEEL_LEFT}" parent="${BASE}"
-    x="0.0" y="0.3" z="${WHEEL_RADIUS}"
+    x="0.0" y="0.3" z="${BASE_HEIGHT}"
     roll="${90.0*D2R}" pitch="0.0" yaw="${90.0*D2R}"/>
   <xacro:wheel_link_macro
     wheel="${WHEEL_LEFT}"
@@ -43,7 +46,7 @@
     roll="0.0" pitch="0.0" yaw="0.0"/>
   <xacro:wheel_joint_macro
     wheel="${WHEEL_RIGHT}" parent="${BASE}"
-    x="0.0" y="-0.3" z="${WHEEL_RADIUS}"
+    x="0.0" y="-0.3" z="${BASE_HEIGHT}"
     roll="${90.0*D2R}" pitch="0.0" yaw="${90.0*D2R}"/>
   <xacro:wheel_link_macro
     wheel="${WHEEL_RIGHT}"

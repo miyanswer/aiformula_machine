@@ -12,7 +12,8 @@ export const VEHICLE = {
     rear: 23.2,
   },
   massKg: 71.6,
-  wheelRadius: 0.12, // [m] vehicles/sample_vehicle xacro: WHEEL_RADIUS
+  wheelRadius: 0.127, // [m] config/wheel.yaml: diameter 0.254 / 2 (xacro WHEEL_RADIUS)
+  baseHeight: 0.12, // [m] base_link の地上高 (xacro BASE_HEIGHT. カメラ高 0.12 + 0.44 = 0.56 m の基準)
   track: 0.6, // [m] config/wheel.yaml: tread
   wheelbase: 0.815, // [m] front drive-wheel axle to rear-wheel axle
 };
@@ -47,11 +48,12 @@ function motorLimitAngular(previous, next, dt) {
   return previous + clamp(next - previous, -maxStep, maxStep);
 }
 
-// Exported so js/simulator.js can pass them to the autonomous-driving
-// lane navigator (lane_navigator.js) as its max speed / angular clamp --
-// per instruction, autonomous driving keeps these same limits rather than
-// oit_navigation's own real-vehicle defaults.
-export const MAX_SPEED = 1.5; // [m/s]
+// Exported so js/simulator.js can pass them to the 6-lane planner as its max speed / angular clamp.
+export const MAX_SPEED = 1.5; // [m/s] 既定の速度上限
+// 速度上限 (手動で切り替える. HUD の「速度上限」). WASD・自動運転の両方の最高速度を決める。
+// 6レーン走行の vMax (six_lane_planner.js) も同じ値にする (simulator.js setSpeedLimit)。
+export const LIMITS = { maxSpeed: MAX_SPEED };
+export function setMaxSpeed(v) { LIMITS.maxSpeed = v; }
 const MAX_REVERSE_SPEED = -0.75; // [m/s]
 
 const ANGULAR_ACCEL = 2.5; // [rad/s^2] while A/D held
@@ -61,7 +63,7 @@ export const MAX_ANGULAR = 1.2; // [rad/s]
 // 車輪スリップ誤差モデル (CLAUDE.md: 「機体はスリップ誤差が8%程度ある」)。
 // 左右輪独立に、時定数付きランダムウォークで±8%以内のスリップ率を持たせる。
 // 真の物理位置(this.x/y/yaw)には影響させず、measuredWheelSpeeds()だけに
-// 反映することで、CAN配信・オドメトリ推定(js/simulator.jsのlocalizer)と
+// 反映することで、CAN配信・車速推定(js/simulator.jsのspeedEstimator)と
 // 真の位置が実車と同じように乖離していくようにする。
 const SLIP_TAU_S = 2.0; // [s] 時定数
 const SLIP_NOISE = 0.05; // [1/sqrt(s)] ノイズ強度
@@ -121,7 +123,7 @@ export class VehiclePhysics {
     } else {
       this.v = approachZero(this.v, COAST_RESISTANCE_N / mass, dt);
     }
-    this.v = motorLimitLinear(previousV, clamp(this.v, MAX_REVERSE_SPEED, MAX_SPEED), dt);
+    this.v = motorLimitLinear(previousV, clamp(this.v, MAX_REVERSE_SPEED, LIMITS.maxSpeed), dt);
     this.linearAccel = dt > 0 ? (this.v - previousV) / dt : 0;
 
     // --- Yaw rate (angular.z) ---
@@ -147,8 +149,7 @@ export class VehiclePhysics {
 
   // Drives the vehicle from a commanded (v, omega) instead of WASD key
   // state -- used by the autonomous-driving toggle (js/simulator.js), fed
-  // from the ported oit_navigation lane navigator (js/lane_navigator.js's
-  // LaneNavigator.step). Ramps toward the
+  // from the ported six_lane_planner (js/six_lane_planner.js). Ramps toward the
   // command using the same force/accel budget as manual driving (so
   // autonomous driving has the same inertia "feel"), then clamps to the
   // same MAX_SPEED/MAX_REVERSE_SPEED/MAX_ANGULAR limits WASD is bound by --
@@ -159,7 +160,7 @@ export class VehiclePhysics {
     const mass = VEHICLE.massKg;
     const previousV = this.v;
 
-    vCmd = clamp(vCmd, MAX_REVERSE_SPEED, MAX_SPEED);
+    vCmd = clamp(vCmd, MAX_REVERSE_SPEED, LIMITS.maxSpeed);
     omegaCmd = clamp(omegaCmd, -MAX_ANGULAR, MAX_ANGULAR);
 
     if (this.v < vCmd) {
@@ -169,7 +170,7 @@ export class VehiclePhysics {
       const decel = (this.v > 0 ? BRAKE_FORCE_N : REVERSE_FORCE_N) / mass;
       this.v = Math.max(vCmd, this.v - decel * dt);
     }
-    this.v = motorLimitLinear(previousV, clamp(this.v, MAX_REVERSE_SPEED, MAX_SPEED), dt);
+    this.v = motorLimitLinear(previousV, clamp(this.v, MAX_REVERSE_SPEED, LIMITS.maxSpeed), dt);
     this.linearAccel = dt > 0 ? (this.v - previousV) / dt : 0;
 
     if (this.omega < omegaCmd) {
@@ -211,7 +212,7 @@ export class VehiclePhysics {
     };
   }
 
-  // CAN RPM配信・オドメトリ推定(js/simulator.jsのlocalizer)が使う、
+  // CAN RPM配信・車速推定(js/simulator.jsのspeedEstimator)が使う、
   // スリップ込みの「計測される」車輪速度。wheelSpeeds()(真値、当たり判定
   // や描画に使う)とは別に用意し、両者の乖離が8%程度のスリップを再現する。
   measuredWheelSpeeds() {
@@ -224,7 +225,7 @@ export class VehiclePhysics {
     let vTarget = 0;
     let omegaTarget = 0;
     if (keys.forward && !keys.backward) {
-      vTarget = MAX_SPEED;
+      vTarget = LIMITS.maxSpeed;
     } else if (keys.backward && !keys.forward) {
       vTarget = MAX_REVERSE_SPEED;
     }

@@ -1,16 +1,13 @@
-# oit_navigation: 白線検出 (YOLOP / UFLD) + 周回マップ作成 + QP レーシングライン走行
+# oit_navigation: 白線検出 (YOLOP) + コーン検出 (+ 走行は 6lane/config/six_lane_params.yaml)
 #
 #   lane_detector      カメラ画像 -> 左境界/中央線/右境界 (aiformula_interfaces/LaneLines)
-#   odom_imu_localizer CAN 車輪速 + IMU ヨーレート -> 自己位置 (nav_msgs/Odometry)
-#   lane_navigator     1 周目: 中央線トラッキング + 境界記録 / 2 周目以降: QP ライン追従 -> cmd_vel
+#   cone_detector      コーン検出 -> 位置 (PoseArray)
 #
-# web_simulator/js/lane_navigator.js の *_PARAMS は同じ値を持つ (変更したらそちらも合わせる).
+# web_simulator/js/lane_core.js (カメラ・白線追跡) の値は同じものを持つ (変更したらそちらも合わせる).
 
 lane_detector:
   ros__parameters:
     # yolop: models/honda_shihou_finetuned_best.pth (git 管理, 実機の既定)
-    # ufld : models/ufld_honda_finetuned_best.pth (245MB, git 管理外. 使う場合は models/ に置く)
-    backend: "yolop"
     input_image_topic: "/aiformula_sensing/zed_node/left_image/undistorted"
     use_device: "cpu"                # "cpu" / "0" (CUDA) / "mps"
     max_inference_hz: 15.0
@@ -41,7 +38,7 @@ lane_detector:
     camera_height: 0.56              # 地面からの高さ [m] (base_link 0.12 + 0.44)
     camera_x: 0.055                  # base_link からの前方オフセット [m]
     camera_pitch_down_deg: 1.8
-    # 線の役割割り当て (lane_nav/line_tracker.py)
+    # 線の役割割り当て (lane_core/line_tracker.py)
     lane_width: 3.5                  # 中央線 <-> 境界線の距離の初期値 [m] (走行中に推定更新)
     tracker_x_ref: 2.0
     tracker_gate_ratio: 0.4
@@ -80,109 +77,3 @@ cone_detector:
     camera_height: 0.56
     camera_x: 0.055
     camera_pitch_down_deg: 1.8
-
-odom_imu_localizer:
-  ros__parameters:
-    can_topic: "/aiformula_sensing/vehicle_info"
-    imu_topic: "/aiformula_sensing/vectornav/imu"
-    odom_topic: "/aiformula_sensing/odom_imu_localizer/odom"
-    odom_frame_id: "odom"
-    child_frame_id: "base_footprint"
-    publish_tf: false                # gyro_odometry_publisher と odom TF が重複しないよう既定 false
-    publish_rate: 50.0
-    estimate_gyro_bias: true         # 停止中にジャイロバイアスを推定 (走り出す前に数秒停止)
-    stationary_time: 1.0
-    gyro_bias_alpha: 0.01
-
-lane_navigator:
-  ros__parameters:
-    lane_lines_topic: "/aiformula_perception/lane_detector/lane_lines"
-    odom_topic: "/aiformula_sensing/odom_imu_localizer/odom"
-    # twist_mux の "mpc" 入力 (priority 50, launchers/sample_launchers/config/twist_mux.yaml)
-    cmd_vel_topic: "/aiformula_control/extremum_seeking_mpc/cmd_vel"
-    status_topic: "/aiformula_control/lane_tracker/status"
-    left_boundary_topic: "/aiformula_visualization/lane_navigator/left_boundary"
-    right_boundary_topic: "/aiformula_visualization/lane_navigator/right_boundary"
-    raceline_topic: "/aiformula_visualization/target_trajectory"
-    map_frame_id: "odom"
-    control_rate: 20.0
-    map_save_path: ""                # 例: "~/aiformula_maps/course_map.json" (1 周目完了時に保存)
-    map_load_path: ""                # 指定すると保存済みマップで 2 周目 (RACING) から開始
-    # RViz 用の可視化 (走行後に rosbag を再生して判断を確認する)
-    panel_topic: "/aiformula_visualization/lane_navigator/panel"       # 判断パネル画像 (日本語)
-    markers_topic: "/aiformula_visualization/lane_navigator/markers"   # 車の上の要約テキスト
-    panel_rate: 5.0                  # [Hz] 0 で出さない
-    panel_font_path: ""              # 空なら Noto CJK 等を自動で探す (sudo apt install fonts-noto-cjk)
-    # コーン回避 (lane_nav/cone_avoidance.py = web_simulator/js/cone_avoidance.js. 禁止半径 1.0m)
-    cone_avoidance.cones_topic: "/aiformula_perception/cone_detector/cones"   # 空でコーン入力なし
-    cone_avoidance.cones_timeout: 0.5        # [s] これより古い検出は使わない
-    cone_avoidance.reactive: true            # 毎周期: 前方のコーン群を外周に沿って抜ける操舵を足す
-    cone_avoidance.deflect_raceline: true    # 2 周目: 1 周目に記憶したコーンからレーシングラインを押し出す
-    cone_avoidance.landmark_correction: true # 2 周目: 見えたコーンと地図のコーンの照合で自己位置を補正
-    cone_avoidance.landmark_gate: 1.0        # [m] これより離れた照合は捨てる
-
-    lines_timeout: 0.8               # 1 周目: 中央線がこれ以上見えなければ「白線ロスト」 [s]
-    lines_hold_distance: 3.0         # 白線ロスト中も最後の中央線をオドメトリで追って走る距離 [m] (超えたら減速停止)
-    lines_lost_speed: 0.5            # 白線ロスト中の速度上限 [m/s]
-    stop_decel: 1.5
-    heading_window: 15               # 方位ドリフト推定に使うフレーム数
-    map_matching_gain: 0.1           # 2 周目以降: 白線観測による自己位置補正 (0 で無効)
-    map_matching_max_error: 0.8
-    match_max_step_xy: 0.03          # 1 更新で動かす補正の上限 [m] (誤対応で暴走させない)
-    match_max_step_yaw: 0.005        # [rad]
-    match_min_lines: 2               # 対応が取れた線がこれ未満なら補正しない
-
-    # 1 周目の境界記録 (直線は疎, カーブは密)
-    recorder.x_rec: 2.0              # 記録する前方距離 [m]
-    recorder.ds_straight: 3.0        # 直線での記録間隔 [m]
-    recorder.ds_curve: 0.6           # カーブでの記録間隔 [m]
-    recorder.kappa_straight: 0.03    # これ以下の曲率 [1/m] は直線
-    recorder.kappa_curve: 0.20       # これ以上の曲率 [1/m] はカーブ
-    recorder.max_heading_step: 0.2094  # 方位がこれ以上変わったら間隔に関係なく記録 [rad]
-    recorder.median_window: 5
-
-    # 周回検出・ループ補正
-    lap.min_lap_length: 30.0         # これ以上走ってから周回判定 [m]
-    lap.close_radius: 2.5            # スタート地点からこの距離以内で 1 周完了 [m]
-    lap.close_heading: 0.785
-    lap.loop_closure: true
-    lap.max_closure_correction: 1.5
-    lap.yaw_drift_correction: false  # 白線の向きから推定した方位ドリフトで地図を補正 (推定が不安定なので既定 off)
-    lap.max_yaw_drift_correction: 0.349
-
-    # QP レーシングライン + 速度プロファイル
-    raceline.vehicle_half_width: 0.40
-    raceline.safety_margin: 0.35
-    raceline.lambda_center: 0.0001
-    raceline.lambda_smooth: 0.001
-    raceline.v_max: 3.0
-    raceline.v_min: 0.8
-    raceline.a_lat_max: 1.5
-    raceline.a_accel: 1.0
-    raceline.a_decel: 1.5
-
-    # 追従制御
-    tracker.mapping_speed: 1.0       # 1 周目の速度 [m/s]
-    tracker.curve_slowdown: 0.5
-    tracker.curvature_filter_tau: 0.5  # [s] 1 周目の減速に使う曲率のローパス (検出ノイズで速度が揺れるのを防ぐ)
-    tracker.lookahead_min: 1.2
-    tracker.lookahead_max: 2.5
-    tracker.lookahead_time: 0.6
-    tracker.cross_track_lookahead_gain: 2.0
-    tracker.max_angular_speed: 1.5
-    tracker.max_angular_accel: 4.0
-
-    # 赤信号停止 (utils/traffic_light_stop.py, six_lane_planner と共通. web_simulator/js/traffic_light_stop.js と同じ既定値)
-    # traffic_light_distance_node の赤/青信号までの距離から, 信号機の stop_distance 手前 (許容 5〜10m) で止まる
-    traffic_light_stop.enabled: true
-    traffic_light_stop.red_distance_topic: "/aiformula_perception/traffic_light/red_distance"
-    traffic_light_stop.green_distance_topic: "/aiformula_perception/traffic_light/green_distance"
-    traffic_light_stop.status_topic: "/aiformula_control/traffic_light_stop/status"
-    traffic_light_stop.stop_distance: 7.0          # [m] 止まる目標 (カメラ -> 信号機). 距離は横ずれで短めに出るので中央 7.5 より近め
-    traffic_light_stop.detect_range: 25.0          # [m] これより遠い赤は無視
-    traffic_light_stop.min_trigger_distance: 5.0   # [m] 赤を初めて見たのがこれより近ければ止まらず通過
-    traffic_light_stop.decel: 0.6                  # [m/s^2] 計画減速度
-    traffic_light_stop.red_confirm_frames: 2       # 赤を連続何回で減速開始 (誤検出対策)
-    traffic_light_stop.green_confirm_frames: 2     # 青を連続何回で発進
-    traffic_light_stop.red_release_time: 3.0       # [s] 停止中に赤がこれだけ見えなければ発進
-    traffic_light_stop.markers_topic: "/aiformula_visualization/traffic_light_stop/markers"   # RViz: 信号・停止予定位置

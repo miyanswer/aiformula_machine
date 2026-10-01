@@ -2,14 +2,17 @@
 6レーン動的選択走行 (地図なし・オドメトリなし) の起動ファイル.
 
     lane_detector      カメラ -> 左境界/中央線/右境界 + 検出点群 (navigation_params.yaml の設定をそのまま使う)
-    six_lane_planner   白線 + CAN 車輪速 -> 仮想6レーン -> NN でレーン選択 -> cmd_vel (twist_mux "mpc")
+    six_lane_planner   白線 + CAN 車輪速 -> 仮想6レーン -> NN でレーン選択 -> cmd_vel (twist_mux "autonomous")
                        赤信号までの距離 -> 信号機の 5〜10m 手前で停止 (utils/traffic_light_stop.py)
     traffic_light_distance_node  traffic_light.pt で赤/青信号を検出し距離を推定 (traffic_light:=false で無効)
     cone_detector      cone.pt でコーンを検出し位置を推定 -> six_lane_planner が塞がれたレーンを避ける (cone_detector:=false で無効)
     rviz2              config/six_lane.rviz: 仮想6レーン・目標レーン・確率・コーン・信号・判断パネル (rviz:=false で無効)
     six_lane_panel_compressor  判断パネルの JPEG 版 (.../six_lane_planner/panel/compressed, 別 PC で記録・表示する用)
 
-周回マップ + QP の navigation.launch.py (lane_navigator) とは同じ cmd_vel に出すので同時に起動しないこと.
+    image_compressor_node  観客向け aiformula_pilot 圧縮映像 (image_compressor:=false で無効. simulator:=true では起動しない)
+
+速度上限 (手動切替): speed_limit:=<m/s> (既定 1.5). 走行中は /aiformula_control/six_lane_planner/speed_limit (Float64)
+前方注視点などは上限に合わせて自動補正される (six_lane_core.effective_control). enable_controller:=false なら認識だけ起動する.
 
 例 (実機):
     ros2 launch oit_navigation six_lane.launch.py use_device:=0 use_tensorrt:=true
@@ -36,8 +39,8 @@ def _cleanup_old_processes():
         # 含むこの ros2 launch 自身のコマンドラインにも一致して自分を kill -9 してしまう.
         # 判断パネルの圧縮は実行ファイルが bringup の zed_image_compressor と同じなのでノード名で探す
         subprocess.run(["pkill", "-9", "-f",
-                        "lib/oit_navigation/(lane_detector|lane_navigator|six_lane_planner|traffic_light_distance_node|cone_detector)|"
-                        "__node:=six_lane_panel_compressor|rviz2"],
+                        "lib/oit_navigation/(lane_detector|six_lane_planner|traffic_light_distance_node|cone_detector)|"
+                        "__node:=six_lane_panel_compressor|__node:=image_compressor_node|rviz2"],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     except Exception:
         pass
@@ -52,7 +55,6 @@ def _nodes(context):
         + ("/compressed" if simulator else ""))
 
     detector_params = {
-        "backend": get("backend"),
         "use_device": get("use_device"),
         "weight_path": get("weight_path"),
         "use_tensorrt": get("use_tensorrt"),
@@ -72,8 +74,9 @@ def _nodes(context):
         parameters=[
             osp.join(get_package_share_directory("sample_vehicle"), "config", "wheel.yaml"),
             get("six_lane_params_file"),
-            # シミュレータの速度・旋回上限 (web_simulator/js/vehicle_physics.js MAX_SPEED / MAX_ANGULAR)
-            {"v_max": 1.5, "max_angular_speed": 1.2} if simulator else {},
+            # 速度上限 (手動切替). シミュレータの旋回上限は web_simulator/js/vehicle_physics.js MAX_ANGULAR
+            {"speed_limit": float(get("speed_limit"))},
+            {"max_angular_speed": 1.2} if simulator else {},
         ],
     )
     # 判断パネル画像 (約 5MB/s の生画像) の JPEG 版. 別 PC で記録・表示するときはこちらを使う (購読者がいる間だけ変換)
@@ -82,7 +85,14 @@ def _nodes(context):
         package="oit_navigation", executable="image_compressor_node", name="six_lane_panel_compressor", output="screen",
         parameters=[{"input_topic": panel_topic, "output_topic": panel_topic + "/compressed", "jpeg_quality": 80}],
     )
-    nodes = [lane_detector, planner, panel_compressor]
+    nodes = [lane_detector, panel_compressor]
+    if get("enable_controller").lower() == "true":
+        nodes.append(planner)
+    if get("image_compressor").lower() == "true" and not simulator:
+        nodes.append(Node(
+            package="oit_navigation", executable="image_compressor_node", name="image_compressor_node",
+            output="screen", parameters=[{"input_topic": image_topic}],
+        ))
     if get("traffic_light").lower() == "true":
         tl_params = {
             "image_topic": image_topic,
@@ -121,7 +131,6 @@ def generate_launch_description():
         DeclareLaunchArgument("simulator", default_value="false",
                               description="true: Web シミュレータ (rosbridge) の圧縮画像・理想カメラで動かす"),
         DeclareLaunchArgument("use_device", default_value="0", description="推論デバイス: '0' (GPU) / 'cpu' / 'mps'"),
-        DeclareLaunchArgument("backend", default_value="yolop", description="白線検出: 'yolop' / 'ufld'"),
         DeclareLaunchArgument("weight_path",
                               default_value=default_workspace_asset("models", "honda_shihou_finetuned_best.pth")),
         DeclareLaunchArgument("use_tensorrt", default_value="false"),
@@ -134,6 +143,12 @@ def generate_launch_description():
         DeclareLaunchArgument("cone_detector", default_value="true",
                               description="コーン検出 (six_lane_planner がコーンで塞がれたレーンを避ける) を起動する"),
         DeclareLaunchArgument("cone_model_path", default_value=default_workspace_asset("models", "cone.pt")),
+        DeclareLaunchArgument("speed_limit", default_value="1.5",
+                              description="速度上限 [m/s] (0.3〜3.0). 前方注視点などは自動で補正される. 走行中は speed_limit トピックで変更可"),
+        DeclareLaunchArgument("enable_controller", default_value="true",
+                              description="six_lane_planner (自律走行) を起動する. false なら認識だけ"),
+        DeclareLaunchArgument("image_compressor", default_value="true",
+                              description="観客向け aiformula_pilot 圧縮映像を配信する"),
         DeclareLaunchArgument("rviz", default_value="true", description="RViz2 (config/six_lane.rviz) を起動する"),
         DeclareLaunchArgument("traffic_light", default_value="true",
                               description="信号機検出 (赤信号で停止) を起動する"),

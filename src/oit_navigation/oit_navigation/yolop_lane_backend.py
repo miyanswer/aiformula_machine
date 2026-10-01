@@ -3,7 +3,7 @@ yolop_lane_backend.py - YOLOP の白線セグメンテーション (ll_seg) だ�
 
 実機 (Jetson) は GitHub から clone したリポジトリで走らせるため, git 管理されている
 models/honda_shihou_finetuned_best.pth (YOLOP) を白線検出に使う. lane_detector ノードの
-backend=yolop で使われ, 出力マスクは lane_nav/mask_lines.py で白線ごとの点列に変換される.
+backend=yolop で使われ, 出力マスクは lane_core/mask_lines.py で白線ごとの点列に変換される.
 
     - 前処理: roi_mode=crop_bottom (既定. 学習時と同じ) は画像上部 top_cut_ratio を切り落とし, 残りを
       縦横比を無視して 640x640 に引き伸ばす (ファインチューニング時の前処理そのもの. web_simulator の

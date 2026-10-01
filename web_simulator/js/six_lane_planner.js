@@ -12,6 +12,10 @@
 
 export const N_LANES = 6;
 const ROLES = ['left', 'center', 'right'];
+
+// 速度上限 (vMax) の設定範囲 [m/s]。手動で切り替えるときもこの範囲に丸める (six_lane_core.py SPEED_LIMIT_MIN/MAX)
+export const SPEED_LIMIT_MIN = 0.3;
+export const SPEED_LIMIT_MAX = 3.0;
 export const STRAIGHT = 'STRAIGHT', ENTRY = 'ENTRY', APEX = 'APEX', EXIT = 'EXIT', LOST = 'LOST';
 
 export const SIX_LANE_PARAMS = {
@@ -23,7 +27,12 @@ export const SIX_LANE_PARAMS = {
   // 現在の横位置 F の追跡: 白線の役割取り違えで F が1フレームで跳ぶのを弾く [レーン, -, s]
   lateralGate: 0.35, lateralGain: 0.5, lateralResyncTime: 3.0,
   // 判断 (学習時と共通)
-  vMax: 1.5, kappaScale: 10.0, kappaStraight: 0.015, kappaCurve: 0.06, homeLane: 6,
+  // vMax = 速度上限 [m/s]。手動で切り替える唯一の値 (HUD の「速度上限」/ setSpeedLimit)。NN の速度入力は v / vMax なので判断は変わらない。
+  // 距離で決まる量 (前方注視点など) は vRef を基準に上限へ比例して自動補正する (speedScale / effectiveControl)。
+  vMax: 1.5, vRef: 1.5, autoScale: true,
+  holdDistance: 0.45, // [m] 次の白線フレームを待つ間 直前の指令を維持する距離 (時間 = 距離 / 車速)
+  latencyMax: 0.5, // [s] 観測の遅れがこれ以上なら古い観測として捨てる
+  kappaScale: 10.0, kappaStraight: 0.015, kappaCurve: 0.06, homeLane: 6,
   // コミット層
   switchMargin: 0.12, switchFrames: 5, switchFramesPerLane: 2, coneXMin: -1.0, coneXMax: 8.0, coneClearance: 0.75, coneBlockFactor: 0.02,
   conePassMargin: 1.2,
@@ -33,6 +42,117 @@ export const SIX_LANE_PARAMS = {
 };
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+// ---------------------------------------------------------------------------
+// 速度上限に応じた自動補正 (six_lane_core.py の speed_scale / effective_control と同じ)
+// ---------------------------------------------------------------------------
+export const clampSpeedLimit = (v) => clamp(Number(v), SPEED_LIMIT_MIN, SPEED_LIMIT_MAX);
+
+/** 速度上限 / 基準速度 (0.5〜2.0 に丸める)。自動補正が無効なら 1。 */
+export const speedScale = (p) => (p.autoScale ? clamp(p.vMax / p.vRef, 0.5, 2.0) : 1);
+
+/** 速度上限に合わせて自動補正した制御量。
+ *   lookaheadMin / lookaheadMax : 前方注視点。上限に比例
+ *   lostTimeout                 : 白線を見失ってから止まるまで。上限に反比例 (走る距離を一定に近づける)
+ *   reactScale                  : コーン回避の減速開始距離・先読み距離の倍率 (cone_avoidance.js reactiveAvoid の scale)
+ * 変えないもの: 曲率を測る距離 stations (カメラの視野で決まる)、横加速度 aLatMax (車の限界)、
+ * 加減速 accel / decel (モーターの加減速制限)、旋回上限 maxAngularSpeed。 */
+export function effectiveControl(p) {
+  const k = speedScale(p);
+  return {
+    scale: k, lookaheadMin: p.lookaheadMin * k, lookaheadMax: p.lookaheadMax * k,
+    lostTimeout: p.lostTimeout / Math.max(k, 1), reactScale: k,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 観測の遅れ補償 (six_lane_core.py の compensate_lines / compensate_points と同じ)。白線・コーンは画像を撮った
+// 時刻の base_link で測られているので、遅れ age の間に進んだ分 (車速 v・ヨーレート omega) だけ今の base_link へ変換する。
+// ---------------------------------------------------------------------------
+function motionOf(v, omega, age) {
+  const dyaw = omega * age, mid = 0.5 * dyaw;
+  return { dx: v * age * Math.cos(mid), dy: v * age * Math.sin(mid), dyaw };
+}
+function compensatePoint(x, y, m) {
+  const px = x - m.dx, py = y - m.dy, c = Math.cos(m.dyaw), s = Math.sin(m.dyaw);
+  return [c * px + s * py, -s * px + c * py];
+}
+
+export function compensatePoints(points, v, omega, age, latencyMax = 0.5) {
+  if (age <= 1e-3 || age >= latencyMax) return points.map((q) => ({ ...q }));
+  const m = motionOf(v, omega, age);
+  return points.map((q) => { const [x, y] = compensatePoint(q.x, q.y, m); return { ...q, x, y }; });
+}
+
+/** lines: {role: {yAt, xMin, xMax, detected, px?, py?}|null}。2 次式は変換した標本点で当て直す。 */
+export function compensateLines(lines, v, omega, age, latencyMax = 0.5) {
+  if (age <= 1e-3 || age >= latencyMax) return lines;
+  const m = motionOf(v, omega, age);
+  const out = {};
+  for (const [role, ln] of Object.entries(lines)) {
+    if (!ln || typeof ln !== 'object' || typeof ln.yAt !== 'function') { out[role] = ln; continue; }
+    const n = 11, nx = [], ny = [];
+    for (let i = 0; i < n; i++) {
+      const x = ln.xMin + ((ln.xMax - ln.xMin) * i) / (n - 1);
+      const [a, b] = compensatePoint(x, ln.yAt(x), m);
+      nx.push(a); ny.push(b);
+    }
+    if (Math.max(...nx) - Math.min(...nx) < 0.5) { out[role] = ln; continue; }
+    const AtA = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], Atb = [0, 0, 0];
+    for (let i = 0; i < n; i++) {
+      const row = [1, nx[i], nx[i] * nx[i]];
+      for (let a = 0; a < 3; a++) { Atb[a] += row[a] * ny[i]; for (let b = 0; b < 3; b++) AtA[a][b] += row[a] * row[b]; }
+    }
+    const c = solve(AtA, Atb);
+    if (!c) { out[role] = ln; continue; }
+    let px = null, py = null;
+    if (ln.px) {
+      px = []; py = [];
+      ln.px.forEach((x, i) => { const [a, b] = compensatePoint(x, ln.py[i], m); px.push(a); py.push(b); });
+    }
+    out[role] = { ...ln, yAt: (x) => c[0] + c[1] * x + c[2] * x * x, xMin: Math.min(...nx), xMax: Math.max(...nx), px, py };
+  }
+  return out;
+}
+
+/** 観測の遅れ (受信時刻 - 検出時刻) の検査。範囲外は古い観測として捨てるが、範囲外が skewFrames 回続いたら
+ * 送り側と時計がずれているとみなして遅れ補償を止める (six_lane_core.py LatencyGate)。check() は {age, ok}。 */
+export class LatencyGate {
+  constructor(latencyMax = 0.5, skewFrames = 10) { this.latencyMax = latencyMax; this.skewFrames = skewFrames; this.bad = 0; this.skewed = false; }
+  check(age) {
+    if (age === null || age === undefined) return { age: 0, ok: true };
+    if (age >= -0.05 && age < this.latencyMax) { this.bad = 0; this.skewed = false; return { age: Math.max(age, 0), ok: true }; }
+    this.bad += 1;
+    if (this.skewed || this.bad >= this.skewFrames) { this.skewed = true; return { age: 0, ok: true }; }
+    return { age: 0, ok: false };
+  }
+}
+
+/** 車速推定: 車輪速 (スリップ ~8%) を IMU の前後加速度で補う相補フィルタ (six_lane_core.py SpeedEstimator)。
+ * 停止中は加速度の偏りを推定して引く。IMU が使えない / 車輪速と大きくずれたら車輪速をそのまま使う。
+ * 定常的なスリップ (一定の割合のずれ) は取れないので、実機で距離を測って scale (wheel_speed_scale) で校正する。 */
+export class SpeedEstimator {
+  constructor({ tau = 1.0, scale = 1.0, maxDev = 0.4, stationarySpeed = 0.03, biasAlpha = 0.02 } = {}) {
+    Object.assign(this, { tau, scale, maxDev, stationarySpeed, biasAlpha });
+    this.reset();
+  }
+  reset() { this.v = 0; this.bias = 0; this.imuOk = false; }
+  update(vWheel, accel, dt) {
+    const vw = vWheel * this.scale;
+    dt = clamp(dt, 0, 0.2);
+    if (accel === null || accel === undefined) { this.v = vw; this.imuOk = false; return this.v; }
+    if (Math.abs(vw) < this.stationarySpeed) {
+      this.bias += this.biasAlpha * (accel - this.bias);
+      this.v = vw; this.imuOk = true;
+      return this.v;
+    }
+    const pred = this.v + (accel - this.bias) * dt;
+    this.v = pred + clamp(dt / this.tau, 0, 1) * (vw - pred);
+    this.imuOk = Math.abs(this.v - vw) <= this.maxDev;
+    if (!this.imuOk) this.v = vw; // IMU の向き・取り付けが違うなどで食い違う: 車輪速を信じる
+    return this.v;
+  }
+}
 
 // ---------------------------------------------------------------------------
 // 知覚: 曲率プロファイル
@@ -226,6 +346,12 @@ export class SixLanePlanner {
     this.reset();
   }
 
+  /** 速度上限 [m/s] を切り替える (SPEED_LIMIT_MIN〜MAX に丸める)。前方注視点などは step() が自動で補正する。 */
+  setSpeedLimit(v) {
+    this.p.vMax = clampSpeedLimit(v);
+    return this.p.vMax;
+  }
+
   reset() {
     this.s = { kappas: [0, 0, 0], targetLane: null, pendingLane: null, pendingCount: 0, vCmd: 0, omegaCmd: 0, lostTime: 0, confEma: 1, blockHold: new Map(), FFilt: null, rejectTime: 0 };
     this.last = { phase: LOST, v: 0, omega: 0, lostTime: 0 };
@@ -241,15 +367,16 @@ export class SixLanePlanner {
    */
   step(dt, lines, vMeas, cones = [], reanchored = false) {
     const p = this.p, s = this.s;
+    const eff = effectiveControl(p);
     const FMeas = lines ? vehicleLaneCoordinate(lines, p.xPos) : null;
     if (FMeas === null) {
       s.lostTime += dt;
-      if (s.lostTime >= p.lostTimeout) { // 短い欠落は直前の指令を維持, 続けば減速停止
+      if (s.lostTime >= eff.lostTimeout) { // 短い欠落は直前の指令を維持, 続けば減速停止
         s.vCmd = Math.max(0, s.vCmd - p.decel * dt);
         s.omegaCmd = this._rate(s.omegaCmd, 0, dt);
         s.FFilt = null; // 長く見失ったら横位置は観測から取り直す
       }
-      this.last = { ...this.last, phase: LOST, v: s.vCmd, omega: s.omegaCmd, lostTime: s.lostTime, vMeas };
+      this.last = { ...this.last, phase: LOST, v: s.vCmd, omega: s.omegaCmd, lostTime: s.lostTime, vMeas, speedLimit: p.vMax, speedScale: eff.scale, lostTimeout: eff.lostTimeout };
       return this.last;
     }
     s.lostTime = 0;
@@ -288,7 +415,7 @@ export class SixLanePlanner {
     }
 
     const vNow = Math.max(vMeas, 0);
-    const Ld = clamp(vNow * p.lookaheadTime, p.lookaheadMin, p.lookaheadMax);
+    const Ld = clamp(vNow * p.lookaheadTime, eff.lookaheadMin, eff.lookaheadMax);
     const Ft = this._targetCoordinate(lines, Ld, s.targetLane);
     const yCur = laneY(lines, Ld, FMeas); // 今の横位置を保った場合の注視点 (白線の平行線なので shift に依らない)
     const yTgt = laneY(lines, Ld, Ft + shift);
@@ -310,6 +437,7 @@ export class SixLanePlanner {
       F: F0, FMeas, lateralRejected: rejected, currentLane: curLane, targetLane: s.targetLane, pendingLane: s.pendingLane, pendingCount: s.pendingCount,
       kappas: [...s.kappas], kappasMeas: meas, confidence: conf, features: x, hidden, nnProbs, probs,
       blocked: [...blocked].sort((a, b) => a - b), lookahead: [tx, ty], v: s.vCmd, omega: s.omegaCmd, lostTime: 0, vMeas,
+      speedLimit: p.vMax, speedScale: eff.scale, lookaheadRange: [eff.lookaheadMin, eff.lookaheadMax], lostTimeout: eff.lostTimeout,
     };
     return this.last;
   }
@@ -383,12 +511,15 @@ const PHASE_JA = {
 export function explainJa(st, p = SIX_LANE_PARAMS) {
   if (!st || st.phase === LOST || st.currentLane === undefined) {
     const t = st ? st.lostTime || 0 : 0;
-    return [`白線を見失っています (${t.toFixed(1)}s)`, t >= p.lostTimeout ? '→ 減速して停止します' : '→ 直前の指令を維持'];
+    return [`白線を見失っています (${t.toFixed(1)}s)`, t >= effectiveControl(p).lostTimeout ? '→ 減速して停止します' : '→ 直前の指令を維持'];
   }
   const dir = st.sign > 0 ? '左' : st.sign < 0 ? '右' : '';
   const k = (v) => `${v >= 0 ? '+' : ''}${v.toFixed(3)}`;
   const lines = [];
   lines.push(`速度 ${st.v.toFixed(2)} m/s ／ 曲率 近${k(st.kappas[0])} 中${k(st.kappas[1])} 遠${k(st.kappas[2])} [1/m]`);
+  if (st.lookaheadRange) {
+    lines.push(`速度上限 ${st.speedLimit.toFixed(1)} m/s (×${st.speedScale.toFixed(2)}) → 前方注視点 ${st.lookaheadRange[0].toFixed(1)}〜${st.lookaheadRange[1].toFixed(1)} m に自動補正`);
+  }
   let why;
   switch (st.phase) {
     case STRAIGHT:

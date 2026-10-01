@@ -4,8 +4,8 @@
 // exported by src/oit_navigation/oit_navigation/export_onnx_web.py) through
 // onnxruntime-web. This is the "YOLOP (ブラウザ)" detector mode -- the same
 // model the real vehicle uses; the mask it returns is turned into per-line
-// point sequences by extractMaskLines() (js/lane_navigator.js, port of
-// lane_nav/mask_lines.py).
+// point sequences by extractMaskLines() (js/lane_core.js, port of
+// lane_core/mask_lines.py).
 //
 // Preprocessing: "crop_bottom" ROI (yolop_lane_backend.py's roi_mode option)
 // -- drop the top TOP_CUT_RATIO fraction of the onboard-camera capture

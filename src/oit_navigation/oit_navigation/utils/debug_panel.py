@@ -7,7 +7,6 @@ sensor_msgs/Image として出す. 実機で走らせた後に rosbag を再生�
 
     six_lane_panel()  : 6レーン走行 (Web シミュレータ右下の判断パネル + 俯瞰図と同じ内容)
                         俯瞰図 (白線点群・仮想6レーン・現在/目標レーン・コーン・信号) + 6レーンの確率バー + 日本語の説明
-    text_panel()      : 周回マップ + QP 走行など, 文字だけのパネル
 
 日本語フォントは下記の候補から探す (font_path パラメータで指定も可). 見つからなければ
 "sudo apt install fonts-noto-cjk" を促す英語の注意だけ出し, 日本語は '?' になる.
@@ -241,16 +240,6 @@ def six_lane_panel(jt: JapaneseText, lines: Optional[Dict], st: Dict, explain: L
         text.append((f"信号検出: {tl.get('detect_text', 'なし')}", GRAY))
     text.append((f"コーン検出: {len(cones)}個" + (f" (最寄り {min(np.hypot(x, y) for x, y in cones):.1f}m)" if cones else ''), GRAY))
     _text_block(jt, img, tx, 10, text, text_width - 24)
-    _font_warning(jt, img)
-    return img
-
-
-# ---------------------------------------------------------------------------
-# 文字だけのパネル (周回マップ + QP 走行など)
-# ---------------------------------------------------------------------------
-def text_panel(jt: JapaneseText, title: str, lines: List, width=620, height=260) -> np.ndarray:
-    img = np.full((height, width, 3), BG, np.uint8)
-    _text_block(jt, img, 12, 10, [(title, ORANGE)] + list(lines), width - 24)
     _font_warning(jt, img)
     return img
 

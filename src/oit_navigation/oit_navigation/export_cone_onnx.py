@@ -3,7 +3,7 @@
 export_cone_onnx.py - cone.pt (Ultralytics YOLO 検出モデル) を
 web_simulator 用のONNXへ変換する。
 
-ROSノードではない。export_onnx_web.py (YOLOP) / export_ufld_onnx と同じ、
+ROSノードではない。export_onnx_web.py (YOLOP) と同じ、
 ブラウザ実行用アセットを書き出すだけのツール。web_simulator/js/cone_detector.js
 がonnxruntime-webでこの出力を読み込む。
 

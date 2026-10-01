@@ -3,17 +3,16 @@ MP4 動画で白線検出 (左境界/中央線/右境界の割り当てまで)�
 verification_gui.py (検証GUI) の各パイプラインもこの launch を使う.
 
     MP4 -> video_publisher (既定で 640x360 に縮小 = 実機 ZED X の配信画像と同じ) -> .../left_image/undistorted(/compressed)
-        -> lane_detector (lane_detector:=true. backend: yolop / ufld, YOLOP の前処理は roi_mode) -> LaneLines, Path x3, 注釈画像
+        -> lane_detector (lane_detector:=true. YOLOP の前処理は roi_mode) -> LaneLines, Path x3, 注釈画像
         -> cone_detector (cone_detector:=true) -> コーン位置, 注釈画像
         -> traffic_light_distance_node (traffic_light:=true) -> 信号までの距離, 注釈画像
         -> RViz2 (config/video_test.rviz: 元の動画 Camera (video) と Lane Detector / Cone Detector / Traffic Light の注釈画像)
 
-動画にはオドメトリ (CAN/IMU) が無いため, 周回マップ作成と QP 走行 (odom_imu_localizer / lane_navigator)
-は起動しない. それらは Web シミュレータ (simulator_test.launch.py) か実機で検証する.
+動画には CAN が無いため, 6レーン走行 (six_lane_planner) は起動しない. Web シミュレータ (six_lane.launch.py simulator:=true) か実機で検証する.
 
 例:
-    ros2 launch oit_navigation video_test.launch.py backend:=yolop traffic_light:=false
-    ros2 launch oit_navigation video_test.launch.py backend:=ufld video_path:=/aiformula_machine/mp4/xxx.mp4
+    ros2 launch oit_navigation video_test.launch.py traffic_light:=false
+    ros2 launch oit_navigation video_test.launch.py video_path:=/aiformula_machine/mp4/xxx.mp4
     ros2 launch oit_navigation video_test.launch.py lane_detector:=false traffic_light:=false cone_detector:=true   # コーンだけ
     ros2 launch oit_navigation video_test.launch.py roi_mode:=mask_top   # YOLOP の前処理を比べる
 """
@@ -68,12 +67,9 @@ def generate_launch_description():
         DeclareLaunchArgument("lane_detector", default_value="true", description="白線検出 (lane_detector) を起動する"),
         DeclareLaunchArgument("roi_mode", default_value="crop_bottom",
                               description="YOLOP の前処理: 'crop_bottom' (学習時と同じ, 既定) / 'mask_top' / 'none'"),
-        DeclareLaunchArgument("backend", default_value="yolop", description="'yolop' / 'ufld'"),
         DeclareLaunchArgument("weight_path",
                               default_value=default_workspace_asset("models", "honda_shihou_finetuned_best.pth"),
                               description="YOLOP の重み (.pth)"),
-        DeclareLaunchArgument("ufld_weight_path",
-                              default_value=default_workspace_asset("models", "ufld_honda_finetuned_best.pth")),
         DeclareLaunchArgument("use_tensorrt", default_value="false"),
         DeclareLaunchArgument("tensorrt_engine_path", default_value=""),
         DeclareLaunchArgument("lane_width", default_value="3.5", description="中央線 <-> 境界線の距離の初期値 [m]"),
@@ -110,10 +106,8 @@ def generate_launch_description():
         condition=IfCondition(LaunchConfiguration("lane_detector")),
         parameters=[LaunchConfiguration("params_file"), {
             "roi_mode": LaunchConfiguration("roi_mode"),
-            "backend": LaunchConfiguration("backend"),
             "use_device": LaunchConfiguration("use_device"),
             "weight_path": LaunchConfiguration("weight_path"),
-            "ufld_weight_path": LaunchConfiguration("ufld_weight_path"),
             "use_tensorrt": LaunchConfiguration("use_tensorrt"),
             "tensorrt_engine_path": LaunchConfiguration("tensorrt_engine_path"),
             "input_image_topic": LaunchConfiguration("input_image_topic"),

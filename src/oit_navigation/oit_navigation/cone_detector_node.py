@@ -33,7 +33,7 @@ from std_msgs.msg import Header, String
 from visualization_msgs.msg import MarkerArray
 
 from common_python.workspace_paths import default_workspace_asset, resolve_workspace_asset
-from oit_navigation.lane_nav.geometry import CameraModel, project_to_ground
+from oit_navigation.lane_core.geometry import CameraModel, project_to_ground
 from oit_navigation.utils.image_util import cv2_to_imgmsg, imgmsg_to_cv2
 from oit_navigation.utils.viz_markers import cone_markers, marker_array
 

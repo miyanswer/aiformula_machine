@@ -609,8 +609,8 @@
     <div id="lane-label" class="pip-label">白線検知</div>
     <canvas id="lane-canvas" width="640" height="360"></canvas>
   </div>
-  <div id="map-frame" class="pip-frame-secondary">
-    <div id="map-label" class="pip-label">周回マップ</div>
+  <div id="map-frame" class="pip-frame-secondary sixlane">
+    <div id="map-label" class="pip-label">6レーン 白線点群 (俯瞰)</div>
     <canvas id="map-canvas" width="640" height="640"></canvas>
   </div>
   <div id="br-stack">
@@ -687,8 +687,6 @@
         <dl class="panel-grid" style="margin-top:10px;">
           <dt>走行状態</dt>
           <dd id="oit-state">-</dd>
-          <dt>周回</dt>
-          <dd id="oit-lap">-</dd>
           <dt>検出器</dt>
           <dd id="oit-detector-status">-</dd>
           <dt>コーン検知</dt>
@@ -698,13 +696,18 @@
           <dt>メッセージ</dt>
           <dd id="oit-message">-</dd>
         </dl>
-        <div class="section-title">走行方式</div>
-        <div id="nav-method-controls" class="btn-row">
-          <button id="nav-method-qp-btn" class="detector-mode-btn active"
-            title="1周目で地図を作り, 2周目は二次計画法 (QP) のレーシングラインを追従">周回マップ+QP</button>
-          <button id="nav-method-6lane-btn" class="detector-mode-btn"
-            title="地図・オドメトリなし. 白線から仮想6レーンを作り, NNがカメラ入力だけでレーンを選ぶ (アウト・イン・アウト)">6レーン (地図なし)</button>
+        <div class="section-title">速度上限 (WASD・自動運転・ROS 共通)</div>
+        <div class="btn-row">
+          <input type="range" id="speed-limit-slider" min="0.3" max="3" step="0.1" value="1.5" style="flex:1" title="速度上限 [m/s]">
+          <span id="speed-limit-val" style="min-width:64px;text-align:right">1.5 m/s</span>
         </div>
+        <div class="btn-row">
+          <button class="detector-mode-btn" data-speed-limit="1.0">1.0</button>
+          <button class="detector-mode-btn" data-speed-limit="1.5">1.5</button>
+          <button class="detector-mode-btn" data-speed-limit="2.0">2.0</button>
+          <button class="detector-mode-btn" data-speed-limit="3.0">3.0</button>
+        </div>
+        <div id="speed-limit-eff" style="font-size:11px;opacity:.75;line-height:1.4;margin-bottom:6px">-</div>
         <div class="section-title">コースの信号 (MyLaps パネル)</div>
         <div id="signal-mode-controls" class="btn-row">
           <button id="signal-cycle-btn" class="detector-mode-btn active"
@@ -714,16 +717,13 @@
         <div class="section-title">白線検出</div>
         <div id="detector-mode-controls">
           <button id="detector-ideal-btn" class="detector-mode-btn" title="コースの実際の白線 (ノイズ・欠落つき) を観測する">理想検出</button>
-          <button id="detector-ufld-btn" class="detector-mode-btn"
-            title="UFLD (models/ufld.onnx を export_ufld_onnx で生成)">UFLD</button>
           <button id="detector-yolop-btn" class="detector-mode-btn"
             title="実機と同じ YOLOP (models/honda_shihou_finetuned_best.pth)">YOLOP</button>
           <button id="detector-ros2-btn" class="detector-mode-btn"
-            title="rosbridge 経由で ROS 2 側の lane_detector / lane_navigator を使う">ROS2連携</button>
+            title="rosbridge 経由で ROS 2 側の lane_detector / six_lane_planner を使う">ROS2連携</button>
         </div>
         <div class="btn-row">
-          <button id="finish-mapping-btn" class="quiet" title="1周目を手動で終了してQPラインを作る">1周目を終える</button>
-          <button id="nav-reset-btn" class="quiet" title="記録を消して1周目からやり直す">記録リセット</button>
+          <button id="nav-reset-btn" class="quiet" title="6レーンの状態を初期化する">走行状態リセット</button>
         </div>
       </div>
 
@@ -781,16 +781,10 @@
         <dl class="panel-grid">
           <dt>gamepad (150)</dt>
           <dd id="twist-mux-gamepad-state">-</dd>
-          <dt>mpc (50)</dt>
-          <dd id="twist-mux-mpc-state">-</dd>
+          <dt>autonomous (50)</dt>
+          <dd id="twist-mux-autonomous-state">-</dd>
           <dt>採用中</dt>
           <dd id="twist-mux-active">-</dd>
-        </dl>
-
-        <div class="section-title">周回マップ</div>
-        <dl class="panel-grid">
-          <dt>境界断面</dt>
-          <dd id="oit-samples">-</dd>
         </dl>
 
         <div class="section-title">rosbridge</div>

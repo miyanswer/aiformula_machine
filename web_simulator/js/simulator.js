@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { ColladaLoader } from 'three/addons/loaders/ColladaLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { VehiclePhysics, VEHICLE, MAX_SPEED, MAX_ANGULAR } from './vehicle_physics.js';
+import { VehiclePhysics, VEHICLE, MAX_SPEED, MAX_ANGULAR, LIMITS, setMaxSpeed } from './vehicle_physics.js';
 import { loadCourse } from './course.js';
 import { resolveCollisions, VEHICLE_COLLIDERS, PathTracker, DepartureMonitor } from './collision.js';
 import { addMyLapsGantry, MYLAPS_COLLIDERS, mylapsPoseOnPath, worldColliders, setSignalLight } from './course_props.js';
@@ -9,16 +9,17 @@ import { createConeEditor } from './cone_editor.js';
 import { loadConeTemplate, addCone, coneWorldColliders } from './cone_props.js';
 import { TwistMux } from './twist_mux.js';
 import { RealWheelMonitor } from './real_wheel_monitor.js';
-import { UfldLaneDetector } from './ufld_lane_detector.js';
 import { IdealLaneDetector } from './ideal_lane_detector.js';
 import { ModelLaneDetector } from './lane_model_detector.js';
 import {
-  DEFAULT_CAMERA, projectToGround, fitLine, LineTracker, LINE_TRACKER_PARAMS, LaneNavigator,
-  NAVIGATOR_PARAMS, RACELINE_PARAMS, TRACKER_PARAMS, MAPPING, RACING, ROLES, extractMaskLines,
-} from './lane_navigator.js';
+  DEFAULT_CAMERA, projectToGround, fitLine, LineTracker, LINE_TRACKER_PARAMS, ROLES, extractMaskLines,
+} from './lane_core.js';
 import { ConeDetector } from './cone_detector.js';
-import { reactiveAvoid, ConeRecorder, applyRacelineDeflection, coneLandmarkCorrection } from './cone_avoidance.js';
-import { SixLanePlanner, LanePolicyNet, SIX_LANE_PARAMS, N_LANES, laneY, explainJa } from './six_lane_planner.js';
+import { reactiveAvoid } from './cone_avoidance.js';
+import {
+  SixLanePlanner, LanePolicyNet, SIX_LANE_PARAMS, N_LANES, laneY, explainJa, SpeedEstimator, compensateLines, compensatePoints,
+  effectiveControl, clampSpeedLimit, SPEED_LIMIT_MIN, SPEED_LIMIT_MAX,
+} from './six_lane_planner.js';
 import { TrafficLightDetector } from './traffic_light_detector.js';
 import { TrafficLightStop, TL_STATE_JA } from './traffic_light_stop.js';
 
@@ -31,11 +32,11 @@ import { TrafficLightStop, TL_STATE_JA } from './traffic_light_stop.js';
 // (see README.md for the exact command).
 const MESH_DIR = '../vehicles/sample_vehicle/xacro/meshes/';
 
-const BODY_OFFSET = { x: 0.0, y: 0.0, z: VEHICLE.wheelRadius, roll: 0, pitch: 0, yaw: Math.PI };
-const WHEEL_LEFT_JOINT = { x: 0.0, y: 0.3, z: VEHICLE.wheelRadius, roll: Math.PI / 2, pitch: 0, yaw: Math.PI / 2 };
-const WHEEL_RIGHT_JOINT = { x: 0.0, y: -0.3, z: VEHICLE.wheelRadius, roll: Math.PI / 2, pitch: 0, yaw: Math.PI / 2 };
+const BODY_OFFSET = { x: 0.0, y: 0.0, z: VEHICLE.baseHeight, roll: 0, pitch: 0, yaw: Math.PI };
+const WHEEL_LEFT_JOINT = { x: 0.0, y: 0.3, z: VEHICLE.baseHeight, roll: Math.PI / 2, pitch: 0, yaw: Math.PI / 2 };
+const WHEEL_RIGHT_JOINT = { x: 0.0, y: -0.3, z: VEHICLE.baseHeight, roll: Math.PI / 2, pitch: 0, yaw: Math.PI / 2 };
 const CASTER_JOINT = { x: -VEHICLE.wheelbase, y: 0.0, z: 0.10, roll: Math.PI / 2, pitch: 0, yaw: Math.PI / 2 };
-const WHEEL_SCALE = { thickness: 0.05, size: 0.12 }; // wheel_macro.xacro THICKNESS_SCALE/SIZE_SCALE
+const WHEEL_SCALE = { thickness: 0.05, size: VEHICLE.wheelRadius }; // wheel_macro.xacro THICKNESS_SCALE/SIZE_SCALE
 const CASTER_SCALE = 0.10; // caster_back_macro.xacro SCALE
 
 // ZED camera mount, relative to base_link (config/zedx/extrinsic/extrinsic.yaml
@@ -492,7 +493,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'hidden') return;
   releaseAllKeys();
   // 非表示タブでは描画 (=シミュレータの車) が止まり、自律走行指令も古い画面から
-  // しか計算されないため、実機への mpc 指令も止める (publishAutonomousCmd 側でも抑止)。
+  // しか計算されないため、実機への autonomous 指令も止める (publishAutonomousCmd 側でも抑止)。
   if (autonomousMode) publishAutonomousStop();
 });
 
@@ -532,54 +533,44 @@ let laneLeftTopic = null;
 let laneRightTopic = null;
 let laneCenterTopic = null;
 let laneDetectorAnnotatedImageTopic = null;
-let targetTrajectoryTopic = null;
-let leftBoundaryTopic = null;
-let rightBoundaryTopic = null;
 let autonomousCmdVelTopic = null;
-let laneTrackerStatusTopic = null;
 let muxedCmdVelTopic = null;
 let sixLaneStatusTopic = null;
 let sixLaneTargetPathTopic = null;
 let sixLaneReseedTopic = null;
+let speedLimitTopic = null;
 let rosSixLaneStatusSub = null;
 let redDistanceTopic = null;
 let conesTopic = null;
 let greenDistanceTopic = null;
 let trafficLightStopStatusTopic = null;
 let rosTrafficLightStopStatusSub = null;
-// "ROS2連携" detector mode subscriptions: when selected, UFLD inference +
-// the lap-mapping/QP navigator run on the ROS 2 side (see
-// src/oit_navigation/launch/simulator_test.launch.py) instead of in the
+// "ROS2連携" detector mode subscriptions: when selected, white-line detection +
+// the six_lane_planner run on the ROS 2 side (see
+// src/oit_navigation/oit_navigation/6lane/launch/six_lane.launch.py simulator:=true) instead of in the
 // browser, and the simulator just displays what it publishes back + drives
 // the vehicle from its cmd_vel -- see setDetectorMode('ros2') below.
 let rosLaneDetectorAnnotatedImageSub = null;
 let rosAutonomousCmdVelSub = null;
-let rosLaneTrackerStatusSub = null;
-let rosTargetTrajectorySub = null;
-let rosLeftBoundarySub = null;
-let rosRightBoundarySub = null;
 // Wheel-speed CAN frame, decoded on the real robot by
 // odometry_publisher/include/odometry_publisher/wheel.hpp:
 //   RPM_ID = 1809; data[0..3] = right wheel RPM, data[4..7] = left wheel RPM,
 //   both int32 little-endian; speed[m/s] = rpm * (1/60) * (diameter * PI).
 // Encoding uses config/wheel.yaml's diameter (0.254m, what that decoder
-// actually uses) rather than the xacro's WHEEL_RADIUS (0.12m, used only for
-// this simulator's own wheel-spin animation) so a real consumer decodes the
-// exact wheelSpeeds() m/s values back out, regardless of that pre-existing
-// xacro/yaml radius mismatch.
+// actually uses). The xacro WHEEL_RADIUS / VEHICLE.wheelRadius are now the same
+// 0.127m, so the wheel-spin animation, the CAN encoding and the real decoder agree.
 const CAN_TOPIC_NAME = '/aiformula_sensing/vehicle_info';
 const CAN_RPM_ID = 1809;
 const CAN_WHEEL_DIAMETER = 0.254; // [m] config/wheel.yaml wheel.diameter
 const CAN_PUBLISH_HZ = 100; // matches the real CAN bus's ~10ms measurement cycle
 
 // ---------------------------------------------------------------------------
-// oit_navigation pipeline: UFLD white-line detection -> left/center/right
-// line tracking -> lap 1 center-line tracking + boundary recording -> QP
-// min-curvature raceline -> lap 2+ raceline following, ported to run
-// client-side (js/lane_model_detector.js (YOLOP), js/ufld_lane_detector.js,
-// js/lane_navigator.js). Topic names
+// oit_navigation pipeline: white-line detection -> left/center/right
+// line tracking -> 6-lane planner, ported to run
+// client-side (js/lane_model_detector.js (YOLOP),
+// js/lane_core.js: カメラ・白線追跡). Topic names
 // below are copied verbatim from src/oit_navigation/config/navigation_params.yaml
-// (lane_detector / lane_navigator node parameters), so this
+// (lane_detector node parameters), so this
 // simulator's output is a drop-in match for the real vehicle's stack.
 const ROBOT_FRAME_ID = 'base_link';
 const ODOM_NAV_FRAME_ID = 'odom';
@@ -587,26 +578,21 @@ const LANE_DETECTOR_ANNOTATED_IMAGE_TOPIC = '/aiformula_visualization/lane_detec
 const LANE_LINE_LEFT_TOPIC = '/aiformula_perception/lane_line_publisher/lane_lines/left';
 const LANE_LINE_RIGHT_TOPIC = '/aiformula_perception/lane_line_publisher/lane_lines/right';
 const LANE_LINE_CENTER_TOPIC = '/aiformula_perception/lane_line_publisher/lane_lines/center';
-const TARGET_TRAJECTORY_TOPIC = '/aiformula_visualization/target_trajectory';
-const LEFT_BOUNDARY_TOPIC = '/aiformula_visualization/lane_navigator/left_boundary';
-const RIGHT_BOUNDARY_TOPIC = '/aiformula_visualization/lane_navigator/right_boundary';
-// "mpc" input of twist_mux (see launchers/sample_launchers/launch/twist_mux.launch.py) --
-// the real vehicle's lane_navigator output topic (unchanged from the old
-// Pure Pursuit node, so twist_mux needs no change). This simulator always
+// "autonomous" input of twist_mux (see launchers/sample_launchers/launch/twist_mux.launch.py) --
+// the real vehicle's six_lane_planner output topic. This simulator always
 // publishes it once the pipeline is running (mirroring how the real node
 // always publishes regardless of twist_mux arbitration); whether the
 // simulated vehicle itself obeys it is decided by the twistMux instance
 // below (js/twist_mux.js), gated by the "自動運転" HUD toggle.
-const AUTONOMOUS_CMD_VEL_TOPIC = '/aiformula_control/extremum_seeking_mpc/cmd_vel';
-// lane_navigator status (std_msgs/String, JSON -- LaneNavigator.status()).
-const LANE_TRACKER_STATUS_TOPIC = '/aiformula_control/lane_tracker/status';
+const AUTONOMOUS_CMD_VEL_TOPIC = '/aiformula_control/six_lane_planner/cmd_vel';
 // 6レーン走行 (six_lane_planner ノード, src/oit_navigation/oit_navigation/6lane/) の
-// 状態 JSON と目標経路。指令は lane_navigator と同じ twist_mux "mpc" 入力
-// (AUTONOMOUS_CMD_VEL_TOPIC) に出す -- 実機でもどちらか一方だけを起動する。
+// 状態 JSON と目標経路。指令は twist_mux "autonomous" 入力 (AUTONOMOUS_CMD_VEL_TOPIC) に出す。
 const SIX_LANE_STATUS_TOPIC = '/aiformula_control/six_lane_planner/status';
 const SIX_LANE_TARGET_PATH_TOPIC = '/aiformula_visualization/six_lane_planner/target_path';
 // 6レーン走行が白線の役割取り違えを検出したときの横位置 (レーン座標 F, std_msgs/Float64)。
 // lane_detector が購読して LineTracker を置き直す (tracker.seed_lane_position)。
+// 速度上限の手動切替 (実機 six_lane_planner の speed_limit トピックと同じ。HUD で変えると ROS 側の上限も変わる)
+const SPEED_LIMIT_TOPIC = '/aiformula_control/six_lane_planner/speed_limit';
 const SIX_LANE_RESEED_TOPIC = '/aiformula_control/six_lane_planner/lane_reseed';
 // 実機操縦モードの cmd_vel 送信。実機のゲームパッド (teleop_twist_joy: 有効
 // ボタンを押している間だけ publish し、離すとゼロを送る) と同じ振る舞いにする:
@@ -638,7 +624,7 @@ function publishTeleopCmdVel() {
 // twist_mux's arbitrated output (topic_list.yaml control.speed_command.multiplexed).
 const MUXED_CMD_VEL_TOPIC = '/aiformula_control/twist_mux/cmd_vel';
 // 信号機: traffic_light_distance_node (traffic_light_params.yaml base_topic) の出力と、
-// 赤信号停止 (utils/traffic_light_stop_ros.py, lane_navigator / six_lane_planner 共通) の状態。
+// 赤信号停止 (utils/traffic_light_stop_ros.py, six_lane_planner) の状態。
 // ブラウザ内の検出モードではシミュレータ自身が同じトピックを出す。
 const RED_DISTANCE_TOPIC = '/aiformula_perception/traffic_light/red_distance';
 const GREEN_DISTANCE_TOPIC = '/aiformula_perception/traffic_light/green_distance';
@@ -649,14 +635,14 @@ const CONES_TOPIC = '/aiformula_perception/cone_detector/cones';
 
 // Priorities/timeouts copied verbatim from
 // launchers/sample_launchers/config/twist_mux.yaml -- gamepad (150) always
-// outranks mpc (50), so a human on WASD instantly overrides autonomous
+// outranks autonomous (50), so a human on WASD instantly overrides autonomous
 // driving, and control reverts to autonomous once no key has been held for
 // timeoutSec. (The real config's handle_controller (250, physical steering
 // wheel) and handle_controller_coasting (1) have no equivalent input in
 // this simulator and are omitted.)
 const TWIST_MUX_SOURCES = [
   { name: 'gamepad', priority: 150, timeoutSec: 0.3 },
-  { name: 'mpc', priority: 50, timeoutSec: 0.3 },
+  { name: 'autonomous', priority: 50, timeoutSec: 0.3 },
 ];
 
 // 実機 motor_controller の指令タイムアウト (control/motor_controller/config/
@@ -667,21 +653,12 @@ const TWIST_MUX_SOURCES = [
 const MOTOR_CMD_TIMEOUT_SEC = 0.5;
 let lastMuxOutput = { v: 0, omega: 0, timeMs: -Infinity };
 
-// Navigator parameters = navigation_params.yaml defaults, except speed /
-// angular limits: per instruction, those stay the simulator's own WASD
-// limits (MAX_SPEED=1.5, MAX_ANGULAR=1.2) rather than the real vehicle's.
 // lane_width: this course's center line <-> boundary line distance, measured
 // from course.glb by js/course.js (3.5 m).
 const SIM_LANE_WIDTH = course.laneWidthM;
-const SIM_NAVIGATOR_PARAMS = {
-  ...NAVIGATOR_PARAMS,
-  raceline: { ...RACELINE_PARAMS, vMax: MAX_SPEED },
-  tracker: { ...TRACKER_PARAMS, maxAngularSpeed: MAX_ANGULAR },
-};
-const LANE_DATA_TIMEOUT_MS = 800; // navigation_params.yaml lines_timeout
+const LANE_DATA_TIMEOUT_MS = 800; // ROS2連携: cmd_vel が途絶えたとみなす時間
 // Start pose: the start of the centre white line, which course.js made the odom
-// origin, facing along the line (+x). The lap-1 method drives on top of the
-// centre line, so it begins here.
+// origin, facing along the line (+x).
 const SIM_START_POSE = { x: 0, y: 0, yaw: 0 };
 
 const urlInput = document.getElementById('ros-url');
@@ -740,15 +717,12 @@ function clearRosTopics() {
   laneRightTopic = null;
   laneCenterTopic = null;
   laneDetectorAnnotatedImageTopic = null;
-  targetTrajectoryTopic = null;
-  leftBoundaryTopic = null;
-  rightBoundaryTopic = null;
   autonomousCmdVelTopic = null;
-  laneTrackerStatusTopic = null;
   muxedCmdVelTopic = null;
   sixLaneStatusTopic = null;
   sixLaneTargetPathTopic = null;
   sixLaneReseedTopic = null;
+  speedLimitTopic = null;
   rosSixLaneStatusSub = null;
   redDistanceTopic = null;
   conesTopic = null;
@@ -757,10 +731,6 @@ function clearRosTopics() {
   rosTrafficLightStopStatusSub = null;
   rosLaneDetectorAnnotatedImageSub = null;
   rosAutonomousCmdVelSub = null;
-  rosLaneTrackerStatusSub = null;
-  rosTargetTrajectorySub = null;
-  rosLeftBoundarySub = null;
-  rosRightBoundarySub = null;
 }
 
 function disconnect() {
@@ -803,7 +773,7 @@ function connect() {
       name: topicInput.value,
       messageType: 'geometry_msgs/msg/Twist',
     });
-    // 実機操縦: gamepad cmd_vel と、自動運転 ON 時の extremum_seeking_mpc/cmd_vel
+    // 実機操縦: gamepad cmd_vel と、自動運転 ON 時の six_lane_planner/cmd_vel
     // 以外は一切 publish / subscribe しない (上のコメント参照)。他の *Topic は
     // null のままなので各 publish 関数は no-op になる。
     if (teleopOnly) {
@@ -837,15 +807,12 @@ function connect() {
     laneLeftTopic = new ROSLIB.Topic({ ros, name: LANE_LINE_LEFT_TOPIC, messageType: 'nav_msgs/msg/Path' });
     laneRightTopic = new ROSLIB.Topic({ ros, name: LANE_LINE_RIGHT_TOPIC, messageType: 'nav_msgs/msg/Path' });
     laneCenterTopic = new ROSLIB.Topic({ ros, name: LANE_LINE_CENTER_TOPIC, messageType: 'nav_msgs/msg/Path' });
-    targetTrajectoryTopic = new ROSLIB.Topic({ ros, name: TARGET_TRAJECTORY_TOPIC, messageType: 'nav_msgs/msg/Path' });
-    leftBoundaryTopic = new ROSLIB.Topic({ ros, name: LEFT_BOUNDARY_TOPIC, messageType: 'nav_msgs/msg/Path' });
-    rightBoundaryTopic = new ROSLIB.Topic({ ros, name: RIGHT_BOUNDARY_TOPIC, messageType: 'nav_msgs/msg/Path' });
     autonomousCmdVelTopic = new ROSLIB.Topic({ ros, name: AUTONOMOUS_CMD_VEL_TOPIC, messageType: 'geometry_msgs/msg/Twist' });
-    laneTrackerStatusTopic = new ROSLIB.Topic({ ros, name: LANE_TRACKER_STATUS_TOPIC, messageType: 'std_msgs/msg/String' });
     muxedCmdVelTopic = new ROSLIB.Topic({ ros, name: MUXED_CMD_VEL_TOPIC, messageType: 'geometry_msgs/msg/Twist' });
     sixLaneStatusTopic = new ROSLIB.Topic({ ros, name: SIX_LANE_STATUS_TOPIC, messageType: 'std_msgs/msg/String' });
     sixLaneTargetPathTopic = new ROSLIB.Topic({ ros, name: SIX_LANE_TARGET_PATH_TOPIC, messageType: 'nav_msgs/msg/Path' });
     sixLaneReseedTopic = new ROSLIB.Topic({ ros, name: SIX_LANE_RESEED_TOPIC, messageType: 'std_msgs/msg/Float64' });
+    speedLimitTopic = new ROSLIB.Topic({ ros, name: SPEED_LIMIT_TOPIC, messageType: 'std_msgs/msg/Float64' });
     rosSixLaneStatusSub = new ROSLIB.Topic({ ros, name: SIX_LANE_STATUS_TOPIC, messageType: 'std_msgs/msg/String' });
     rosSixLaneStatusSub.subscribe(onRosSixLaneStatus);
     redDistanceTopic = new ROSLIB.Topic({ ros, name: RED_DISTANCE_TOPIC, messageType: 'std_msgs/msg/Float32' });
@@ -864,14 +831,6 @@ function connect() {
     rosLaneDetectorAnnotatedImageSub.subscribe(onRosLaneDetectorAnnotatedImage);
     rosAutonomousCmdVelSub = new ROSLIB.Topic({ ros, name: AUTONOMOUS_CMD_VEL_TOPIC, messageType: 'geometry_msgs/msg/Twist' });
     rosAutonomousCmdVelSub.subscribe(onRosAutonomousCmdVel);
-    rosLaneTrackerStatusSub = new ROSLIB.Topic({ ros, name: LANE_TRACKER_STATUS_TOPIC, messageType: 'std_msgs/msg/String' });
-    rosLaneTrackerStatusSub.subscribe(onRosLaneTrackerStatus);
-    rosTargetTrajectorySub = new ROSLIB.Topic({ ros, name: TARGET_TRAJECTORY_TOPIC, messageType: 'nav_msgs/msg/Path' });
-    rosTargetTrajectorySub.subscribe((msg) => onRosMapPath('raceline', msg));
-    rosLeftBoundarySub = new ROSLIB.Topic({ ros, name: LEFT_BOUNDARY_TOPIC, messageType: 'nav_msgs/msg/Path' });
-    rosLeftBoundarySub.subscribe((msg) => onRosMapPath('left', msg));
-    rosRightBoundarySub = new ROSLIB.Topic({ ros, name: RIGHT_BOUNDARY_TOPIC, messageType: 'nav_msgs/msg/Path' });
-    rosRightBoundarySub.subscribe((msg) => onRosMapPath('right', msg));
   });
 
   thisRos.on('error', () => {
@@ -996,25 +955,18 @@ function publishCompressedImage() {
 }
 
 // ---------------------------------------------------------------------------
-// oit_navigation pipeline wiring: UFLD (browser ONNX) -> ground projection ->
-// left/center/right line tracking -> LaneNavigator (lap 1: center-line
-// tracking + boundary recording, lap 2+: QP raceline following), rendered
+// oit_navigation pipeline wiring: YOLOP (browser ONNX) -> ground projection ->
+// left/center/right line tracking -> six-lane planner, rendered
 // into the two HUD panels and published on the same topic names the real
-// lane_detector / lane_navigator nodes use.
+// lane_detector / six_lane_planner nodes use.
 // ---------------------------------------------------------------------------
-const ufldDetector = new UfldLaneDetector();
 const idealDetector = new IdealLaneDetector(course.lines);
 // YOLOP white-line segmentation (same weights as the real vehicle's
 // lane_detector backend=yolop), exported by export_onnx_web.py.
 const yolopDetector = new ModelLaneDetector();
 const YOLOP_ONNX_URL = 'models/honda_shihou_finetuned.onnx';
 let yolopLoadPromise = null;
-// Generated locally by `ros2 run oit_navigation export_ufld_onnx` (~245MB,
-// not committed -- see web_simulator/README.md).
-const UFLD_ONNX_URL = 'models/ufld.onnx';
-const UFLD_META_URL = 'models/ufld.json';
 const MODEL_WASM_DIR = 'vendor/onnxruntime-web/';
-let ufldLoadPromise = null;
 
 // コーン検知 (models/cone.onnx, export_cone_onnx.pyで生成) -- 未生成でも
 // 白線追従・衝突判定など他機能はそのまま動くよう、読込失敗はHUD表示のみで握りつぶす。
@@ -1022,9 +974,8 @@ const coneDetector = new ConeDetector();
 const CONE_ONNX_URL = 'models/cone.onnx';
 let coneLoadPromise = null;
 let latestConeDetections = [];
-const coneRecorder = new ConeRecorder();
+let latestConeDetectionsAtMs = 0;
 let prevReactiveBias = 0;
-let previousNavState = null;
 const coneStatusEl = document.getElementById('oit-cone-status');
 const avoidanceDebugEl = document.getElementById('avoidance-debug');
 
@@ -1109,7 +1060,7 @@ async function runTrafficLightDetection(now) {
   if (greenDistanceTopic && latestTrafficLight.green !== null) greenDistanceTopic.publish(new ROSLIB.Message({ data: latestTrafficLight.green }));
 }
 
-// 走行方式の最終指令に赤信号の速度上限を掛ける (実機は lane_navigator / six_lane_planner の中で同じことをする)。
+// 走行方式の最終指令に赤信号の速度上限を掛ける (実機は six_lane_planner の中で同じことをする)。
 function applyTrafficLightStop(now, dt, vMeas, cmd) {
   const out = trafficStop.apply(now, dt, vMeas, cmd.v, cmd.omega);
   const st = trafficStop.status();
@@ -1140,74 +1091,53 @@ const mapCanvas = document.getElementById('map-canvas');
 const mapCtx = mapCanvas.getContext('2d');
 const detectorStatusEl = document.getElementById('oit-detector-status');
 const oitStateEl = document.getElementById('oit-state');
-const oitLapEl = document.getElementById('oit-lap');
-const oitSamplesEl = document.getElementById('oit-samples');
 const oitMessageEl = document.getElementById('oit-message');
-const ufldBtn = document.getElementById('detector-ufld-btn');
 const yolopBtn = document.getElementById('detector-yolop-btn');
 const idealBtn = document.getElementById('detector-ideal-btn');
 const ros2Btn = document.getElementById('detector-ros2-btn');
 const autonomousBtn = document.getElementById('autonomous-btn');
-const finishMappingBtn = document.getElementById('finish-mapping-btn');
 const navResetBtn = document.getElementById('nav-reset-btn');
 const startPoseBtn = document.getElementById('start-pose-btn');
 
-// 'yolop' | 'ufld' | 'ideal' | 'ros2'. 'yolop' is what the real vehicle
+// 'yolop' | 'ideal' | 'ros2'. 'yolop' is what the real vehicle
 // runs (models/ in git). 'ideal' replaces the detector with the course's true
 // white lines + noise/dropouts (js/ideal_lane_detector.js) to verify the
-// driving method independently of UFLD's accuracy on rendered images. In
-// 'ros2' mode, UFLD + lane_navigator run on the ROS 2 side (src/oit_navigation/launch/simulator_test.launch.py) --
+// driving method independently of YOLOP's accuracy on rendered images. In
+// 'ros2' mode, white-line detection + six_lane_planner run on the ROS 2 side (six_lane.launch.py simulator:=true) --
 // updateLanePipeline() below becomes a no-op, and the panels + autonomous
-// "mpc" cmd instead come from subscribing to what those nodes publish back
+// "autonomous" cmd instead come from subscribing to what those nodes publish back
 // over rosbridge (onRos*() below).
 let detectorMode = 'yolop';
 let lastRosCmdVelTime = 0;
 
 // ---------------------------------------------------------------------------
-// Browser stand-in for the real vehicle's odom_imu_localizer node: dead
-// reckoning from wheel speed (CAN, here physics.v) + IMU yaw rate (here
-// physics.omega), midpoint integration -- NOT the simulator's ground-truth
-// pose, so the navigator sees the same kind of estimate as on the vehicle.
-// Its frame starts at the vehicle pose at reset (a frame choice only; the
-// map panel then overlays the course naturally).
-const localizer = { x: 0, y: 0, yaw: 0, v: 0, omega: 0, s: 0 };
-function resetLocalizer() {
-  Object.assign(localizer, { x: physics.x, y: physics.y, yaw: physics.yaw, v: 0, omega: 0, s: 0 });
-}
-function integrateLocalizer(v, omega, dt) {
-  const yawMid = localizer.yaw + 0.5 * omega * dt;
-  localizer.x += v * Math.cos(yawMid) * dt;
-  localizer.y += v * Math.sin(yawMid) * dt;
-  localizer.yaw = Math.atan2(Math.sin(localizer.yaw + omega * dt), Math.cos(localizer.yaw + omega * dt));
-  localizer.s += Math.abs(v) * dt;
-  localizer.v = v;
-  localizer.omega = omega;
+// 車速推定 (実機 six_lane_planner の SpeedEstimator と同じ): 車輪速 (CAN 相当。左右輪にスリップ ±8% が乗る) を
+// IMU の前後加速度 (physics.linearAccel) で補う相補フィルタ。オドメトリ (自己位置の積算) は使わない。
+// ---------------------------------------------------------------------------
+const speedEstimator = new SpeedEstimator();
+function updateSpeedEstimate(dt) {
+  const m = physics.measuredWheelSpeeds();
+  return speedEstimator.update((m.left + m.right) / 2, physics.linearAccel, dt);
 }
 
 const lineTracker = new LineTracker({ ...LINE_TRACKER_PARAMS, laneWidthInit: SIM_LANE_WIDTH });
-const laneNavigator = new LaneNavigator(SIM_NAVIGATOR_PARAMS);
 let latestTracked = null;
 let lastNavStepTime = null;
 let lastPipelineTime = 0;
-let lastMapPublishTime = 0;
-const localizerTrail = [];
 const laneTrace = [];
 
 // ---------------------------------------------------------------------------
-// 走行方式: 'qp' = 既存の 1周目マップ作成 + 2周目QPレーシングライン (LaneNavigator)、
-// 'sixlane' = 地図なし・オドメトリなしの 6レーン動的選択 (js/six_lane_planner.js)。
-// どちらも同じ白線検出 (理想検出/YOLOP/UFLD) -> LineTracker の出力を使い、
-// 同じ twist_mux "mpc" 入力に指令を出す。
+// 走行方式: 地図なし・オドメトリなしの 6レーン動的選択 (js/six_lane_planner.js) のみ。
+// 白線検出 (理想検出/YOLOP) -> LineTracker の出力を使い、twist_mux "autonomous" 入力に指令を出す。
 // ---------------------------------------------------------------------------
 // NN の重みは実機ノードと共用 (train_policy.py が生成)。serve.py はリポジトリの
 // ルートを配信するので ../src/... で読める。
 const SIX_LANE_POLICY_URL = '../src/oit_navigation/oit_navigation/6lane/six_lane_policy.json';
-let navMethod = 'qp';
 let sixLanePlanner = null;
 let sixLaneLoadError = null;
 const sixLaneReady = LanePolicyNet.load(SIX_LANE_POLICY_URL)
   .then((net) => {
-    sixLanePlanner = new SixLanePlanner(net, { ...SIX_LANE_PARAMS, vMax: MAX_SPEED, maxAngularSpeed: MAX_ANGULAR });
+    sixLanePlanner = new SixLanePlanner(net, { ...SIX_LANE_PARAMS, vMax: speedLimit, maxAngularSpeed: MAX_ANGULAR });
   })
   .catch((err) => {
     console.error('six_lane_policy.json load failed', err);
@@ -1219,25 +1149,16 @@ const sixLaneDebugEl = document.getElementById('six-lane-debug');
 const sixLaneDebugTextEl = document.getElementById('six-lane-debug-text');
 const sixLaneDebugBarsEl = document.getElementById('six-lane-debug-bars');
 const mapLabelEl = document.getElementById('map-label');
-const navMethodQpBtn = document.getElementById('nav-method-qp-btn');
-const navMethodSixLaneBtn = document.getElementById('nav-method-6lane-btn');
 
 function resetNavigation() {
-  laneNavigator.reset();
   if (sixLanePlanner) sixLanePlanner.reset();
   lineTracker.reset();
-  resetLocalizer();
-  localizerTrail.length = 0;
+  speedEstimator.reset();
   latestTracked = null;
   lastNavStepTime = null;
-  rosMap.left = rosMap.right = rosMap.raceline = null;
-  lastMapPublishTime = 0;
   pathTracker.reset();
   departureMonitor.reset();
-  coneRecorder.cones.length = 0;
   prevReactiveBias = 0;
-  previousNavState = null;
-  window.__sim.coneMapPoints = [];
   latestSixLaneLines = null;
   trafficStop.reset();
   // Reflect the reset in the HUD immediately, rather than waiting for the
@@ -1248,7 +1169,6 @@ function resetNavigation() {
 function setDetectorMode(mode) {
   detectorMode = mode;
   yolopBtn.classList.toggle('active', mode === 'yolop');
-  ufldBtn.classList.toggle('active', mode === 'ufld');
   idealBtn.classList.toggle('active', mode === 'ideal');
   ros2Btn.classList.toggle('active', mode === 'ros2');
   if (mode === 'ideal') {
@@ -1275,59 +1195,60 @@ function setDetectorMode(mode) {
       });
     return;
   }
-  if (ufldDetector.session) {
-    detectorStatusEl.textContent = 'UFLD (読込済)';
-    return;
-  }
-  detectorStatusEl.textContent = 'UFLD 読込中...';
-  if (!ufldLoadPromise) ufldLoadPromise = ufldDetector.load(UFLD_ONNX_URL, UFLD_META_URL, MODEL_WASM_DIR);
-  ufldLoadPromise
-    .then(() => {
-      if (detectorMode === 'ufld') detectorStatusEl.textContent = 'UFLD (読込済)';
-    })
-    .catch((err) => {
-      console.error('Failed to load UFLD ONNX model', err);
-      ufldLoadPromise = null;
-      detectorStatusEl.textContent = 'UFLD 読込エラー (models/ufld.onnx を生成してください)';
-    });
 }
 
 yolopBtn.addEventListener('click', () => setDetectorMode('yolop'));
-ufldBtn.addEventListener('click', () => setDetectorMode('ufld'));
 idealBtn.addEventListener('click', () => setDetectorMode('ideal'));
 ros2Btn.addEventListener('click', () => setDetectorMode('ros2'));
 
-function setNavMethod(method) {
-  navMethod = method;
-  navMethodQpBtn.classList.toggle('active', method === 'qp');
-  navMethodSixLaneBtn.classList.toggle('active', method === 'sixlane');
-  sixLaneDebugEl.style.display = method === 'sixlane' ? 'block' : 'none';
-  mapLabelEl.textContent = method === 'sixlane' ? '6レーン 白線点群 (俯瞰)' : '周回マップ';
-  mapCanvas.parentElement.classList.toggle('sixlane', method === 'sixlane');
-  finishMappingBtn.disabled = method === 'sixlane';
-  if (sixLanePlanner) sixLanePlanner.reset();
-  lastNavStepTime = null;
-  if (method === 'sixlane') {
-    oitStateEl.textContent = sixLaneLoadError ? `6レーン: 重み読込エラー` : '6レーン走行 (地図なし)';
-    oitLapEl.textContent = '-';
-  }
+// ---------------------------------------------------------------------------
+// 速度上限 (手動で切り替える唯一の値): WASD・自動運転の最高速度 (physics) と 6レーン走行の vMax を同時に変える。
+// 前方注視点・コーン回避の減速開始距離・白線ロスト判定は上限に合わせて自動補正される (six_lane_planner.js effectiveControl)。
+// ROS に接続しているときは実機/ROS 側 six_lane_planner の speed_limit トピックにも送る。
+// ---------------------------------------------------------------------------
+const speedLimitSlider = document.getElementById('speed-limit-slider');
+const speedLimitValEl = document.getElementById('speed-limit-val');
+const speedLimitEffEl = document.getElementById('speed-limit-eff');
+let speedLimit = MAX_SPEED;
+try { const saved = parseFloat(localStorage.getItem('aiformula_speed_limit')); if (Number.isFinite(saved)) speedLimit = clampSpeedLimit(saved); } catch (e) { /* ignore */ }
+
+function setSpeedLimit(v, { publish = true } = {}) {
+  speedLimit = clampSpeedLimit(v);
+  setMaxSpeed(speedLimit);
+  if (sixLanePlanner) sixLanePlanner.setSpeedLimit(speedLimit);
+  speedLimitSlider.value = String(speedLimit);
+  speedLimitValEl.textContent = `${speedLimit.toFixed(1)} m/s`;
+  const eff = effectiveControl({ ...SIX_LANE_PARAMS, vMax: speedLimit });
+  speedLimitEffEl.textContent = `自動補正 ×${eff.scale.toFixed(2)}: 前方注視点 ${eff.lookaheadMin.toFixed(1)}〜${eff.lookaheadMax.toFixed(1)} m / 白線ロスト判定 ${eff.lostTimeout.toFixed(2)} s / コーン回避の減速開始 ${(1.8 * eff.reactScale).toFixed(1)} m`;
+  try { localStorage.setItem('aiformula_speed_limit', String(speedLimit)); } catch (e) { /* ignore */ }
+  if (publish && speedLimitTopic) speedLimitTopic.publish(new ROSLIB.Message({ data: speedLimit }));
 }
-navMethodQpBtn.addEventListener('click', () => setNavMethod('qp'));
-navMethodSixLaneBtn.addEventListener('click', () => setNavMethod('sixlane'));
+speedLimitSlider.min = String(SPEED_LIMIT_MIN);
+speedLimitSlider.max = String(SPEED_LIMIT_MAX);
+speedLimitSlider.addEventListener('input', () => setSpeedLimit(parseFloat(speedLimitSlider.value)));
+document.querySelectorAll('[data-speed-limit]').forEach((b) => b.addEventListener('click', () => setSpeedLimit(parseFloat(b.dataset.speedLimit))));
+setSpeedLimit(speedLimit, { publish: false });
+
+// 走行方式は 6レーン (地図なし・オドメトリなし) のみ。右下パネルと俯瞰図を 6レーン用にする。
+sixLaneDebugEl.style.display = 'block';
+mapLabelEl.textContent = '6レーン 白線点群 (俯瞰)';
+mapCanvas.parentElement.classList.add('sixlane');
+oitStateEl.textContent = '6レーン走行 (地図なし)';
+sixLaneReady.then(() => { if (sixLaneLoadError) oitStateEl.textContent = '6レーン: 重み読込エラー'; });
 
 let autonomousMode = false;
 let latestAutonomousCmd = { v: 0, omega: 0 };
 
-// Arbitrates between WASD ("gamepad") and lane_navigator ("mpc") exactly
+// Arbitrates between WASD ("gamepad") and six_lane_planner ("autonomous") exactly
 // like the real vehicle's twist_mux (see js/twist_mux.js and
 // TWIST_MUX_SOURCES above): a human on WASD always overrides autonomous
 // driving instantly, and control reverts to autonomous once no key has been
-// held for 0.3s. "mpc" starts disabled since autonomousMode starts false.
+// held for 0.3s. "autonomous" starts disabled since autonomousMode starts false.
 const twistMux = new TwistMux(TWIST_MUX_SOURCES);
-twistMux.setEnabled('mpc', autonomousMode);
+twistMux.setEnabled('autonomous', autonomousMode);
 
 const twistMuxGamepadStateEl = document.getElementById('twist-mux-gamepad-state');
-const twistMuxMpcStateEl = document.getElementById('twist-mux-mpc-state');
+const twistMuxAutonomousStateEl = document.getElementById('twist-mux-autonomous-state');
 const twistMuxActiveEl = document.getElementById('twist-mux-active');
 const modeBadgeEl = document.getElementById('mode-badge');
 
@@ -1335,7 +1256,7 @@ autonomousBtn.addEventListener('click', () => {
   autonomousMode = !autonomousMode;
   autonomousBtn.textContent = `自動運転: ${autonomousMode ? 'ON' : 'OFF'}`;
   autonomousBtn.classList.toggle('active', autonomousMode);
-  twistMux.setEnabled('mpc', autonomousMode);
+  twistMux.setEnabled('autonomous', autonomousMode);
   if (!autonomousMode) publishAutonomousStop();
 });
 
@@ -1354,22 +1275,7 @@ conePlaceBtn.addEventListener('click', () => {
 });
 coneClearBtn.addEventListener('click', () => coneEditor.clearAll());
 
-// Same as the real lane_navigator's ~/finish_mapping service: closes lap 1
-// by hand (e.g. when odometry drift keeps the automatic lap detection from
-// firing) and builds the map + QP raceline from what was recorded so far.
-finishMappingBtn.addEventListener('click', () => {
-  if (detectorMode === 'ros2') {
-    callRosTrigger(FINISH_MAPPING_SERVICE);
-    return;
-  }
-  laneNavigator.finishMapping();
-});
 navResetBtn.addEventListener('click', () => {
-  if (detectorMode === 'ros2') {
-    callRosTrigger(RESET_SERVICE);
-    rosMap.left = rosMap.right = rosMap.raceline = null;
-    return;
-  }
   resetNavigation();
 });
 startPoseBtn.addEventListener('click', () => {
@@ -1385,22 +1291,11 @@ startPoseBtn.addEventListener('click', () => {
 
 // ---------------------------------------------------------------------------
 // "ROS2連携" mode: subscription callbacks for what
-// src/oit_navigation/launch/simulator_test.launch.py's lane_detector /
-// lane_navigator publish back over rosbridge. These subscriptions are always
+// six_lane.launch.py (simulator:=true) の lane_detector /
+// six_lane_planner publish back over rosbridge. These subscriptions are always
 // live once connected (see connect() above); each callback no-ops unless
 // detectorMode is actually 'ros2'.
 // ---------------------------------------------------------------------------
-const FINISH_MAPPING_SERVICE = '/lane_navigator/finish_mapping';
-const RESET_SERVICE = '/lane_navigator/reset';
-const rosMap = { left: null, right: null, raceline: null };
-let rosStatus = null;
-
-function callRosTrigger(name) {
-  if (!ros) return;
-  const srv = new ROSLIB.Service({ ros, name, serviceType: 'std_srvs/srv/Trigger' });
-  srv.callService({}, (res) => { oitMessageEl.textContent = res.message || name; });
-}
-
 // lane_detector's annotated image (bgr8): camera + detected points +
 // role-colored tracked lines, displayed as-is.
 function onRosLaneDetectorAnnotatedImage(msg) {
@@ -1422,40 +1317,17 @@ function onRosLaneDetectorAnnotatedImage(msg) {
   laneCtx.putImageData(imageData, 0, 0);
 }
 
-// extremum_seeking_mpc/cmd_vel: the ROS 2 lane_navigator's actual output.
-// Fed directly into twistMux's "mpc" source (no local recomputation).
+// six_lane_planner/cmd_vel: the ROS 2 six_lane_planner's actual output.
+// Fed directly into twistMux's "autonomous" source (no local recomputation).
 function onRosAutonomousCmdVel(msg) {
   if (detectorMode !== 'ros2') return;
   const v = msg.linear.x;
   const omega = msg.angular.z;
   const now = performance.now();
   latestAutonomousCmd = { v, omega };
-  twistMux.update('mpc', v, omega, now);
+  twistMux.update('autonomous', v, omega, now);
   lastRosCmdVelTime = now;
   detectorStatusEl.textContent = 'ROS2連携 (受信中)';
-}
-
-// lane_tracker/status: JSON from LaneNavigator.status().
-function onRosLaneTrackerStatus(msg) {
-  if (detectorMode !== 'ros2') return;
-  try {
-    rosStatus = JSON.parse(msg.data);
-    showNavStatus(rosStatus);
-  } catch (err) {
-    oitMessageEl.textContent = msg.data;
-  }
-}
-
-function onRosMapPath(kind, msg) {
-  if (detectorMode !== 'ros2') return;
-  rosMap[kind] = msg.poses.map((ps) => [ps.pose.position.x, ps.pose.position.y]);
-}
-
-function showNavStatus(st) {
-  oitStateEl.textContent = { MAPPING: '1周目: 中央線走行 + 境界記録', OPTIMIZING: 'QP 計算中', RACING: 'レーシングライン走行', STOPPED: '停止' }[st.state] || st.state;
-  oitLapEl.textContent = `${st.lap}`;
-  oitSamplesEl.textContent = `${st.samples} 点 (次の間隔 ${st.spacing}m, κ=${st.kappa})`;
-  oitMessageEl.textContent = st.message || '-';
 }
 
 // rosbridge decodes a base64 *string* into a message's uint8[] field (same
@@ -1524,7 +1396,7 @@ function publishPathTopic(topic, points, frameId = ROBOT_FRAME_ID) {
 }
 
 // ---------------------------------------------------------------------------
-// Drawing: lane panel (camera + UFLD) and course-map panel (top-down).
+// Drawing: lane panel (camera + YOLOP) and course-map panel (top-down).
 // ---------------------------------------------------------------------------
 const ROLE_COLORS = { left: '#35d0ff', center: '#ffd400', right: '#ff5ad8' };
 
@@ -1566,7 +1438,7 @@ function drawLanePanel(lanes, tracked, width, height, mask = null) {
     }
     laneCtx.putImageData(img, 0, 0);
   }
-  // Raw UFLD points (per slot, white)
+  // Raw detected points (per line, white)
   laneCtx.fillStyle = 'rgba(255,255,255,0.85)';
   lanes.forEach((l) => {
     if (!l) return;
@@ -1597,61 +1469,6 @@ function drawLanePanel(lanes, tracked, width, height, mask = null) {
     const tag = tracked.detected[role] ? '検出' : tracked.lines[role] ? '補完' : 'なし';
     laneCtx.fillText(`${{ left: '左', center: '中央', right: '右' }[role]}: ${tag}`, 8, 18 + 17 * i);
   });
-}
-
-function drawMapPanel(map, pose) {
-  const W = mapCanvas.width, H = mapCanvas.height;
-  mapCtx.fillStyle = '#0b0d10';
-  mapCtx.fillRect(0, 0, W, H);
-  const layers = [map.left, map.right, map.raceline, map.trail, pose ? [[pose[0], pose[1]]] : null].filter((l) => l && l.length);
-  if (!layers.length) return;
-  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const l of layers) for (const [x, y] of l) {
-    minX = Math.min(minX, x); maxX = Math.max(maxX, x); minY = Math.min(minY, y); maxY = Math.max(maxY, y);
-  }
-  const pad = 4;
-  const span = Math.max(maxX - minX, maxY - minY, 10) + 2 * pad;
-  const scale = Math.min(W, H) / span;
-  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
-  const toPx = ([x, y]) => [W / 2 + (x - cx) * scale, H / 2 - (y - cy) * scale];
-
-  const polyline = (pts, color, width, closed = false) => {
-    if (!pts || pts.length < 2) return;
-    mapCtx.strokeStyle = color;
-    mapCtx.lineWidth = width;
-    mapCtx.beginPath();
-    pts.forEach((p, i) => { const [u, v] = toPx(p); i ? mapCtx.lineTo(u, v) : mapCtx.moveTo(u, v); });
-    if (closed) mapCtx.closePath();
-    mapCtx.stroke();
-  };
-  const dots = (pts, color, r) => {
-    if (!pts) return;
-    mapCtx.fillStyle = color;
-    for (const p of pts) { const [u, v] = toPx(p); mapCtx.beginPath(); mapCtx.arc(u, v, r, 0, 2 * Math.PI); mapCtx.fill(); }
-  };
-  polyline(map.trail, 'rgba(90,140,255,0.6)', 1.5);
-  dots(map.left, ROLE_COLORS.left, 3);
-  dots(map.right, ROLE_COLORS.right, 3);
-  if (map.raceline) {
-    polyline(map.raceline, '#ff9f1a', 2, true);
-    mapCtx.strokeStyle = '#ff9f1a';
-    mapCtx.lineWidth = 1.5;
-    for (const p of map.raceline) { const [u, v] = toPx(p); mapCtx.beginPath(); mapCtx.arc(u, v, 4, 0, 2 * Math.PI); mapCtx.stroke(); }
-  }
-  if (pose) {
-    const [u, v] = toPx(pose);
-    const a = -pose[2];
-    mapCtx.fillStyle = '#ff3b3b';
-    mapCtx.beginPath();
-    mapCtx.moveTo(u + 10 * Math.cos(a), v + 10 * Math.sin(a));
-    mapCtx.lineTo(u + 6 * Math.cos(a + 2.4), v + 6 * Math.sin(a + 2.4));
-    mapCtx.lineTo(u + 6 * Math.cos(a - 2.4), v + 6 * Math.sin(a - 2.4));
-    mapCtx.closePath();
-    mapCtx.fill();
-  }
-  mapCtx.font = '14px sans-serif';
-  mapCtx.fillStyle = '#e8eaed';
-  mapCtx.fillText(`${(span - 2 * pad).toFixed(0)}m 四方 | ●左境界 ●右境界 ○QPウェイポイント`, 8, H - 10);
 }
 
 // 6レーン走行の俯瞰図 (base_link, 前方が上・左が左): 仮想6レーンの塗り分け
@@ -1764,25 +1581,13 @@ function drawSixLaneBev(lines, st, cones) {
   ctx.fillText(`${head}　●左 ●中央 ●右 点群`, 8, H - 10);
 }
 
-function navMapLayers() {
-  const nav = laneNavigator;
-  const samples = nav.recorder.samples;
-  const m = nav.courseMap;
-  return {
-    left: m ? m.left : samples.map((s) => s.left),
-    right: m ? m.right : samples.map((s) => s.right),
-    raceline: nav.raceline ? nav.raceline.points : null,
-    trail: localizerTrail,
-  };
-}
-
 // ---------------------------------------------------------------------------
 // Pipeline tick (15Hz, same timer as the camera publish). lanePipelineBusy is
 // a single-slot guard so a slow inference never gets a second one queued.
 // ---------------------------------------------------------------------------
 let lanePipelineBusy = false;
 
-// 自律走行指令 (extremum_seeking_mpc/cmd_vel = 実機 twist_mux の "mpc" 入力) の送信。
+// 自律走行指令 (six_lane_planner/cmd_vel = 実機 twist_mux の "autonomous" 入力) の送信。
 // 通常モードは従来どおりパイプラインの出力を常に送る。実機操縦モードでは
 // 「自動運転: ON」でシミュレータ自身の検出器が走っているときだけ送り、実機に
 // シミュレータの車と同じ指令を与える (ROS2連携=実機ノードが指令元の時・早送り中・
@@ -1797,7 +1602,7 @@ function publishAutonomousCmd(cmd) {
 }
 
 // 実機の motor_controller は最後に受けた指令を保持し続け、twist_mux も入力が
-// 途絶えただけでは 0 を出さない。実機操縦中に自動運転を止めるときは、mpc 入力に
+// 途絶えただけでは 0 を出さない。実機操縦中に自動運転を止めるときは、autonomous 入力に
 // 明示的に速度 0 を送って止める。
 function publishAutonomousStop() {
   if (!teleopOnly || !autonomousCmdVelTopic) return;
@@ -1808,66 +1613,40 @@ function publishAutonomousStop() {
   }
 }
 
-function stepNavigator(tracked, now = performance.now() / 1000, sixLaneLines = null) {
-  if (navMethod === 'sixlane') return stepSixLane(tracked ? sixLaneLines : null, now);
-  const dt = lastNavStepTime === null ? 0 : Math.min(now - lastNavStepTime, 0.5);
-  lastNavStepTime = now;
-  const pose = [localizer.x, localizer.y, localizer.yaw];
-  const rawCmd = laneNavigator.step(now, dt, pose, localizer.v, localizer.omega, localizer.s, tracked);
-  const avoided = reactiveAvoid(rawCmd, coneDetectionsForAvoidance(), prevReactiveBias, dt);
-  prevReactiveBias = avoided.bias;
-  avoidanceDebugEl.textContent = avoided.debug;
-  const cmd = applyTrafficLightStop(now, dt, localizer.v, { v: avoided.v, omega: avoided.omega });
-
-  // MAPPING -> RACING遷移を検知したら、1回だけレーシングラインをコーン回避
-  // 後処理版に差し替え、コーン地図を確定する。
-  if (previousNavState !== RACING && laneNavigator.state === RACING && laneNavigator.raceline) {
-    const finalizedCones = coneRecorder.finalize(laneNavigator.recorder.samples, laneNavigator.yawDrift,
-      laneNavigator.courseMap, laneNavigator.p.lap);
-    applyRacelineDeflection(laneNavigator, finalizedCones, laneNavigator.p.tracker);
-    window.__sim.coneMapPoints = finalizedCones; // デバッグ確認用
-  }
-  previousNavState = laneNavigator.state;
-
-  if (laneNavigator.state === RACING && window.__sim.coneMapPoints && window.__sim.coneMapPoints.length) {
-    coneLandmarkCorrection(laneNavigator, pose, latestConeDetections, window.__sim.coneMapPoints);
-  }
-
-  latestAutonomousCmd = { v: cmd.v, omega: cmd.omega };
-  twistMux.update('mpc', cmd.v, cmd.omega, performance.now());
-  publishAutonomousCmd(cmd);
-  const st = laneNavigator.status();
-  showNavStatus(st);
-  if (laneTrackerStatusTopic) laneTrackerStatusTopic.publish(new ROSLIB.Message({ data: JSON.stringify(st) }));
-  return cmd;
+function stepNavigator(tracked, now = performance.now() / 1000, sixLaneLines = null, age = 0) {
+  return stepSixLane(tracked ? sixLaneLines : null, now, age);
 }
 
 // 6レーン走行の1制御周期: 白線 (null = 観測なし) -> SixLanePlanner -> コーン反応回避
-// (QP 方式と同じ最終安全層) -> twist_mux "mpc"。オドメトリ (localizer) は使わず、
-// 速度だけ車輪速 (CAN 相当, スリップ込み) を使う。
-function stepSixLane(lines, now) {
+// (最終安全層) -> twist_mux "autonomous"。オドメトリは使わず、速度だけ推定車速 (車輪速 + IMU 加速度) を使う。
+// age: 白線を検出した画像からの遅れ [s]。遅れの間に進んだ分だけ白線・コーンを今の base_link へ補償する。
+function stepSixLane(lines, now, age = 0) {
   const dt = lastNavStepTime === null ? 0 : Math.min(now - lastNavStepTime, 0.5);
   lastNavStepTime = now;
   if (!sixLanePlanner) {
     oitMessageEl.textContent = sixLaneLoadError ? `6レーン: ${sixLaneLoadError}` : '6レーン: NN 読込中...';
     return { v: 0, omega: 0 };
   }
-  const measured = physics.measuredWheelSpeeds();
-  const vMeas = (measured.left + measured.right) / 2;
+  const vMeas = speedEstimator.v;
+  const pl = sixLanePlanner.p;
   const cones = coneDetectionsForAvoidance();
-  const st = sixLanePlanner.step(dt, lines, vMeas, cones, !!(lines && lines.reanchored));
+  const comp = lines ? compensateLines(lines, vMeas, physics.omega, age, pl.latencyMax) : null;
+  if (comp && lines) comp.reanchored = lines.reanchored;
+  const st = sixLanePlanner.step(dt, comp, vMeas, cones, !!(lines && lines.reanchored));
+  st.imuOk = speedEstimator.imuOk;
+  st.latency = age;
   // 白線の役割取り違えを検出したら、LineTracker を追跡済みの横位置で置き直して正しい割り当てに戻す
   // (実機では six_lane_planner が lane_reseed トピックで lane_detector に同じことをさせる)
   if (st.lateralRejected) {
     lineTracker.seedLanePosition(st.F);
     if (sixLaneReseedTopic) sixLaneReseedTopic.publish(new ROSLIB.Message({ data: st.F }));
   }
-  const avoided = reactiveAvoid({ v: st.v, omega: st.omega }, cones, prevReactiveBias, dt);
+  const avoided = reactiveAvoid({ v: st.v, omega: st.omega }, cones, prevReactiveBias, dt, 4.0, effectiveControl(pl).reactScale);
   prevReactiveBias = avoided.bias;
   if (!fastForwarding) avoidanceDebugEl.textContent = avoided.debug;
   const cmd = applyTrafficLightStop(now, dt, vMeas, { v: avoided.v, omega: avoided.omega });
   latestAutonomousCmd = cmd;
-  twistMux.update('mpc', cmd.v, cmd.omega, performance.now());
+  twistMux.update('autonomous', cmd.v, cmd.omega, performance.now());
   publishAutonomousCmd(cmd);
   if (sixLaneStatusTopic) sixLaneStatusTopic.publish(new ROSLIB.Message({ data: JSON.stringify(sixLaneStatusJson(st, avoided.debug)) }));
   if (sixLaneTargetPathTopic && lines && st.targetLane) {
@@ -1887,6 +1666,8 @@ function sixLaneStatusJson(st, avoid = '') {
     pending_lane: st.pendingLane ?? null, pending_count: st.pendingCount ?? 0, sign: st.sign ?? 0,
     teacher_target: r(st.teacherTarget), intensity: r(st.intensity), F: r(st.F), F_meas: r(st.FMeas),
     lateral_rejected: !!st.lateralRejected,
+    speed_limit: r(st.speedLimit), speed_scale: r(st.speedScale), lookahead_range: (st.lookaheadRange || []).map((q) => r(q)),
+    imu_ok: st.imuOk ?? null, latency: r(st.latency, 3),
     kappas: (st.kappas || []).map((k) => r(k, 4)), confidence: r(st.confidence),
     nn_probs: (st.nnProbs || []).map((q) => r(q)), probs: (st.probs || []).map((q) => r(q)),
     blocked: st.blocked || [], v: r(st.v), omega: r(st.omega), lost_time: r(st.lostTime),
@@ -1920,7 +1701,7 @@ function showSixLaneDebug(st) {
 
 // "ROS2連携" 検出モード + 6レーン: 実機ノードの status JSON を表示する。
 function onRosSixLaneStatus(msg) {
-  if (detectorMode !== 'ros2' || navMethod !== 'sixlane' || !sixLanePlanner) return;
+  if (detectorMode !== 'ros2' || !sixLanePlanner) return;
   try {
     const j = JSON.parse(msg.data);
     showSixLaneDebug({
@@ -1929,6 +1710,7 @@ function onRosSixLaneStatus(msg) {
       FMeas: j.F_meas, lateralRejected: j.lateral_rejected,
       kappas: j.kappas, confidence: j.confidence, nnProbs: j.nn_probs, probs: j.probs, blocked: j.blocked,
       v: j.v, omega: j.omega, lostTime: j.lost_time,
+      speedLimit: j.speed_limit, speedScale: j.speed_scale, lookaheadRange: j.lookahead_range && j.lookahead_range.length ? j.lookahead_range : undefined,
     });
   } catch (err) {
     sixLaneDebugTextEl.textContent = msg.data;
@@ -1951,7 +1733,10 @@ function coneDetectionsForAvoidance() {
     };
   });
   const detections = [...placed];
-  for (const detection of latestConeDetections) {
+  // カメラ検出は検出した時刻の base_link なので、その後に進んだ分だけ今の base_link に変換する (実機 six_lane_planner と同じ)
+  const coneAge = fastForwarding ? 0 : (performance.now() - latestConeDetectionsAtMs) / 1000;
+  const compensated = sixLanePlanner ? compensatePoints(latestConeDetections, speedEstimator.v, physics.omega, coneAge, sixLanePlanner.p.latencyMax) : latestConeDetections;
+  for (const detection of compensated) {
     if (!detections.some((known) => Math.hypot(known.x - detection.x, known.y - detection.y) < 0.35)) {
       detections.push(detection);
     }
@@ -1962,26 +1747,26 @@ function coneDetectionsForAvoidance() {
 async function updateLanePipeline() {
   if (fastForwarding) return;
   if (detectorMode === 'ros2') {
-    // 6レーン走行は判断結果 (右下パネル) だけ ROS 側の status から表示する (周回マップは無い)
-    if (navMethod !== 'sixlane') drawMapPanel({ ...rosMap, trail: null }, null);
+    // 6レーン走行は判断結果 (右下パネル) だけ ROS 側の status から表示する
     return;
   }
-  if (lanePipelineBusy || (detectorMode === 'ufld' && !ufldDetector.session)
+  if (lanePipelineBusy
     || (detectorMode === 'yolop' && !yolopDetector.session)) return;
   lanePipelineBusy = true;
   try {
     await runPerception(performance.now() / 1000);
   } catch (err) {
-    console.error('oit_navigation UFLD pipeline error', err);
+    console.error('oit_navigation perception pipeline error', err);
   } finally {
     lanePipelineBusy = false;
   }
 }
 
-// One perception + navigation tick: detect lines (UFLD or ideal), track
+// One perception + navigation tick: detect lines (YOLOP or ideal), track
 // roles, step the navigator at time `now` [s], draw panels, publish topics.
 async function runPerception(now) {
   {
+    const perceptionStartMs = performance.now(); // 画像を撮った時刻 (遅れ補償の基準. 早送り中は遅れ 0)
     const width = captureCanvas.width, height = captureCanvas.height;
     let lanes;
     let fits;
@@ -2007,8 +1792,7 @@ async function runPerception(now) {
         return { u: px.map((q) => q[0]), v: px.map((q) => q[1]) };
       });
     } else {
-      lanes = await ufldDetector.detect(captureCanvas);
-      fits = toFits(lanes);
+      throw new Error(`unknown detector mode: ${detectorMode}`);
     }
     const tracked = lineTracker.update(fits);
     // 6レーン用: 役割ごとの線 (補完線も含む) に、検出線なら元の点群を添える。
@@ -2017,7 +1801,7 @@ async function runPerception(now) {
       const fit = tracked.lines[role];
       const k = fit ? fits.indexOf(fit) : -1;
       sixLaneLines[role] = fit ? {
-        yAt: (x) => fit.yAt(x), inferred: !!fit.inferred, detected: tracked.detected[role],
+        yAt: (x) => fit.yAt(x), xMin: fit.xMin, xMax: fit.xMax, inferred: !!fit.inferred, detected: tracked.detected[role],
         px: k >= 0 && groundPts[k] ? groundPts[k].x : null, py: k >= 0 && groundPts[k] ? groundPts[k].y : null,
       } : null;
     }
@@ -2043,9 +1827,7 @@ async function runPerception(now) {
     }
     // ONNX Runtime Web はセッションをまたいでも同時に 1 推論しか走らせられないので、コーンの後に順番に推論する
     await runTrafficLightDetection(now);
-    if (navMethod === 'qp' && laneNavigator.state === MAPPING) {
-      coneRecorder.update(localizer.s, [localizer.x, localizer.y, localizer.yaw], latestConeDetections);
-    }
+    latestConeDetectionsAtMs = perceptionStartMs;
     latestTracked = tracked;
     // Debug trace (last ~60s) for automated verification from the console.
     laneTrace.push({
@@ -2061,7 +1843,7 @@ async function runPerception(now) {
       return;
     }
     lastPipelineTime = performance.now();
-    stepNavigator(tracked, now, sixLaneLinesOk);
+    stepNavigator(tracked, now, sixLaneLinesOk, (performance.now() - perceptionStartMs) / 1000);
 
     drawLanePanel(lanes, tracked, width, height, mask);
     publishImageTopic(laneDetectorAnnotatedImageTopic, width, height, 'rgb8', 3, canvasToRgb8Bytes(laneCtx, width, height), IMAGE_FRAME_ID);
@@ -2069,28 +1851,17 @@ async function runPerception(now) {
     publishPathTopic(laneCenterTopic, sampleLine(tracked.lines.center));
     publishPathTopic(laneRightTopic, sampleLine(tracked.lines.right));
 
-    if (navMethod === 'sixlane') {
-      drawSixLaneBev(sixLaneLinesOk, sixLanePlanner ? sixLanePlanner.last : null, coneDetectionsForAvoidance());
-      return;
-    }
-    const layers = navMapLayers();
-    drawMapPanel(layers, [localizer.x, localizer.y, localizer.yaw]);
-    if (performance.now() - lastMapPublishTime > 1000) {
-      lastMapPublishTime = performance.now();
-      publishPathTopic(leftBoundaryTopic, layers.left, ODOM_NAV_FRAME_ID);
-      publishPathTopic(rightBoundaryTopic, layers.right, ODOM_NAV_FRAME_ID);
-      if (layers.raceline) publishPathTopic(targetTrajectoryTopic, layers.raceline, ODOM_NAV_FRAME_ID);
-    }
+    drawSixLaneBev(sixLaneLinesOk, sixLanePlanner ? sixLanePlanner.last : null, coneDetectionsForAvoidance());
   }
 }
 
 // ---------------------------------------------------------------------------
 // Deterministic fast-forward for automated verification: steps physics
-// (autonomous command only), the localizer and perception+navigation at
+// (autonomous command only), the speed estimator and perception+navigation at
 // IMAGE_PUBLISH_HZ in *simulated* time, without depending on
 // requestAnimationFrame (which browsers throttle/stop in hidden tabs).
 //   await window.__sim.fastForward(120)   // simulate 120 s
-// Works with the 'ideal', 'yolop' and 'ufld' detector modes (the models render the
+// Works with the 'ideal' and 'yolop' detector modes (the models render the
 // onboard camera each perception tick).
 // ---------------------------------------------------------------------------
 let fastForwarding = false;
@@ -2110,7 +1881,7 @@ async function fastForward(seconds, physicsDt = 1 / 60) {
       if (simClock >= nextPerception) {
         nextPerception += 1 / IMAGE_PUBLISH_HZ;
         // カメラ画像を使う検出 (白線モデル・コーン・信号機) があれば、その時点の姿勢で描画し直す
-        if (detectorMode === 'ufld' || detectorMode === 'yolop' || coneDetector.session || trafficLightDetector.session) {
+        if (detectorMode === 'yolop' || coneDetector.session || trafficLightDetector.session) {
           updateOnboardCameraPose();
           renderOnboardCapture();
         }
@@ -2120,50 +1891,23 @@ async function fastForward(seconds, physicsDt = 1 / 60) {
       physics.stepAutonomous(cmd.v, cmd.omega, physicsDt);
       advanceSignal(physicsDt);
       applyCollisionAndDeparture();
-      // odom_imu_localizer stand-in (see animate()'s own call site for the
-      // rationale): use measuredWheelSpeeds() so fastForward()-driven runs
-      // also see 8%-slip-induced odometry drift instead of ground truth for
-      // forward speed. omegaMeas stays physics.omega (not wheel-derived):
-      // the real gyro_odometry_publisher (sensing/odometry_publisher)
-      // derives yaw/yaw rate entirely from IMU orientation/angular-velocity
-      // interpolation, never from wheel differential (see
-      // gyro_odometry_publisher.cpp, odometry_publisher.cpp, wheel.hpp),
-      // and this sim has no separate IMU noise model, so the vehicle's true
-      // omega is the correct stand-in.
-      const measured = physics.measuredWheelSpeeds();
-      const vMeas = (measured.left + measured.right) / 2;
-      const omegaMeas = physics.omega;
-      integrateLocalizer(vMeas, omegaMeas, physicsDt);
-      recordLocalizerTrail();
+      updateSpeedEstimate(physicsDt);
       simClock += physicsDt;
     }
   } finally {
     fastForwarding = false;
     lastNavStepTime = null;
-    if (navMethod === 'sixlane') {
-      if (sixLanePlanner) showSixLaneDebug(sixLanePlanner.last);
-      drawSixLaneBev(latestSixLaneLines, sixLanePlanner ? sixLanePlanner.last : null, coneDetectionsForAvoidance());
-    } else {
-      drawMapPanel(navMapLayers(), [localizer.x, localizer.y, localizer.yaw]);
-    }
+    if (sixLanePlanner) showSixLaneDebug(sixLanePlanner.last);
+    drawSixLaneBev(latestSixLaneLines, sixLanePlanner ? sixLanePlanner.last : null, coneDetectionsForAvoidance());
   }
-  return navMethod === 'sixlane' ? sixLaneStatusJson(sixLanePlanner ? sixLanePlanner.last : {}) : laneNavigator.status();
+  return sixLaneStatusJson(sixLanePlanner ? sixLanePlanner.last : {});
 }
 
-function recordLocalizerTrail() {
-  const last = localizerTrail[localizerTrail.length - 1];
-  if (!last || Math.hypot(localizer.x - last[0], localizer.y - last[1]) > 0.5) {
-    localizerTrail.push([localizer.x, localizer.y]);
-    if (localizerTrail.length > 4000) localizerTrail.shift();
-  }
-}
-
-// Watchdog: if no UFLD frame has completed for LANE_DATA_TIMEOUT_MS (model
+// Watchdog: if no white-line frame has completed for LANE_DATA_TIMEOUT_MS (model
 // still loading, inference stalled, tab throttled), keep stepping the
-// navigator without a new observation -- lap 1 decelerates to a stop (no
-// center line to follow), lap 2+ keeps following the raceline on odometry
-// -- instead of latching the last cmd_vel forever. Mirrors the real
-// lane_navigator node's control timer.
+// planner without a new observation (the planner decelerates to a stop when
+// the lines are lost) instead of latching the last cmd_vel forever. Mirrors the
+// real six_lane_planner node's control timer.
 setInterval(() => {
   if (detectorMode === 'ros2') {
     if (lastRosCmdVelTime !== 0 && performance.now() - lastRosCmdVelTime > LANE_DATA_TIMEOUT_MS) {
@@ -2171,9 +1915,11 @@ setInterval(() => {
     }
     return;
   }
-  if (fastForwarding || performance.now() - lastPipelineTime <= LANE_DATA_TIMEOUT_MS / 2) return;
+  // 次の白線フレームを待つ間 直前の指令を維持するのは holdDistance [m] / 車速 [s] まで (速いほど短い. 実機 six_lane_planner と同じ)
+  const holdMs = sixLanePlanner ? 1000 * Math.min(0.3, sixLanePlanner.p.holdDistance / Math.max(speedEstimator.v, 0.1)) : LANE_DATA_TIMEOUT_MS / 2;
+  if (fastForwarding || performance.now() - lastPipelineTime <= holdMs) return;
   stepNavigator(null);
-}, LANE_DATA_TIMEOUT_MS / 4);
+}, 100);
 
 const IMU_PUBLISH_HZ = 100;
 
@@ -2308,7 +2054,7 @@ setInterval(publishVehicleInfoCan, 1000 / CAN_PUBLISH_HZ);
 // animate() via an accumulator. Backgrounding the simulator tab for even a
 // few seconds - switching to another tab/window, minimizing - froze this
 // camera feed for exactly that long, so oit_navigation's whole pipeline
-// (lane_detector, lane_navigator) received nothing and every downstream
+// (lane_detector, six_lane_planner) received nothing and every downstream
 // visualization appeared to just stop updating. Running the capture+publish tick on
 // its own timer keeps frames flowing (against whatever scene state is
 // current - stale while backgrounded, since physics integration is still
@@ -2325,19 +2071,18 @@ setInterval(() => {
 const physics = new VehiclePhysics();
 // Debug hook for automated verification (browser console / test harness).
 window.__sim = {
-  physics, captureCanvas, renderOnboardCapture, updateOnboardCameraPose, onboardCamera, laneNavigator, lineTracker, localizer, ufldDetector,
-  idealDetector, laneTrace, localizerTrail, fastForward: (sec) => fastForward(sec),
+  physics, captureCanvas, renderOnboardCapture, updateOnboardCameraPose, onboardCamera, lineTracker, speedEstimator,
+  idealDetector, laneTrace, fastForward: (sec) => fastForward(sec),
   setDetectorMode: (m) => setDetectorMode(m), resetNavigation: () => resetNavigation(),
   course, obstacles, mylapsRoot, pathTracker, departureMonitor, coneEditor,
-  coneDetector, coneRecorder, latestConeDetections: () => latestConeDetections, coneMapPoints: [],
-  setNavMethod: (m) => setNavMethod(m), sixLane: () => sixLanePlanner, sixLaneReady,
-  seedLineTrackerFromLane: (F) => lineTracker.seedLanePosition(F),
+  coneDetector, latestConeDetections: () => latestConeDetections,
+  sixLane: () => sixLanePlanner, sixLaneReady,
+  seedLineTrackerFromLane: (F) => lineTracker.seedLanePosition(F), setSpeedLimit: (v) => setSpeedLimit(v),
   trafficLightDetector, trafficStop, latestTrafficLight: () => latestTrafficLight,
   setSignalMode: (m) => setSignalMode(m), currentSignal: () => currentSignal(),
   realWheelMonitor,
   signalClock: () => signalClock, setSignalClock: (t) => { signalClock = t; advanceSignal(0); },
 };
-resetLocalizer();
 setDetectorMode('yolop');
 const speedVal = document.getElementById('speed-val');
 const yawRateVal = document.getElementById('yaw-rate-val');
@@ -2461,7 +2206,7 @@ function updateOnboardCameraPose() {
   const mountRos = {
     x: physics.x + CAMERA_MOUNT.x * Math.cos(physics.yaw) - CAMERA_MOUNT.y * Math.sin(physics.yaw),
     y: physics.y + CAMERA_MOUNT.x * Math.sin(physics.yaw) + CAMERA_MOUNT.y * Math.cos(physics.yaw),
-    z: VEHICLE.wheelRadius + CAMERA_MOUNT.z, // 0.12m (base_link height) + 0.44m = 0.56m above ground
+    z: VEHICLE.baseHeight + CAMERA_MOUNT.z, // 0.12m (base_link height) + 0.44m = 0.56m above ground
   };
   const lookAheadRos = {
     x: mountRos.x + Math.cos(physics.yaw) * LOOK_DIST,
@@ -2480,7 +2225,7 @@ function animate() {
   // freshness whenever the human is actually driving right now (same
   // effective-keys signal the existing cmd_vel-timeout fallback already
   // uses), then let the highest-priority still-fresh source drive the
-  // vehicle. gamepad (150) always wins over mpc (50) the instant a key is
+  // vehicle. gamepad (150) always wins over autonomous (50) the instant a key is
   // held; letting go hands control back to autonomous once gamepad's own
   // 0.3s timeout elapses -- exactly like the real vehicle's twist_mux.
   const effectiveKeys = isCmdVelTimedOut() ? NO_KEYS : keys;
@@ -2491,8 +2236,8 @@ function animate() {
   const { activeSource } = twistMux.mux(muxNowMs);
 
   if (fastForwarding) {
-    // fastForward() owns the physics/localizer while it runs.
-  } else if (activeSource === 'mpc') {
+    // fastForward() owns the physics/speed estimator while it runs.
+  } else if (activeSource === 'autonomous') {
     physics.stepAutonomous(latestAutonomousCmd.v, latestAutonomousCmd.omega, dt);
     lastMuxOutput = { v: latestAutonomousCmd.v, omega: latestAutonomousCmd.omega, timeMs: muxNowMs };
   } else if (activeSource === 'gamepad') {
@@ -2522,22 +2267,7 @@ function animate() {
     // fastForward's own calls and flicker the 接触中 indicator).
     applyCollisionAndDeparture();
 
-    // odom_imu_localizer stand-in: wheel speed (slip-affected) + IMU yaw
-    // rate dead reckoning. CAN(RPM)相当のmeasuredWheelSpeeds()から v を
-    // 再構成する -- 真のphysics.vではなく、8%スリップが乗った計測値を
-    // 使うことで、実車と同じようにオドメトリ推定(localizer)の位置が
-    // 真の位置からズレていく。一方yaw/yaw rateはomegaMeas=physics.omega
-    // とし、真の値をそのまま使う: 実車のgyro_odometry_publisher
-    // (sensing/odometry_publisher)はyaw/yaw rateを完全にIMU由来
-    // (orientation/angular_velocityの補間)で求めており、ホイール差動から
-    // 算出することはない (gyro_odometry_publisher.cpp,
-    // odometry_publisher.cpp, wheel.hpp を参照)。このシムには別途IMUノイズ
-    // モデルが無いため、真のphysics.omegaがIMU相当の代替として妥当。
-    const measured = physics.measuredWheelSpeeds();
-    const vMeas = (measured.left + measured.right) / 2;
-    const omegaMeas = physics.omega;
-    integrateLocalizer(vMeas, omegaMeas, dt);
-    recordLocalizerTrail();
+    updateSpeedEstimate(dt); // 車輪速 (スリップ込み) + IMU 加速度 -> 推定車速 (6レーン走行が使う)
   }
 
   vehicleRoot.position.set(physics.x, physics.y, 0);
@@ -2602,11 +2332,11 @@ function animate() {
 
   const muxNow = performance.now();
   twistMuxGamepadStateEl.textContent = twistMux.isFresh('gamepad', muxNow) ? '有効' : '-';
-  twistMuxMpcStateEl.textContent = twistMux.isFresh('mpc', muxNow) ? '有効' : '-';
-  twistMuxActiveEl.textContent = activeSource === 'gamepad' ? 'gamepad (WASD)' : activeSource === 'mpc' ? 'mpc (自動運転)' : 'なし';
+  twistMuxAutonomousStateEl.textContent = twistMux.isFresh('autonomous', muxNow) ? '有効' : '-';
+  twistMuxActiveEl.textContent = activeSource === 'gamepad' ? 'gamepad (WASD)' : activeSource === 'autonomous' ? '自動運転' : 'なし';
   // Header badge: who is driving right now (the twist_mux winner).
-  modeBadgeEl.textContent = activeSource === 'gamepad' ? '手動' : activeSource === 'mpc' ? '自動運転' : '待機';
-  modeBadgeEl.className = activeSource === 'gamepad' ? 'manual' : activeSource === 'mpc' ? 'auto' : '';
+  modeBadgeEl.textContent = activeSource === 'gamepad' ? '手動' : activeSource === 'autonomous' ? '自動運転' : '待機';
+  modeBadgeEl.className = activeSource === 'gamepad' ? 'manual' : activeSource === 'autonomous' ? 'auto' : '';
 
   speedVal.textContent = physics.v.toFixed(2);
   yawRateVal.textContent = physics.omega.toFixed(2);

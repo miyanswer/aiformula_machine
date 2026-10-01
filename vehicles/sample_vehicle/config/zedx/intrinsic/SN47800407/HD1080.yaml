@@ -2,7 +2,7 @@
 # 配信画像 (HD1080 を pub_downscale_factor 3.0 で 640x360) の camera_info (歪み補正済み, d = 0) を x3 した値:
 #   ros2 topic echo --once /aiformula_sensing/zed_node/left/camera_info
 #   k = [244.41835, 0, 326.73862, 0, 244.41835, 172.20863, 0, 0, 1]
-# navigation_params.yaml の camera_fx/fy/cx/cy と web_simulator/js/lane_navigator.js DEFAULT_CAMERA はこの値.
+# navigation_params.yaml の camera_fx/fy/cx/cy と web_simulator/js/lane_core.js DEFAULT_CAMERA はこの値.
 /**:
   ros__parameters:
     zedx:

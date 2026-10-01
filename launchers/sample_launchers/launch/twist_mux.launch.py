@@ -46,7 +46,7 @@ def generate_launch_description():
                     {
                         "topics.handle_controller.topic": TOPIC_NAMES["control"]["speed_command"]["handle_controller"]["normal"],
                         "topics.gamepad.topic": TOPIC_NAMES["control"]["speed_command"]["gamepad"],
-                        "topics.mpc.topic": TOPIC_NAMES["control"]["speed_command"]["mpc"],
+                        "topics.autonomous.topic": TOPIC_NAMES["control"]["speed_command"]["autonomous"],
                         "topics.handle_controller_coasting.topic": TOPIC_NAMES["control"]["speed_command"]["handle_controller"]["coasting"],
                         "locks.gamepad.topic": TOPIC_NAMES["control"]["twist_mux_lock"]["gamepad"],
                     }],

@@ -17,7 +17,7 @@
 //     the GLB and these follow. START_POSE is the one hand-set value.
 //
 // Materials are replaced with unlit MeshBasicMaterial in the model's own base
-// colours: the onboard camera image is what YOLOP/UFLD read, and it must not
+// colours: the onboard camera image is what YOLOP read, and it must not
 // change with the sun angle.
 
 import * as THREE from 'three';

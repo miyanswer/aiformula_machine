@@ -1,13 +1,13 @@
 #!/bin/bash
 # ==============================================================================
-# 2_test_pc_standalone.sh
+# test_pc_standalone.sh
 # 
 # [PC単体検証用] 実機が手元になくてもPCだけで機能追加やアルゴリズムの動作確認を行うスクリプト。
 # MP4動画の再生、YOLOPレーン検出、BEVレーン追従、信号機検出、RViz2による可視化を一括起動します。
 #
 # 使用例:
-#   bash 2_test_pc_standalone.sh
-#   bash 2_test_pc_standalone.sh /path/to/custom_video.mp4 cpu
+#   bash test_pc_standalone.sh
+#   bash test_pc_standalone.sh /path/to/custom_video.mp4 cpu
 # ==============================================================================
 
 set -e

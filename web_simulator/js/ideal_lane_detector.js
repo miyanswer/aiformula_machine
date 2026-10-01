@@ -1,14 +1,14 @@
-// "理想検出" detector mode: instead of running UFLD on the rendered camera
+// "理想検出" detector mode: instead of running YOLOP on the rendered camera
 // image, observes the course's actual white lines (measured from
 // models/course.glb by js/course.js) from the vehicle's true pose, with
-// UFLD-like imperfections: measurement noise growing with distance, random
+// YOLOP-like imperfections: measurement noise growing with distance, random
 // per-frame line dropouts, and no line where the course has none (dashes,
-// junctions). Output is the same list of base_link LineFits the UFLD path
+// junctions). Output is the same list of base_link LineFits the YOLOP path
 // produces, so everything downstream (LineTracker -> LaneNavigator) is
-// identical -- this isolates "does the driving method work" from "does UFLD
+// identical -- this isolates "does the driving method work" from "does YOLOP
 // generalize to this simulator's rendering".
 
-import { fitLine, DEFAULT_CAMERA } from './lane_navigator.js';
+import { fitLine, DEFAULT_CAMERA } from './lane_core.js';
 
 export const IDEAL_DETECTOR_PARAMS = {
   xMin: 1.2, // [m] closest visible ground point (camera FOV)
@@ -78,7 +78,7 @@ export class IdealLaneDetector {
       fits.push(fit);
       points.push({ x: sx, y: sy });
     }
-    // Slot order carries no meaning (same as UFLD's slots after role tracking).
+    // Slot order carries no meaning (same as YOLOP's slots after role tracking).
     for (let i = fits.length - 1; i > 0; i--) {
       const j = Math.floor(Math.random() * (i + 1));
       [fits[i], fits[j]] = [fits[j], fits[i]];
