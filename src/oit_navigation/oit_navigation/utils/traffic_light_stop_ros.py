@@ -2,7 +2,7 @@
 """
 traffic_light_stop_ros.py - TrafficLightStop (traffic_light_stop.py) を走行ノードに組み込む ROS 側の薄い層.
 
-lane_navigator / six_lane_planner の両方が同じように使う:
+six_lane_planner が使う:
 
     self.tl_stop = TrafficLightStopRos(self)                 # パラメータ宣言 + 購読 + status 配信
     v, omega = self.tl_stop.apply(now, dt, v_meas, v, omega)  # 毎制御周期, cmd_vel を出す直前

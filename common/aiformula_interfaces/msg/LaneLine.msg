@@ -1,6 +1,6 @@
 # 1 本の白線 (車両座標 base_link の地面上). lane_detector が出力する.
 bool valid             # 線がある (検出 or 他の線からの補完)
-bool detected          # UFLD で実際に検出された (false なら道幅から補完した線)
+bool detected          # 実際に検出された (false なら道幅から補完した線)
 float64 c0             # y = c0 + c1 * x + c2 * x^2  [m] (x: 前方, y: 左)
 float64 c1
 float64 c2

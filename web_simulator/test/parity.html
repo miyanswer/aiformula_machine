@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>JS ≡ Python 一致テスト (6レーン)</title>
+<style>body{font:14px/1.5 sans-serif;margin:16px;background:#111;color:#e8eaed}.ok{color:#4ade80}.ng{color:#f87171}pre{white-space:pre-wrap}</style>
+</head>
+<body>
+<h1>6レーン走行: JS ≡ Python 一致テスト</h1>
+<p>Python (<code>six_lane_core.py</code>) が出したゴールデンデータ
+(<code>src/oit_navigation/test/gen_golden.py</code>) と同じ入力を <code>js/six_lane_planner.js</code> に通し、出力を比べます。
+リポジトリのルートから <code>python3 web_simulator/serve.py</code> で配信して開いてください。結果は <code>window.__parity</code> にも入ります。</p>
+<pre id="log">実行中...</pre>
+<script type="module">
+import {
+  SixLanePlanner, LanePolicyNet, SIX_LANE_PARAMS, compensateLines, SpeedEstimator, effectiveControl,
+} from '../js/six_lane_planner.js';
+
+const TOL = 1e-6;
+const GOLDEN_URL = '../../src/oit_navigation/test/golden/six_lane_golden.json';
+const POLICY_URL = '../../src/oit_navigation/oit_navigation/6lane/six_lane_policy.json';
+const ROLES = ['left', 'center', 'right'];
+const results = [];
+const fails = [];
+
+const same = (a, b) => {
+  if (a === null || a === undefined || b === null || b === undefined) return (a ?? null) === (b ?? null);
+  if (typeof a === 'number' && typeof b === 'number') return Math.abs(a - b) <= TOL * Math.max(1, Math.abs(b));
+  if (Array.isArray(a)) return Array.isArray(b) && a.length === b.length && a.every((v, i) => same(v, b[i]));
+  return a === b;
+};
+const check = (name, got, want) => {
+  const ok = same(got, want);
+  results.push({ name, ok });
+  if (!ok) fails.push({ name, got, want });
+};
+
+const toLine = (d) => d && ({
+  yAt: (x) => d.c[0] + d.c[1] * x + d.c[2] * x * x, xMin: d.x_min, xMax: d.x_max, detected: d.detected,
+  inferred: !d.detected, px: d.px, py: d.py,
+});
+const toLines = (d) => (d ? Object.fromEntries(ROLES.map((r) => [r, toLine(d[r])])) : null);
+
+const golden = await (await fetch(GOLDEN_URL)).json();
+const net = await LanePolicyNet.load(POLICY_URL);
+
+// 1. プランナー (速度上限ごとに 90 ステップ)
+for (const c of golden.planner) {
+  const pl = new SixLanePlanner(net, { ...SIX_LANE_PARAMS });
+  pl.setSpeedLimit(c.speed_limit);
+  c.steps.forEach((s, i) => {
+    const st = pl.step(s.dt, toLines(s.lines), s.v_meas, s.cones.map(([x, y]) => ({ x, y })));
+    const w = c.expected[i];
+    const got = {
+      phase: st.phase, current_lane: st.currentLane ?? null, target_lane: st.targetLane ?? null, v: st.v, omega: st.omega,
+      F: st.F ?? null, speed_limit: st.speedLimit, speed_scale: st.speedScale, lookahead_range: st.lookaheadRange ?? null,
+      lookahead: st.lookahead ?? null, blocked: st.blocked ?? null,
+    };
+    for (const k of Object.keys(w)) check(`planner[limit=${c.speed_limit}] step ${i} ${k}`, got[k], w[k]);
+  });
+}
+
+// 2. 遅れ補償
+golden.compensation.forEach((c, n) => {
+  const out = compensateLines(toLines(c.lines), c.v, c.omega, c.age);
+  for (const r of ROLES) {
+    check(`compensation[${n}] ${r} y`, c.xs.map((x) => out[r].yAt(x)), c.expected[r].y);
+    check(`compensation[${n}] ${r} xMin`, out[r].xMin, c.expected[r].x_min);
+    check(`compensation[${n}] ${r} xMax`, out[r].xMax, c.expected[r].x_max);
+  }
+});
+
+// 3. 車速推定
+for (const c of golden.estimator) {
+  const est = new SpeedEstimator({ tau: c.tau, scale: c.scale });
+  const got = c.steps.map((s) => est.update(s.v_wheel, s.accel, s.dt));
+  check('estimator v', got, c.expected);
+}
+
+// 4. 現在の車速に応じた自動補正 (速度上限ではなく車速で決まる)
+for (const c of golden.effective) {
+  const e = effectiveControl({ ...SIX_LANE_PARAMS }, c.v);
+  check(`effective[v=${c.v}] scale`, e.scale, c.expected.scale);
+  check(`effective[v=${c.v}] lookahead`, [e.lookaheadMin, e.lookaheadMax], [c.expected.lookahead_min, c.expected.lookahead_max]);
+  check(`effective[v=${c.v}] lost_timeout`, e.lostTimeout, c.expected.lost_timeout);
+  check(`effective[v=${c.v}] react_scale`, e.reactScale, c.expected.react_scale);
+}
+
+const pass = results.filter((r) => r.ok).length;
+window.__parity = { pass, fail: fails.length, total: results.length, fails: fails.slice(0, 20) };
+document.title = fails.length ? `NG ${fails.length}/${results.length}` : `OK ${pass}/${results.length}`;
+document.getElementById('log').innerHTML = fails.length
+  ? `<span class="ng">不一致 ${fails.length} / ${results.length}</span>\n` + JSON.stringify(fails.slice(0, 10), null, 1)
+  : `<span class="ok">すべて一致 (${pass} 項目, 許容誤差 ${TOL})</span>`;
+</script>
+</body>
+</html>

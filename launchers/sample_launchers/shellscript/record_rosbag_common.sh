@@ -1,6 +1,6 @@
 #!/bin/bash
-# record_rosbag_{6lane,qp,gamepad,image,video}.sh から source する共通部分 (単体では実行しない).
-#   - COMMON_TOPICS: 6lane/qp/gamepad すべてに入れるセンサ + 最終指令 (画像は record_rosbag_image.sh で別に取る)
+# record_rosbag_{6lane,gamepad,image,video}.sh から source する共通部分 (単体では実行しない).
+#   - COMMON_TOPICS: 6lane/gamepad すべてに入れるセンサ + 最終指令 (画像は record_rosbag_image.sh で別に取る)
 #   - record_bag <名前> <data|image> <トピック...>: <ROSBAG_ROOT>/<日付_時刻>/<名前>/<data|image> に記録.
 #       ROSBAG_ROOT の既定はワークスペース直下の rosbag/ (Jetson では SSD 上)
 #       データと画像を別端末で 2 分以内に起動すれば同じ <日付_時刻>/<名前> の下に揃う (起動順は問わない)

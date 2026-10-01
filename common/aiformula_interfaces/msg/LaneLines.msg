@@ -1,4 +1,4 @@
-# UFLD で検出した白線を「左境界 / 中央線 / 右境界」の役割に割り当てたもの (frame_id = base_link).
+# YOLOP で検出した白線を「左境界 / 中央線 / 右境界」の役割に割り当てたもの (frame_id = base_link).
 std_msgs/Header header
 LaneLine left
 LaneLine center

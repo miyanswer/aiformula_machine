@@ -20,7 +20,7 @@ python3 web_simulator/serve.py 8000
 ```
 
 （プレーンな `python3 -m http.server` ではなく [`web_simulator/serve.py`](serve.py) を
-使う理由: YOLOP / UFLD 検出モードの onnxruntime-web が要求する COOP/COEP
+使う理由: YOLOP 検出モードの onnxruntime-web が要求する COOP/COEP
 ヘッダーを付与するためです。詳しくは後述の「実装上の注意」を参照してください。）
 
 ブラウザで `http://localhost:8000/web_simulator/` を開きます。車体モデルが表示され、
@@ -80,7 +80,7 @@ Web シミュレータの HUD の「詳細」タブ →「rosbridge」で以下�
 - **実機操縦（cmd_vel のみ送信）**: 実機（Jetson）の rosbridge に繋いで WASD で操縦する
   ときはオン（URL が localhost 以外なら自動でオン）。キーを押している間だけ cmd_vel を送り、
   離すと速度 0 を送って止めます。「自動運転: ON」の間だけ、シミュレータの自律走行指令を
-  `/aiformula_control/extremum_seeking_mpc/cmd_vel`（実機 twist_mux の mpc 入力）にも送り、
+  `/aiformula_control/six_lane_planner/cmd_vel`（実機 twist_mux の autonomous 入力）にも送り、
   実機をシミュレータの車と同じ指令で走らせます（OFF・タブ非表示で速度 0 を送って停止）。
   シミュレータのセンサ・画像・twist_mux 出力は一切送りません（オフのまま実機に繋ぐと、
   それらが実機の同名トピックに流れ込みます）。
@@ -258,27 +258,23 @@ rosbridge 接続中は、右上 PiP と同じ機体カメラ視点を `sensor_ms
 とは独立した別トピック(`sub_can`)からの入力であり、両者は連動していません
 （本シミュレータのオドメトリは IMU + 車体速度から直接計算しています）。
 
-## oit_navigation: 白線検出 → 周回マップ作成 → QP レーシングライン走行
+## oit_navigation: 白線検出 → 6レーン走行
 
 `src/oit_navigation` が実車で行う走行方式を、そのままブラウザ内で動かせます
-（アルゴリズム本体 [`js/lane_navigator.js`](js/lane_navigator.js) は
-`src/oit_navigation/oit_navigation/lane_nav/` の JS 移植で、同じ入力で Python 版と結果が一致することを確認済み）。
+（白線の幾何・追跡 [`js/lane_core.js`](js/lane_core.js) は `src/oit_navigation/oit_navigation/lane_core/` の JS 移植、
+走行は [`js/six_lane_planner.js`](js/six_lane_planner.js)）。
+※ 周回マップ + QP レーシングライン方式は廃止しました。
 シミュレータは **システム構成・技術の組み合わせがうまく動くかの検証** 用です（車両特性は今後追加予定）。
 
 1. **白線検出**: カメラ画像から白線を検出し、地面 (base_link) に投影して **左境界 / 中央線 / 右境界** に割り当てる
    （線の並び順ではなく横位置で追跡。見えない線は道幅から補完 = 破線表示）
-2. **1周目**: 中央白線の上を走りながら、前方 2m の左右境界点を odom 座標に記録
-   （直線は 3m 間隔、カーブは 0.6m 間隔まで詰める）。スタート地点に戻ったら 1 周完了
-3. **2周目以降**: 各断面の道幅の中にウェイポイントを置き、QP（曲率最小）で
-   アウト・イン・アウトのラインを作って追従
+2. **6レーン走行**: 白線から仮想6レーンを作り、NN がアウト・イン・アウトになるレーンを選んで追従（下記「6レーン動的選択走行」）
 
 ### 使い方（「自動運転」タブ・「走行」タブ）
 
 - **検出器**
   - **YOLOP**（既定）: 実車と同じ `models/honda_shihou_finetuned_best.pth`（[`js/lane_model_detector.js`](js/lane_model_detector.js)、
     `models/honda_shihou_finetuned.onnx`）の白線マスクを、`extractMaskLines()` で線ごとの点列にする
-  - **UFLD**: `models/ufld.onnx`（[`js/ufld_lane_detector.js`](js/ufld_lane_detector.js)）。245MB で git 管理外のため、
-    `models/ufld_honda_finetuned_best.pth` を置いて `ros2 run oit_navigation export_ufld_onnx` で生成する
   - **コーン検知**: `models/cone.onnx`（[`js/cone_detector.js`](js/cone_detector.js)）。git管理外のため、
     `models/cone.pt` を置いて `ros2 run oit_navigation export_cone_onnx` で生成する。
   - **信号機検知**: `models/traffic_light.onnx`（[`js/traffic_light_detector.js`](js/traffic_light_detector.js)）。git管理外のため、
@@ -288,23 +284,27 @@ rosbridge 接続中は、右上 PiP と同じ機体カメラ視点を `sensor_ms
     メッシュから取り出した外側境界・中央線・内側境界の点列）をノイズ・欠落つきで観測する。
     認識精度と走行方式を切り分けて検証するためのモード
   - **ROS2連携**: 下記「ROS 2連携モード」
-- **スタート位置へ**（「走行」タブ）: 車両を中央白線のスタート位置 `(0, 0, 0)` に戻し、記録を 1 周目からやり直す
-- **1周目終了**: 周回検出を待たずに記録を確定し QP ラインを作る（実機の `/lane_navigator/finish_mapping` と同じ）
-- **記録リセット**: 記録を消して 1 周目から
-- **自動運転: ON/OFF**: twist_mux の `mpc` 入力の有効/無効
+- **スタート位置へ**（「走行」タブ）: 車両を中央白線のスタート位置 `(0, 0, 0)` に戻し、走行状態をリセットする
+- **走行状態リセット**: 6レーン・信号停止の状態を初期化
+- **自動運転: ON/OFF**: twist_mux の `autonomous` 入力の有効/無効
 
 右のパネル: 上 = 白線検知（白点 = 検出点、水色/黄/桃 = 左/中央/右、破線 = 補完）、
-下 = 周回マップ（水色/桃の点 = 記録した左右境界、橙の○ = QP ウェイポイント、青 = 自己位置の軌跡）。
+下 = 6レーン俯瞰図（仮想6レーン・白線の点群・目標レーン・コーン）。
 
-自己位置は実車の `odom_imu_localizer` と同じく車輪速 + ヨーレートの積算（真値ではない）です。
-コースの中央線 <-> 境界線は 3.5m（`course.glb` から実測、`SIM_LANE_WIDTH`）、速度上限はシミュレータの WASD と同じ 1.5 m/s。
+走行にオドメトリ（自己位置の積算）は使いません。速度は実機と同じ推定車速（スリップ込みの車輪速 + IMU の前後加速度の相補フィルタ）です。
+コースの中央線 <-> 境界線は 3.5m（`course.glb` から実測、`SIM_LANE_WIDTH`）。
+
+**速度上限**（「自動運転」タブのスライダーと 1.0/1.5/2.0/3.0 ボタン、0.3〜3.0 m/s、既定 1.5）は WASD・自動運転の最高速度と 6レーン走行の上限を同時に変えます。
+ROS に接続していれば ROS 側（実機）の `six_lane_planner` の速度上限（`/aiformula_control/six_lane_planner/speed_limit`）も同時に変わります。
+前方注視点・コーン回避の減速開始距離・白線ロスト判定は、上限ではなく現在の車速に合わせて毎周期自動補正され、補正値（現在の車速とその倍率）はスライダーの下に表示されます（実機と同じ計算: [6レーンの README](../src/oit_navigation/oit_navigation/6lane/README.md)）。
+推論の遅れで古くなった白線・コーンの位置は、遅れの間に進んだ分だけ補正して使います（実機と同じ）。
 
 ### 自動検証用の早送り（ブラウザのコンソール）
 
 タブが裏に回ると描画ループが止まるため、検証は描画に依存しない早送りで行えます。
 
 ```js
-window.__sim.setDetectorMode('ideal');          // 'yolop' | 'ufld' | 'ideal'
+window.__sim.setDetectorMode('ideal');          // 'yolop' | 'ideal'
 document.getElementById('start-pose-btn').click();
 document.getElementById('autonomous-btn').click();
 await window.__sim.fastForward(300);             // シミュレーション時間で 300 秒
@@ -322,10 +322,10 @@ window.__sim.laneNavigator.status();             // {state, lap, samples, ...}
 | ソース | 実車トピック | 優先度 | タイムアウト |
 | :--- | :--- | ---: | ---: |
 | gamepad（WASD） | `/aiformula_control/gamepad/cmd_vel` | 150 | 0.3秒 |
-| mpc（自動運転） | `/aiformula_control/extremum_seeking_mpc/cmd_vel` | 50 | 0.3秒 |
+| autonomous（自動運転） | `/aiformula_control/six_lane_planner/cmd_vel` | 50 | 0.3秒 |
 
 WASD のいずれかのキーを押している間だけ gamepad ソースが「新鮮」とみなされ、
-優先度の高い gamepad が mpc を上書きします。キーを離してから 0.3 秒経つと
+優先度の高い gamepad が autonomous を上書きします。キーを離してから 0.3 秒経つと
 gamepad がタイムアウトし、自動運転（有効になっていれば）に制御が戻ります。
 実車の `handle_controller`（優先度250、物理ハンドル）と
 `handle_controller_coasting`（優先度1）はこのシミュレータに対応する入力が
@@ -338,53 +338,48 @@ gamepad がタイムアウトし、自動運転（有効になっていれば）
 
 ### トピック名の統一
 
-ブラウザ内モード (YOLOP/UFLD/理想検出) でも、実車の `lane_detector` / `lane_navigator` と同じトピック名で配信します（rosbridge 接続時）。
+ブラウザ内モード (YOLOP/理想検出) でも、実車の `lane_detector` / `six_lane_planner` と同じトピック名で配信します（rosbridge 接続時）。
 
 | トピック | 型 | 内容 |
 | :--- | :--- | :--- |
 | `/aiformula_visualization/lane_detector/annotated_image` | `Image` (rgb8) | 白線検知パネルの画像 |
 | `/aiformula_perception/lane_line_publisher/lane_lines/{left,center,right}` | `nav_msgs/Path` (base_link) | 左/中央/右の白線 |
-| `/aiformula_visualization/lane_navigator/{left,right}_boundary` | `nav_msgs/Path` (odom) | 記録した左右境界 |
-| `/aiformula_visualization/target_trajectory` | `nav_msgs/Path` (odom) | QP レーシングライン |
-| `/aiformula_control/extremum_seeking_mpc/cmd_vel` | `Twist` | 自動運転指令（twist_mux の mpc） |
-| `/aiformula_control/lane_tracker/status` | `String` (JSON) | 走行状態 |
+| `/aiformula_control/six_lane_planner/cmd_vel` | `Twist` | 自動運転指令（twist_mux の autonomous） |
+| `/aiformula_control/six_lane_planner/status` | `String` (JSON) | 走行状態 (6レーンの判断) |
 
 ### ROS 2連携モード（実機と同じ ROS 2 ノードで走らせる）
 
 「ROS2連携」を選ぶと、ブラウザは検出・計算をせず、ROS 2 側の
-`lane_detector` → `lane_navigator`（+ `odom_imu_localizer`）の出力で走ります。
+`lane_detector` → `six_lane_planner` の出力で走ります。
 
 ```bash
 make rosbridge                 # 1. rosbridge_server
 # 2. ブラウザで http://localhost:8000/web_simulator/ を開いて「接続」
-make sim-nav                   # 3. simulator_test.launch.py (BACKEND=yolop|ufld)
+make sim-nav                   # 3. six_lane.launch.py simulator:=true (SPEED_LIMIT=1.5)
 # 4. 「自動運転」タブで「ROS2連携」→「スタート位置へ」→「自動運転: ON」
 ```
 
 | 方向 | トピック | 型 | 内容 |
 | :--- | :--- | :--- | :--- |
 | Sim→ROS | `/aiformula_sensing/zed_node/left_image/undistorted/compressed` | `CompressedImage` | 機体カメラ映像 → `lane_detector` |
-| Sim→ROS | `/aiformula_sensing/vehicle_info` | `can_msgs/Frame` | 車輪速 CAN → `odom_imu_localizer` |
-| Sim→ROS | `/aiformula_sensing/vectornav/imu` | `Imu` | ヨーレート → `odom_imu_localizer` |
-| ROS→Sim | `/aiformula_control/extremum_seeking_mpc/cmd_vel` | `Twist` | `lane_navigator` の指令 → `twistMux.update('mpc', ...)` |
+| Sim→ROS | `/aiformula_sensing/vehicle_info` | `can_msgs/Frame` | 車輪速 CAN → `six_lane_planner` (速度) |
+| ROS→Sim | `/aiformula_control/six_lane_planner/cmd_vel` | `Twist` | `six_lane_planner` の指令 → `twistMux.update('autonomous', ...)` |
 | ROS→Sim | `/aiformula_visualization/lane_detector/annotated_image` | `Image` (bgr8) | 白線検知パネル |
-| ROS→Sim | `/aiformula_control/lane_tracker/status` | `String` (JSON) | HUD の走行状態 |
-| ROS→Sim | `/aiformula_visualization/lane_navigator/{left,right}_boundary`, `/aiformula_visualization/target_trajectory` | `Path` | 周回マップパネル |
-| Sim→ROS | サービス `/lane_navigator/finish_mapping`, `/lane_navigator/reset` | `std_srvs/Trigger` | 「1周目終了」「リセット」ボタン |
+| ROS→Sim | `/aiformula_control/six_lane_planner/status` | `String` (JSON) | 右下パネルの判断表示 |
 
-シミュレータのカメラは光軸中心の理想ピンホールのため、`simulator_test.launch.py` は
+シミュレータのカメラは光軸中心の理想ピンホールのため、`six_lane.launch.py simulator:=true` は
 `camera_cx/cy` を画像中心、`lane_width` を 3.1m、速度上限をシミュレータに合わせて起動します。
 
 ### 実装上の注意
 
-- ONNX モデル（YOLOP / UFLD）は onnxruntime-web で推論します。WebGPU が使えなければ CPU の WASM にフォールバックします。
+- ONNX モデル（YOLOP）は onnxruntime-web で推論します。WebGPU が使えなければ CPU の WASM にフォールバックします。
   スレッド版 WASM は SharedArrayBuffer（= COOP/COEP ヘッダー）が必要なため、必ず [`serve.py`](serve.py) で配信してください。
 - YOLOP の前処理はブラウザ側では `crop_bottom`（上部を切り落として 640x640 に引き伸ばし）、
   チャンネル順は学習時と同じ BGR のまま ImageNet mean/std で正規化します。
 
 ## 6レーン動的選択走行（地図なし・オドメトリなし）
 
-「自動運転」タブの **走行方式** で「周回マップ+QP」（既存）と「6レーン (地図なし)」を切り替えます。
+走行方式は 6レーン（地図なし）のみです。
 6レーン方式は地図を作らず、自己位置（オドメトリ）も使わず、その瞬間のカメラ白線だけで走ります。
 
 - 左白線〜中央線、中央線〜右白線をそれぞれ3等分した仮想レーン **L1〜L6**（左端が L1、右端が L6）を毎フレーム作る
@@ -395,7 +390,7 @@ make sim-nav                   # 3. simulator_test.launch.py (BACKEND=yolop|ufld
   コーンで閉塞=赤）・NN の確率バー・予定軌跡を表示
 - **右下**に日本語で思考結果（現在レーン → 目標レーン、局面、判断理由、NN の各レーン確率）を表示
 
-白線検出は「理想検出」「YOLOP」「UFLD」のどれでも動きます。「ROS2連携」を選ぶと ROS 2 の
+白線検出は「理想検出」「YOLOP」のどちらでも動きます。「ROS2連携」を選ぶと ROS 2 の
 `six_lane_planner` ノード（`ros2 launch oit_navigation six_lane.launch.py simulator:=true`）の判断を右下に表示します。
 アルゴリズムと ROS 2 ノードの詳細は [`src/oit_navigation/oit_navigation/6lane/README.md`](../src/oit_navigation/oit_navigation/6lane/README.md)。
 NN の重み `six_lane_policy.json` は実機ノードと共用で、シミュレータは `../src/oit_navigation/oit_navigation/6lane/` から読み込みます。
@@ -408,14 +403,14 @@ NN の重み `six_lane_policy.json` は実機ノードと共用で、シミュ�
 白線の追跡（LineTracker）は「車両は中央線の上」と仮定しない: 見失っても横位置を保ち、3本揃い・二重線を根拠に
 取り違えを付け直す（YOLOP で右端に何も伝えずに置いても 0.2 秒で正しい横位置に戻る）。詳細は 6lane/README.md。
 
-## 赤信号停止（両方の走行方式）
+## 赤信号停止
 
 MyLaps ゲートのパネルが信号です。**実機と同じ `traffic_light.pt`**（ONNX に変換）でオンボードカメラ画像から
 赤/青信号を検出し、バウンディングボックスの縦の画面占有率から距離を逆算します（実機の `traffic_light_distance_node` と同じ式）。
 赤を連続 2 フレーム見たら、**信号機の 7.0m 手前（許容 5〜10m）** で止まるよう `v <= sqrt(2·0.6·(d − 7.0))` で減速し、
 検出の合間は車輪速で距離を補間します。停止中に青を 2 フレーム見るか、赤が 3 秒見えなくなったら発進します。
 赤を初めて見た距離が 5m より近い（直前で赤に変わった）ときは、止まらずに通過します。
-走行方式（周回マップ+QP / 6レーン）の最終指令に掛かるので、どちらでも同じように止まります。
+走行方式（6レーン）の最終指令に掛かります。
 
 - 「自動運転」タブの **コースの信号** で「赤⇔緑 (10秒)」（既定: 10 秒ごとに赤と緑を交互に切替）/「赤固定」を選ぶ
 - 「信号機」欄にコースの信号の色・切替までの秒数、停止制御の状態（通常/減速中/停止中/発進中）と検出距離を表示。
@@ -424,20 +419,16 @@ MyLaps ゲートのパネルが信号です。**実機と同じ `traffic_light.p
   小さい物体ほど実物より数 px 大きく出るため、幾何的な値のままだと距離を 1〜2m 短く見積もります。3〜18m に置いた
   赤/緑パネル 120 枚で合わせ、停止帯 4〜8m で誤差平均 ±0.1m。12m より遠いとボックスが頭打ちになり短めに出ます
   （= 早めに減速し始めるだけ）
-- 検証（`__sim.fastForward`）: 理想検出で 6レーン×4 開始位置 + QP の停止位置は信号機まで **7.0〜7.7m**、
+- 検証（`__sim.fastForward`）: 理想検出で 6レーン×4 開始位置の停止位置は信号機まで **7.0〜7.7m**、
   YOLOP では 7.1〜8.0m。赤⇔緑では減速中に緑になれば止まらずに通過し、停止後は緑で発進してゲートを通過
 - 実装: [`js/traffic_light_stop.js`](js/traffic_light_stop.js) ≡ `src/oit_navigation/oit_navigation/utils/traffic_light_stop.py`
   （同じ入力列で状態遷移・速度とも一致を確認済み）
-- ROS2連携モードでは実機ノード（`traffic_light_distance_node` + `lane_navigator` / `six_lane_planner`）が止め、
+- ROS2連携モードでは実機ノード（`traffic_light_distance_node` + `six_lane_planner`）が止め、
   シミュレータは `/aiformula_control/traffic_light_stop/status` を表示するだけ。ブラウザ内の検出モードでは
   シミュレータ自身が `/aiformula_perception/traffic_light/{red,green}_distance` と同じ status を出す
-- コーン回避 (js/cone_avoidance.js) は実機の `lane_nav/cone_avoidance.py` と同一。2 周目のライン押し出しは
-  ラインを細かくしてからコースに収まる側へ 1.3m 離す (以前は疎なウェイポイントを 1 点押すだけで, 間のスプラインが
-  コーンの脇を通っていた)。1 周目のコーン記憶はコースマップと同じ補正で地図に載せる (以前は方位ドリフト補正を常に掛け,
-  ループ閉じ込みを掛けていなかったため, 境界地図とずれることがあった)
-- コーン検知の結果もブラウザ内の検出モードでは実機の `cone_detector` と同じ `/aiformula_perception/cone_detector/cones`
+- コーン回避 (js/cone_avoidance.js) は実機の `lane_core/cone_avoidance.py` と同一（反応的回避のみ）
   (PoseArray, base_link) に出す。RViz 用のマーカー・判断パネル画像は実機ノードだけが出すので、シミュレータで RViz 確認するときは
-  ROS2連携モード（`simulator_test.launch.py` / `six_lane.launch.py simulator:=true`）を使う
+  ROS2連携モード（`six_lane.launch.py simulator:=true`）を使う
 
 ## 車体モデル・物理パラメータ
 
@@ -446,9 +437,10 @@ MyLaps ゲートのパネルが信号です。**実機と同じ `traffic_light.p
 
 - 車輪荷重: 右 **25.0 kg**、左 **23.4 kg**、後 **23.2 kg**（合計 **71.6 kg**。加減速・惰性の計算に実際に使用）
 - ホイールベース: **0.815 m**（前輪軸から後輪軸まで）
-- 駆動輪半径: 0.12 m（xacro `WHEEL_RADIUS`）
+- 駆動輪半径: 0.127 m（径 0.254 m。xacro `WHEEL_RADIUS` と `config/wheel.yaml` の `diameter` と同じ）
+- base_link の地上高: 0.12 m（xacro `BASE_HEIGHT`。カメラ高 0.12 + 0.44 = 0.56 m の基準）
 - トレッド幅: 0.6 m（`config/wheel.yaml` の `tread`）
-- 最高速度: 1.5 m/s、最高後退速度: 0.75 m/s
+- 最高速度: 速度上限（HUD のスライダー、0.3〜3.0 m/s、既定 1.5 m/s）、最高後退速度: 0.75 m/s
 - 最大旋回角速度: 1.2 rad/s
 
 加減速・ブレーキ・惰性走行時の抵抗はすべて「力 [N] ÷ 質量 [kg] = 加速度」の形で
@@ -468,18 +460,17 @@ web_simulator/
 │   ├── cone_props.js               コーンの3Dモデル(models/cone.glb)読み込み・当たり判定
 │   ├── cone_editor.js              コーンのクリック配置・ドラッグ移動・削除 (localStorage永続化)
 │   ├── cone_detector.js            cone.onnx によるコーン検知 (バウンディングボックス -> 地面座標)
-│   ├── cone_avoidance.js           コーン回避 (反応的ナッジ・1周目記憶・2周目レーシングライン回避・ランドマーク補正)
+│   ├── cone_avoidance.js           コーン回避 (反応的ナッジ)
 │   ├── traffic_light_detector.js   traffic_light.onnx による信号機検知 (赤/青 + 画面占有率から距離)
 │   ├── traffic_light_stop.js       赤信号停止 (oit_navigation/utils/traffic_light_stop.py の JS 移植)
 │   ├── lane_model_detector.js      YOLOP (ONNX) による白線マスク検出（crop_bottom前処理）
-│   ├── ufld_lane_detector.js       UFLD (ONNX) による白線点列検出
 │   ├── ideal_lane_detector.js      理想検出（コースの実際の白線 + ノイズ）
-│   ├── lane_navigator.js           oit_navigation lane_nav の JS 移植（線追跡・境界記録・QP・追従）
+│   ├── lane_core.js           oit_navigation lane_core の JS 移植（カメラモデル・線追跡）
 │   ├── six_lane_planner.js         6レーン動的選択走行（oit_navigation/6lane/six_lane_core.py の JS 移植）
 │   ├── hud_ui.js                   HUD のタブ切替・折りたたみ・ドラッグ移動
 │   └── twist_mux.js         WASD/自動運転の優先度＋タイムアウト調停
 ├── models/                  course.glb（コース）/ MyLaps.obj・.mtl（ゲート）/ cone.glb（コーン）/
-│                            honda_shihou_finetuned.onnx / ufld.onnx / cone.onnx / traffic_light.onnx（git 管理外）
+│                            honda_shihou_finetuned.onnx / cone.onnx / traffic_light.onnx（git 管理外）
 └── vendor/                  three.js（GLTFLoader を含む）/ roslib.js / onnxruntime-web のローカル同梱コピー
 ```
 
@@ -500,7 +491,7 @@ web_simulator/
 | スタート位置 | コース座標で (-41.457, 15.109)、向き -91.42°（左辺・南向き）。白線リボンの中心に載り（誤差 0.13 mm）、向きも線と 0.03° 以内。ここが odom の原点 |
 
 - 材質は元の色のまま**ライティングなし**（`MeshBasicMaterial`）に置き換えています。機体カメラの画像は
-  YOLOP/UFLD の入力なので、太陽の角度で見え方が変わらないようにするためです。
+  YOLOP の入力なので、太陽の角度で見え方が変わらないようにするためです。
 - スタート位置は [`js/course.js`](js/course.js) の `START_POSE`（コース座標）で**手で指定**しています。
   中央実線のリボンの頂点（線の両縁、±7.5 cm）を最小二乗で当てはめて求めた、線の中心と向きです。
   モデルを書き出し直してループの位置が変わったら、この値を当てはめ直してください。
@@ -531,17 +522,11 @@ web_simulator/
   3.175 m（`車線幅 + 線幅/2 - 車体半幅`）を超えた時点で 1 回と数え、3.0 m 以内に戻るまで次を数えません。
   ROS トピックは発行しません（実車に対応するノードが存在しないため）。
 
-### 自動運転での確認結果
+### 自動運転での確認
 
-理想検出モードで新コースを自動運転させた結果です（ゲートを無効にした場合）。
-
-- マッピング周（1 周目）: 258.8 m の外周を中央線から ±0.06 m 以内で走破、逸脱 0 回
-- 続くレーシングライン走行（1.5 m/s）: 中央線から最大 約 2.8 m 外れる（コーナーを短絡するため）が、逸脱 0 回
-- **`js/lane_navigator.js` に変更は不要**でした
-
-ゲートを有効にすると、マッピング周はゲートの手前 1.43 m（速度 0）で止まります（スタートから 210 m 地点）。一方
-**レーシングラインはゲートを素通りします**（ゲート位置で中央線から約 2.6 m 外側を走り、最接近 2.61 m）。
-ゲートは中央線を走る周回だけを止めます。
+理想検出モードで 6レーン走行を早送り（`window.__sim.fastForward`）して確認します。速度上限 1.5 m/s と 3.0 m/s のどちらでも
+STRAIGHT・APEX の局面を通って走行し、上限 3.0 m/s では前方注視点が 4.0〜7.0 m に自動補正されます。
+信号ゲートは中央線上にあるので、赤信号では手前で止まります（赤信号停止の節を参照）。
 
 ## コーン配置・検知・回避
 
@@ -556,22 +541,13 @@ web_simulator/
   `models/cone.pt` から書き出し、git 管理外）を [`js/cone_detector.js`](js/cone_detector.js) が
   `lane_model_detector.js` と同じ WebGPU→WASM 構成でブラウザ推論します。オンボードカメラ画像
   (`captureCanvas`) を毎パーセプションティック推論し、バウンディングボックス下辺中央を
-  `lane_navigator.js` の `projectToGround()`（白線検知と同じカメラモデル）でそのまま地面に投影するので、
+  `lane_core.js` の `projectToGround()`（白線検知と同じカメラモデル）でそのまま地面に投影するので、
   信号機検知のような距離逆算式は不要です（有効範囲 `0.3m < x < 8.0m`, `|y| < 3.0m`）。
   `models/cone.onnx` が無い場合は HUD「コーン検知」欄にエラーを表示するだけで、白線追従・衝突判定など
   他の機能には影響しません。
-- **回避（[`js/cone_avoidance.js`](js/cone_avoidance.js)）**: 反応的回避と、1 周目終了時の後処理の 2 段構えです。
-  - **反応的ナッジ（毎フレーム、1 周目・2 周目共通）**: `navigator.step()` の出力 `{v, omega}` に、検出中の
-    コーンから離れる旋回バイアスを重ねて `physics` に渡します（`reactiveAvoid()`）。近距離のコーンには減速も
-    かけます。あくまで一時的な補正で、地図やレーシングラインそのものは書き換えません。
-  - **1 周目の記憶と 2 周目の後処理**: 1 周目（MAPPING）走行中、検出したコーンを `ConeRecorder` が
-    「検出時の走行距離 `s` ＋ 車体ローカルオフセット」で記録し、境界点と同じ「補正後の姿勢列から再投影する」
-    方式（`correctedPoseSequence()`、`lane_navigator.js` からの再利用）で世界座標に確定します。
-    1 周目が終わり 2 周目（RACING）に入った瞬間に 1 回だけ、この確定済みコーン座標で
-    `applyRacelineDeflection()` がレーシングラインの点列自体をコーンから遠ざける後処理を行います
-    （反応的ナッジと異なり、経路そのものを恒久的に書き換える）。さらに 2 周目以降は
-    `coneLandmarkCorrection()` が、記憶済みコーンと今の検知位置のズレからオドメトリ推定（`localizer`）の
-    ドリフトを補正します。
+- **回避（[`js/cone_avoidance.js`](js/cone_avoidance.js)）**: 反応的ナッジ（毎フレーム）です。`six_lane_planner` の出力 `{v, omega}` に、
+  検出中のコーンから離れる旋回バイアスを重ねて `physics` に渡します（`reactiveAvoid()`）。近距離のコーンには減速もかけます。
+  あくまで一時的な補正です（1 周目のコーン記憶・レーシングライン押し出し・ランドマーク補正は QP 方式とともに廃止）。
 - **既知の制約**: MyLaps ゲートの支柱はコーンと同形状・同寸法の飾りのため、コーン検知器はゲート通過時に
   これも「コーン」として検知します。支柱間隔（0.46 m、「当たり判定・コース逸脱」節）は車体より狭く、
   複数本を同時に避ける経路計画は反応的ナッジ（1 本ずつの単純な旋回バイアス）の対象外なので、ゲートに
@@ -580,12 +556,11 @@ web_simulator/
 ## スリップ誤差モデル
 
 `js/vehicle_physics.js` の車輪速度に、左右独立の時定数付きランダムウォーク（時定数 2s、±8% でクランプ）で
-スリップ率 `slipL`/`slipR` を持たせています。CAN 配信 (`publishVehicleInfoCan`) とオドメトリ推定
-(`integrateLocalizer`) は `measuredWheelSpeeds()`（スリップ込みの計測値）を使う一方、物理演算・当たり判定・
-3D 描画は従来通り真の `wheelSpeeds()` のままです。これにより、`physics.x/y/yaw`（真の位置）と
-`localizer.x/y/yaw`（`LaneNavigator` に渡る推定位置、HUD「詳細」タブの「速度 X/Y」「角速度 Z」のもと）が
-走行中に少しずつ乖離していきます（`window.__sim.physics` と `window.__sim.localizer` を比べると確認できます）。
-コーンランドマーク補正 (`coneLandmarkCorrection()`) は、この乖離を打ち消す材料として使われます。
+スリップ率 `slipL`/`slipR` を持たせています。CAN 配信 (`publishVehicleInfoCan`) と 6レーン走行の車速推定
+(`updateSpeedEstimate`) は `measuredWheelSpeeds()`（スリップ込みの計測値）を使う一方、物理演算・当たり判定・
+3D 描画は従来通り真の `wheelSpeeds()` のままです。車速推定は計測値を IMU の前後加速度 (`physics.linearAccel`) で補う
+相補フィルタ（実機 `six_lane_planner` の `SpeedEstimator` と同じ）なので、`window.__sim.speedEstimator.v` と
+`window.__sim.physics.v`（真の速度）を比べると、スリップの影響がどれだけ抑えられているか確認できます。
 HUD「詳細」タブのスリップ L/R 表示は現在値のデバッグ用です。
 
 ## HUD
@@ -593,10 +568,10 @@ HUD「詳細」タブのスリップ L/R 表示は現在値のデバッグ用で
 - **常時表示（上部）**: 速度・旋回、位置 x/y（オドメトリ）・向き、コース内/逸脱中と逸脱回数、接触中。
   ヘッダのバッジは今の指令の出どころ（手動 / 自動運転 / 待機）です。
 - **走行**: WASD のキー表示、「スタート位置へ」、視点リセット・視点回転
-- **自動運転**: 自動運転 ON/OFF、走行状態・周回・検出器・メッセージ、白線検出の切替、1 周目を終える・記録リセット
-- **詳細**: オドメトリ速度、IMU、CAN 車輪速、twist_mux、周回マップの境界断面、rosbridge 接続設定
+- **自動運転**: 自動運転 ON/OFF、走行状態・検出器・メッセージ、白線検出の切替、走行状態リセット
+- **詳細**: オドメトリ速度、IMU、CAN 車輪速、twist_mux、rosbridge 接続設定
 
-右側の 3 枚は、上から機体カメラ・白線検知・周回マップです。
+右側の 3 枚は、上から機体カメラ・白線検知・6レーン俯瞰図です。
 
 ## 既知の制約
 
@@ -604,5 +579,3 @@ HUD「詳細」タブのスリップ L/R 表示は現在値のデバッグ用で
   ZED カメラの `zedx.stl`（約13MB）は読み込み時間短縮のため対象外にしています。
 - 障害物（MyLaps ゲートの支柱とコーン）には当たり判定があり、コース逸脱は HUD で検知しますが、
   コースの他の部分（内側の縁石・島など）には当たり判定がありません。
-- ゲートは中央線を走る周回だけを止め、中央線から離れて走るレーシングラインは素通りします
-  （「自動運転での確認結果」を参照）。

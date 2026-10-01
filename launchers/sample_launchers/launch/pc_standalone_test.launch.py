@@ -14,10 +14,10 @@ def generate_launch_description():
 
     実機ハードウェア（CAN, 実カメラ, 実IMU）が手元になくても、
     MP4動画をカメラトピックとして流し、白線検出 (左/中央/右の割り当て)・信号機検出・TF・RViz2 をPC単体で検証できます。
-    (動画にはオドメトリが無いため周回マップ作成/QP走行は含まない -> Web シミュレータで検証)
+    (動画には CAN が無いため 6レーン走行は含まない -> Web シミュレータで検証)
 
     実体は oit_navigation/video_test.launch.py そのもの
-    (動画配信 + lane_detector (YOLOP / UFLD) + 信号機距離推定)。
+    (動画配信 + lane_detector (YOLOP) + 信号機距離推定)。
     こちらは `sample_launchers` 側の従来インターフェース名を保つための薄いラッパー。
     """
     pkg_oit_navigation = get_package_share_directory("oit_navigation")
@@ -49,11 +49,6 @@ def generate_launch_description():
             description="Path to the YOLOP weight pth file",
         ),
         DeclareLaunchArgument(
-            "backend",
-            default_value="yolop",
-            description="White-line detector: 'yolop' or 'ufld'",
-        ),
-        DeclareLaunchArgument(
             "enable_traffic_light",
             default_value="true",
             description="Run traffic light depth estimation node",
@@ -75,7 +70,6 @@ def generate_launch_description():
             "fps": LaunchConfiguration("fps"),
             "loop": LaunchConfiguration("loop"),
             "weight_path": LaunchConfiguration("weight_path"),
-            "backend": LaunchConfiguration("backend"),
             "traffic_light": LaunchConfiguration("enable_traffic_light"),
             "rviz": LaunchConfiguration("rviz"),
         }.items(),

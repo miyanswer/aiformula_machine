@@ -12,14 +12,13 @@ noVNC (RViz用, :8080) とは別のポート (既定 :8090) で待受ける。
 
 検証パイプライン (どれも video_test.launch.py. 結果は RViz2 の注釈付き画像
 Lane Detector / Cone Detector / Traffic Light で見る):
-    1. 白線検出 YOLOP  (左/中央/右の割り当てまで)   lane_detector:=true  backend:=yolop
+    1. 白線検出 YOLOP  (左/中央/右の割り当てまで)   lane_detector:=true
     2. コーン検出 YOLO (cone.pt, 位置の推定まで)    cone_detector:=true
     3. 信号機検出 YOLO (traffic_light.pt, 距離まで) traffic_light:=true
     4. 統合 (YOLOP + コーン + 信号機)
-    5. 白線検出 UFLD   (UFLD の重みが必要)          lane_detector:=true  backend:=ufld
     画面で選べるもの: YOLOP の前処理 (roi_mode: crop_bottom = 学習時と同じ / mask_top で比較),
     画像サイズ (640x360 = 実機 ZED X の配信画像と同じ / 元のまま), デバイス, FPS, ループ.
-    ※ 動画にはオドメトリが無いため, 周回マップ作成/QP走行 (lane_navigator) は
+    ※ 動画にはオドメトリが無いため, 6レーン走行 (six_lane_planner) は
       Web シミュレータ or 実機で検証する.
 """
 
@@ -65,7 +64,7 @@ PIPELINES = [
     {
         "label": "① 白線検出 YOLOP (左/中央/右)",
         "launch_file": "video_test.launch.py",
-        "fixed_args": {**_OFF, "lane_detector": "true", "backend": "yolop"},
+        "fixed_args": {**_OFF, "lane_detector": "true"},
         "device_arg": "use_device",
         "uses_yolop": True,
     },
@@ -84,15 +83,9 @@ PIPELINES = [
     {
         "label": "④ 統合 (白線 YOLOP + コーン + 信号機)",
         "launch_file": "video_test.launch.py",
-        "fixed_args": {**_OFF, "lane_detector": "true", "backend": "yolop", "cone_detector": "true", "traffic_light": "true"},
+        "fixed_args": {**_OFF, "lane_detector": "true", "cone_detector": "true", "traffic_light": "true"},
         "device_arg": "use_device",
         "uses_yolop": True,
-    },
-    {
-        "label": "⑤ 白線検出 UFLD (左/中央/右, UFLD の重みが必要)",
-        "launch_file": "video_test.launch.py",
-        "fixed_args": {**_OFF, "lane_detector": "true", "backend": "ufld"},
-        "device_arg": "use_device",
     },
 ]
 

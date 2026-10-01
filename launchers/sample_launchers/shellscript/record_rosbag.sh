@@ -4,7 +4,6 @@
 record_rosbag_video.sh <名前> を別プロセスで同時に動かす. Ctrl+C で両方止まる.
 画像は Jetson が出す JPEG 版を受けて MP4 にするので, 別 PC (Dell 等) からでも記録できる (要 ffmpeg).
     bash record_rosbag.sh 6lane      # -> rosbag/<日付_時刻>/6lane/{data,video}
-    bash record_rosbag.sh qp         # -> rosbag/<日付_時刻>/qp/{data,video}
     bash record_rosbag.sh gamepad    # -> rosbag/<日付_時刻>/gamepad/{data,video}
     CRF=18 bash record_rosbag.sh 6lane   # 動画を高画質にする (既定 23. 小さいほど高画質・大きいファイル)
 画像を rosbag で取りたいときは record_rosbag_image.sh を別端末で使う.
@@ -15,8 +14,8 @@ source "${SCRIPT_DIR}/record_rosbag_common.sh"   # ROSBAG_ROOT (保存先の親)
 
 name=$1
 case "${name}" in
-    6lane|qp|gamepad) ;;
-    *) echo "使い方: bash record_rosbag.sh <6lane|qp|gamepad>" >&2; exit 1 ;;
+    6lane|gamepad) ;;
+    *) echo "使い方: bash record_rosbag.sh <6lane|gamepad>" >&2; exit 1 ;;
 esac
 
 # 2 つが同時に保存先を決めると別の秒のディレクトリに分かれうるので, ここで 1 つに決めて渡す

@@ -80,13 +80,6 @@ BUILD_ARGS := --build-arg ENABLE_CUDA=$(ENABLE_CUDA) \
               --build-arg TENSORRT_CU=$(TENSORRT_CU) \
               --build-arg TENSORRT_VERSION=$(TENSORRT_VERSION)
 
-# On Jetson, rviz_aiformula_plugins (RViz-only plugins, not needed to drive
-# the real vehicle) can't build - the headless Jetson image intentionally
-# doesn't ship rviz2/rviz_common (see docker/Dockerfile.jetson). Skip it
-# automatically so `make build-ws` / `make build-pkg` just work on Jetson
-# without users needing to remember a manual --packages-skip flag.
-COLCON_SKIP := $(if $(IS_JETSON),--packages-skip rviz_aiformula_plugins,)
-
 JETSON_BUILD_ARGS := --build-arg JETSON_BASE_TAG=$(JETSON_BASE_TAG)
 
 # Jetson build args replace (not add to) the x86 CUDA/TensorRT build args
@@ -109,14 +102,14 @@ ROS_SETUP := source /opt/ros/humble/setup.bash && if [ -f /opt/extra_ros_ws/inst
 # Parameters with defaults
 DEVICE ?= $(if $(filter 1,$(ENABLE_CUDA)),cuda,cpu)
 VIDEO ?=
-BACKEND ?= yolop
+SPEED_LIMIT ?= 1.5
 PKG ?=
 
 .PHONY: help up down stop restart build rebuild ps logs bash shell root-bash root \
-        build-ws colcon clean test-pc test test-tl test-lane test-yolop test-ufld \
+        build-ws colcon clean test-pc test test-tl test-lane test-yolop \
         verification-gui vgui open-rviz gui open-vgui stop-nodes kill \
         rosbridge sim open-sim sim-nav rqt rqt-graph \
-        bringup-hw bringup-all teleop zed-check camera-view
+        bringup-hw six-lane teleop zed-check camera-view
 
 # Default: Show help message
 help:
@@ -147,19 +140,18 @@ help:
 	@echo ""
 	@echo "🧪 [PC Standalone Video Test]"
 	@echo "  make test-pc          Run video test (lane detection + Traffic Light + RViz)"
-	@echo "                        Options: DEVICE=cpu|cuda|mps  VIDEO=/path/to/video.mp4  BACKEND=yolop|ufld"
+	@echo "                        Options: DEVICE=cpu|cuda|mps  VIDEO=/path/to/video.mp4"
 	@echo "  make test-tl          Test traffic light detection & distance estimation"
-	@echo "  make test-lane        Test lane detection only (left/center/right, BACKEND=yolop|ufld)"
-	@echo "  make test-yolop       = make test-lane BACKEND=yolop"
-	@echo "  make test-ufld        = make test-lane BACKEND=ufld (needs models/ufld_honda_finetuned_best.pth)"
+	@echo "  make test-lane        Test lane detection only (left/center/right, )"
+	@echo "  make test-yolop       = make test-lane"
 	@echo "  make vgui             Run Web Verification GUI (open http://localhost:8090)"
 	@echo "  make stop-nodes       Kill all running ROS 2 nodes inside container"
 	@echo ""
 	@echo "🌐 [Web Simulator & UIs]"
 	@echo "  make rosbridge        Start rosbridge WebSocket server on port 9090"
 	@echo "  make open-sim (sim)   Open 3D Web Simulator in browser (http://localhost:8000)"
-	@echo "  make sim-nav          Run lane_detector + odom_imu_localizer + lane_navigator against the"
-	@echo "                        Web Simulator (its 'ROS2連携' mode, needs 'make rosbridge')  BACKEND=yolop|ufld"
+	@echo "  make sim-nav          Run lane_detector + six_lane_planner against the"
+	@echo "                        Web Simulator (its 'ROS2連携' mode, needs 'make rosbridge')  "
 	@echo "  make open-rviz (gui)  Open RViz2 Web Display in browser (http://localhost:8080)"
 	@echo "  make rqt-graph        Open rqt_graph in browser GUI (http://localhost:8080)"
 	@echo "  make rqt              Open full rqt dashboard in browser GUI (http://localhost:8080)"
@@ -167,7 +159,7 @@ help:
 	@echo ""
 	@echo "🏎️ [Real Vehicle Operations]"
 	@echo "  make bringup-hw       Launch hardware nodes only"
-	@echo "  make bringup-all      Launch hardware + full autonomous stack"
+	@echo "  make six-lane         Launch 6-lane driving (run bringup-hw first)  SPEED_LIMIT=1.5 [m/s]"
 	@echo "  make teleop           Run keyboard teleoperation"
 	@echo "  make zed-check        Check ZED SDK / argus socket / can0 / IMU visibility in container"
 	@echo "  make camera-view      Stream camera images to browser (http://<jetson-ip>:8091)  TOPIC=..."
@@ -234,7 +226,7 @@ build-ws colcon:
 	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
 		$(DOCKER_COMPOSE) up -d; \
 	fi
-	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "$(ROS_SETUP) && colcon build --symlink-install $(COLCON_SKIP)"
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "$(ROS_SETUP) && colcon build --symlink-install"
 
 build-pkg:
 	@if [ -z "$(PKG)" ]; then \
@@ -244,7 +236,7 @@ build-pkg:
 	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
 		$(DOCKER_COMPOSE) up -d; \
 	fi
-	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "$(ROS_SETUP) && colcon build --packages-select $(PKG) --symlink-install $(COLCON_SKIP)"
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "$(ROS_SETUP) && colcon build --packages-select $(PKG) --symlink-install"
 
 clean:
 	rm -rf build install log
@@ -262,7 +254,6 @@ test-pc test:
 		 ros2 launch oit_navigation video_test.launch.py \
 		 $(if $(VIDEO),video_path:=$(VIDEO),) \
 		 use_device:=$(DEVICE) \
-		 backend:=$(BACKEND) \
 		 rviz:=true"
 
 test-tl:
@@ -284,15 +275,11 @@ test-lane:
 		 ros2 launch oit_navigation video_test.launch.py \
 		 $(if $(VIDEO),video_path:=$(VIDEO),) \
 		 use_device:=$(DEVICE) \
-		 backend:=$(BACKEND) \
 		 traffic_light:=false \
 		 rviz:=true"
 
 test-yolop:
-	$(MAKE) test-lane BACKEND=yolop
-
-test-ufld:
-	$(MAKE) test-lane BACKEND=ufld
+	$(MAKE) test-lane
 
 vgui verification-gui:
 	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
@@ -303,7 +290,7 @@ vgui verification-gui:
 
 stop-nodes kill:
 	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
-		"pkill -9 -f 'ros2|rviz2|video_publisher|lane_detector|lane_navigator|odom_imu_localizer|traffic_light|robot_state_publisher|joint_state_publisher' || true"
+		"pkill -9 -f 'ros2|rviz2|video_publisher|lane_detector|six_lane_planner|traffic_light|robot_state_publisher|joint_state_publisher' || true"
 
 # ------------------------------------------------------------------------------
 # Web GUI Launchers (Host browser)
@@ -350,9 +337,10 @@ sim-nav:
 	fi
 	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c \
 		"$(ROS_SETUP) && source install/setup.bash && \
-		 ros2 launch oit_navigation simulator_test.launch.py \
-		 use_device:=$(DEVICE) \
-		 backend:=$(BACKEND)"
+		 ros2 launch oit_navigation six_lane.launch.py \
+		 simulator:=true \
+		 speed_limit:=$(SPEED_LIMIT) \
+		 use_device:=$(DEVICE)"
 
 # ------------------------------------------------------------------------------
 # Real Vehicle Operations
@@ -370,9 +358,9 @@ bringup-hw:
 	$(ENSURE_UP)
 	$(DOCKER_COMPOSE) exec -it $(SERVICE_NAME) bash bash/1_bringup_hardware.sh
 
-bringup-all:
+six-lane:
 	$(ENSURE_UP)
-	$(DOCKER_COMPOSE) exec -it $(SERVICE_NAME) bash bash/3_bringup_all_nodes.sh
+	$(DOCKER_COMPOSE) exec -it $(SERVICE_NAME) bash bash/2_six_lane.sh $(SPEED_LIMIT)
 
 teleop:
 	$(ENSURE_UP)

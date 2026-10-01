@@ -11,7 +11,7 @@ AI Formula 実車機体に搭載する **機体ハードウェア基盤（セン
 ```
 aiformula_machine/
 ├── src/
-│   └── oit_navigation/       # 自律走行スタック (白線 左/中央/右 検出, 周回マップ + QP レーシングライン, 信号機距離推定)
+│   └── oit_navigation/       # 自律走行スタック (白線 左/中央/右 検出, 6レーン動的選択走行, コーン/信号機検出)
 ├── sensing/
 │   ├── zed-ros2-wrapper/     # ZED X ステレオカメラ 公式ラッパー (RGB / Depth / IMU)
 │   ├── vectornav/            # VectorNav 9軸IMU / GNSS ドライバ
@@ -23,7 +23,7 @@ aiformula_machine/
 ├── vehicles/
 │   └── sample_vehicle/       # 車両の物理モデル、URDF/Xacro、TF座標系、ZED Xカメラマウント位置
 ├── launchers/
-│   └── sample_launchers/     # 機体一括起動 Launch (hardware_bringup, all_system_2027)
+│   └── sample_launchers/     # 機体ハードウェア起動 Launch (hardware_bringup)
 ├── common/
 │   ├── aiformula_interfaces/ # 共通ROS2メッセージ・サービス型定義
 │   ├── common_python/        # Python 共通ユーティリティ
@@ -37,7 +37,7 @@ aiformula_machine/
 
 | ディレクトリ / パッケージ | 役割・説明 |
 | :--- | :--- |
-| **`src/oit_navigation`** | **自律走行スタック**: 白線検出 (YOLOP 既定 / UFLD) で左境界・中央線・右境界を認識 → 1周目は中央白線トラッキング走行しながら左右境界を記録 → 2周目以降は QP (最小曲率) のアウト・イン・アウト経路を走行。信号機距離推定・Web検証GUI |
+| **`src/oit_navigation`** | **自律走行スタック**: 白線検出 (YOLOP) で左境界・中央線・右境界を認識 → 仮想6レーンから NN がアウト・イン・アウトのレーンを選んで走行 (地図・オドメトリなし)。コーン検出・信号機距離推定・Web検証GUI |
 | **`vehicles/sample_vehicle`** | 車両物理モデル、URDF/Xacro、TF座標系定義、ZED Xマウント位置 |
 | **`sensing/zed-ros2-wrapper`**| ZED X ステレオカメラ 公式ドライバ (RGB/Depth/Point Cloud/IMU) |
 | **`sensing/vectornav`** | VectorNav 9軸IMU / GNSS ドライバ |
@@ -45,7 +45,7 @@ aiformula_machine/
 | **`sensing/rear_potentiometer`** | ステアリング・後輪舵角センサドライバ |
 | **`control/motor_controller`** | 速度指令 `Twist` を左右車輪 RPM に変換し CAN 送信 (ID: `0x210`) |
 | **`control/twist_mux`** | 安全優先度マルチプレクサ (非常停止・手動介入を最優先に切替) |
-| **`launchers/sample_launchers`**| 機体一括起動 Launch (`hardware_bringup.launch.py`, `all_system_2027.launch.py`) |
+| **`launchers/sample_launchers`**| 機体ハードウェア起動 Launch (`hardware_bringup.launch.py`)。6レーン走行は `src/oit_navigation` の `six_lane.launch.py` |
 | **`common/aiformula_interfaces`**| 機体共通のカスタムメッセージ型・サービス定義 |
 | **`bash/`** | 各種起動ワンライナースクリプト群 |
 
@@ -74,11 +74,10 @@ make bash
 > - `make build` 実行前に `cat /etc/nv_tegra_release` で搭載中のL4Tバージョンを確認してください。`docker/Dockerfile.jetson` は既定で `r35.3.1`（JetPack 5.1.1相当）のベースイメージを使います。実機の **L4T R35.4.1 でもこの既定のままで構いません**（`dustynv/ros:humble-pytorch-l4t-r35.4.1` は存在せず、R35.3.1/R35.4.1 はどちらも CUDA 11.4 / TensorRT 8.5 で互換）。R35.2 以前の場合のみ `make build JETSON_BASE_TAG=r35.2.1` のように上書きしてください。
 > - **ZED SDK はイメージ内にホストと同じ 4.0.8（L4T35.4 版）をインストールします**（`sensing/zed-ros2-wrapper` も v4.0.8）。ZED X（ZED Link Duo / GMSL）はホスト側の `zed_x_daemon` と `nvargus-daemon` がカメラを握り、コンテナは `/tmp/argus_socket` 経由で映像を受け取るため、ホストで `systemctl status zed_x_daemon nvargus-daemon` が active であることを確認してください。ホストの SDK / ドライバを更新した場合は `docker/Dockerfile.jetson` の `ZED_SDK_VERSION` / `ZED_L4T_*` も合わせてから `make rebuild` してください。
 > - Jetson では `docker/compose.jetson.yaml` により `network_mode: host`（`can0` と DDS を共有）、`/dev` 共有（VectorNav / Kvaser / ゲームパッドの抜き差し対応）、ZED X 用のマウント（argus socket, nvcam settings, `/usr/local/zed/settings`・`resources`）が有効になります。
-> - 初回手順: `make build` → `make up` → `make clean`（以前 SDK 無しでビルドした `build/` を消す） → `make build-ws` → `make zed-check`（SDK / argus socket / can0 / IMU の可視性確認） → `make bringup-hw`（または `make bringup-all`）。`make bringup-*` / `make teleop` はコンテナ内で実行されます（ホストの ROS 2 は Foxy のため）。
+> - 初回手順: `make build` → `make up` → `make clean`（以前 SDK 無しでビルドした `build/` を消す） → `make build-ws` → `make zed-check`（SDK / argus socket / can0 / IMU の可視性確認） → `make bringup-hw`（別端末で `make six-lane`）。`make bringup-hw` / `make six-lane` / `make teleop` はコンテナ内で実行されます（ホストの ROS 2 は Foxy のため）。
 > - `docker info | grep -i runtime` で `nvidia` ランタイムが登録されていることを事前に確認してください（JetPack標準セットアップ済みであれば通常は有効です）。
-> - `models/*_rtx_2070_..._sm75.engine` はRTX2070(sm75)向けのTensorRTエンジンで、Orin(sm87)では使われません。`lane_detector` (backend=yolop, `use_tensorrt:=true`) は起動時に現在のGPU向けのエンジンが無ければ自動でコンパイルし直すため（`src/oit_navigation/oit_navigation/yolop_lane_backend.py` の `_init_tensorrt` 参照）、追加の手動作業は不要ですが、初回起動時は数分ほど余分に時間がかかります。
-> - 実機は GitHub から clone したリポジトリで走らせるため、白線検出は git 管理されている YOLOP の重み (`models/honda_shihou_finetuned_best.pth`) を使います (`backend:=yolop`, 既定)。UFLD の重み (245MB) は git 管理外です。
-> - Jetsonでは `rviz_aiformula_plugins` パッケージ（RViz専用プラグイン、実車走行には不要）はビルド対象から外れます。`make build-ws` / `make build-pkg` が `IS_JETSON` を自動検知して `--packages-skip rviz_aiformula_plugins` を付与するため、いつも通り `make build-ws` を実行するだけで構いません（手動でフラグを付ける必要はありません）。
+> - `models/*_rtx_2070_..._sm75.engine` はRTX2070(sm75)向けのTensorRTエンジンで、Orin(sm87)では使われません。`lane_detector` (`use_tensorrt:=true`。`bash/2_six_lane.sh` は Jetson では既定で有効) は起動時に現在のGPU向けのエンジンが無ければ自動でコンパイルし直すため（`src/oit_navigation/oit_navigation/yolop_lane_backend.py` の `_init_tensorrt` 参照）、追加の手動作業は不要ですが、初回起動時は数分ほど余分に時間がかかります。
+> - 実機は GitHub から clone したリポジトリで走らせるため、白線検出は git 管理されている YOLOP の重み (`models/honda_shihou_finetuned_best.pth`) を使います。
 > - Jetson上ではRViz2/rqt本体をインストールしていない（ヘッドレス構成の）ため、`make rqt` / `make rqt-graph` / `make open-rviz` は動作しません。カメラ映像の確認は `make camera-view` を実行し、同じ LAN の PC のブラウザで `http://<JetsonのIP>:8091/` を開いてください（ZED の JPEG 圧縮トピックをそのまま MJPEG 配信。`TOPIC=/aiformula_sensing/zed_node/left/image_rect_color/compressed` のように変更可）。可視化が必要な場合はMac側の Web シミュレータ（[http://localhost:8000/web_simulator/](http://localhost:8000/web_simulator/)）や、動画検証用の Web GUI（PC単体検証時）を利用してください。
 > - `sensing/zed-ros2-wrapper` は ZED SDK が無い環境（Mac / x86 PC）では警告を出して C++ ターゲットをスキップします。Jetson 上で SDK が見つからない場合は、実機で ZED が起動しない状態を見逃さないよう **ビルドエラー** にしています（その場合は `make build` でイメージを作り直してください）。
 
@@ -92,15 +91,15 @@ make bash
 ### 2. PC 単体での動作確認・アルゴリズム検証（実機不要）
 
 実機がなくても、車載カメラの録画動画（MP4）を再生して白線検出（左境界/中央線/右境界の割り当てまで）・信号機検出・RViz2 可視化を PC 単体でテストできます。
-動画にはオドメトリが無いため、周回マップ作成と QP 走行は Web シミュレータ（`web_simulator/`、「理想検出/YOLOP/UFLD/ROS2連携」モード）で検証します。
+動画には CAN が無いため、6レーン走行は Web シミュレータ（`web_simulator/`、「理想検出/YOLOP/ROS2連携」モード）で検証します。
 
 #### 【方法 A】Web 検証 GUI を使う（おすすめ）
-ブラウザ上で動画選択、検証パイプライン（白線検出 YOLOP / コーン検出 / 信号機検出 / 統合 / 白線検出 UFLD）、
+ブラウザ上で動画選択、検証パイプライン（白線検出 YOLOP / コーン検出 / 信号機検出 / 統合）、
 YOLOP の前処理（crop_bottom / mask_top）と画像サイズ（640x360 = 実機 ZED と同じ / 元のまま）の選択、起動・停止を行えます。
 結果は RViz2 の注釈付き画像（Lane Detector / Cone Detector / Traffic Light）で確認します。
 
 ```bash
-# Docker コンテナ内で実行 (またはホスト側で 2_test_pc_standalone.sh 実行)
+# Docker コンテナ内で実行 (またはホスト側で bash/test_pc_standalone.sh 実行)
 ros2 run oit_navigation verification_gui
 ```
 👉 ホスト PC のブラウザで [http://localhost:8090](http://localhost:8090) を開いて操作します。
@@ -108,10 +107,10 @@ ros2 run oit_navigation verification_gui
 #### 【方法 B】ワンライナースクリプトで起動
 ```bash
 # ルート直下から実行 (Docker環境でも自動認識して実行されます)
-./2_test_pc_standalone.sh
+bash bash/test_pc_standalone.sh
 
 # 任意の動画パスやデバイスを指定する場合:
-./2_test_pc_standalone.sh /aiformula_machine/mp4/custom_video.mp4 cpu
+bash bash/test_pc_standalone.sh /aiformula_machine/mp4/custom_video.mp4 cpu
 ```
 👉 ブラウザで [http://localhost:8080](http://localhost:8080) を開くと、リアルタイムに白線検出結果（左=水色/中央=黄/右=桃, 補完線は破線）が RViz2 に描画されます。
 
@@ -127,12 +126,15 @@ ros2 run oit_navigation verification_gui
 bash bash/1_bringup_hardware.sh
 ```
 
-#### B. 実機フルシステム（機体 ＋ 自律走行）を一括起動
-ハードウェア初期化から、白線検出 (YOLOP)・自己位置推定・周回マップ/QP 走行・信号機検知までの全ノードを 1 コマンドで起動します。
-スタート位置 (中央白線の上) に車両を置き、数秒停止させてから (ジャイロバイアス推定) 自動運転を開始してください。1 周目は中央白線の上を走りながら左右境界を記録し、スタート地点に戻ると QP でレーシングラインを作って 2 周目以降それを走ります。
+#### B. 6レーン走行を起動（A の後に別端末で）
+白線検出 (YOLOP)・コーン検出・6レーン走行・信号機検知を起動します。車両をコース上に置いて起動すると、白線とコーンを見ながら走ります (ゲームパッドが常に優先)。
+**速度上限は引数で切り替えます**（既定 1.5 m/s、0.3〜3.0）。前方注視点などは現在の車速に合わせて自動で補正されます（[詳細](src/oit_navigation/oit_navigation/6lane/README.md)）。
 ```bash
-bash bash/3_bringup_all_nodes.sh
+bash bash/2_six_lane.sh 2.0        # 速度上限 2.0 m/s で起動 (make six-lane SPEED_LIMIT=2.0 でも同じ)
+# 走行中に変えるとき
+ros2 topic pub --once /aiformula_control/six_lane_planner/speed_limit std_msgs/msg/Float64 "{data: 1.2}"
 ```
+右端レーンから発進する場合は `bash bash/2_six_lane.sh 1.5 init_offset:=-2.9` のように launch 引数をそのまま渡せます。
 
 #### C. キーボード手動操縦（動作確認・キャリブレーション用）
 `twist_mux` 経由で最優先で手動操作を行います。
@@ -141,7 +143,7 @@ bash bash/teleop_keyboard.sh
 ```
 
 #### D. Mac から WASD で遠隔操作する
-実機（Jetson）で `bash/1_bringup_hardware.sh` か `bash/3_bringup_all_nodes.sh` を起動すると、rosbridge WebSocket サーバー（port 9090）が自動で立ち上がります。
+実機（Jetson）で `bash/1_bringup_hardware.sh` を起動すると、rosbridge WebSocket サーバー（port 9090）が自動で立ち上がります。
 
 > ⚠️ **セキュリティ注意:** この rosbridge は認証なし・全インターフェース待ち受け（0.0.0.0:9090）で自動起動します。信頼できる/隔離されたネットワーク（大会LANなど）以外には機体を接続しないでください。
 
@@ -150,11 +152,11 @@ bash bash/teleop_keyboard.sh
 3. Macのブラウザで `web_simulator/index.html` を開く（`python3 web_simulator/serve.py` などで配信するか、ファイルを直接開く）。
 4. 画面上部の「rosbridge URL」欄を `ws://<JetsonのLAN IP>:9090` に書き換える（デフォルトは `ws://localhost:9090` になっている）。URL が localhost 以外になると **「実機操縦（cmd_vel のみ送信）」が自動でオン**になるので、オンのまま接続する（ステータスが「接続済み (実機操縦)」になる）。
 5. 接続後、WASDキーを押している間だけ `/aiformula_control/gamepad/cmd_vel` が 10Hz で送られ、実機の `twist_mux`（gamepad優先度150）に届いて実車が動く。キーを離す・ブラウザのフォーカスが外れると即座に速度 0 を送って送信を止める（実機のゲームパッド teleop_twist_joy と同じ振る舞い）。
-6. HUD の「自動運転: ON」にすると、シミュレータ自身の白線検出・走行計画が出す指令を `/aiformula_control/extremum_seeking_mpc/cmd_vel`（twist_mux の mpc、優先度50）へ約 15Hz で送り、実機をシミュレータの車と同じ指令で走らせる。WASD を押すと gamepad が優先して手動に切り替わり、離して 0.3 秒後に自動運転へ戻る（シミュレータ・実機とも同じ）。「自動運転: OFF」やタブを隠したときは mpc に速度 0 を送って止める。このとき実機側で `bringup-all`（実機の lane_navigator も同じ mpc トピックに出す）を同時に動かさないこと（`bringup-hw` で使う）。
+6. HUD の「自動運転: ON」にすると、シミュレータ自身の白線検出・走行計画が出す指令を `/aiformula_control/six_lane_planner/cmd_vel`（twist_mux の autonomous、優先度50）へ約 15Hz で送り、実機をシミュレータの車と同じ指令で走らせる。WASD を押すと gamepad が優先して手動に切り替わり、離して 0.3 秒後に自動運転へ戻る（シミュレータ・実機とも同じ）。「自動運転: OFF」やタブを隠したときは autonomous に速度 0 を送って止める。シミュレータの「速度上限」スライダーは実機の `six_lane_planner` の速度上限（`speed_limit` トピック）も同時に変えます。このとき実機側で `make six-lane`（実機の six_lane_planner も同じ autonomous トピックに出す）を同時に動かさないこと（`make bringup-hw` だけ起動する）。
 
 > ⚠️ **「実機操縦」を必ずオンにする:** オフのまま実機に接続すると、シミュレータ用のカメラ画像（無圧縮 RGB の注釈画像だけで約 8.6MB/s）・IMU・オドメトリ・CAN 車輪速・自律走行指令・`twist_mux/cmd_vel`（= motor_controller 入力）まで実機と同じトピック名で送ってしまい、実センサへの偽データ混入・twist_mux の優先度の迂回・rosbridge 飽和による操作遅延が起きる。
 
-> ⚠️ **接続断時の挙動:** Mac⇔Jetson間の無線接続が切れて `gamepad` トピックが 0.3 秒以上途絶えると、`twist_mux`（`launchers/sample_launchers/config/twist_mux.yaml`）は自動的に次に優先度の高い入力へフォールバックします。`bringup-all`（自律走行スタック起動）で使用している場合、これは無操作停止ではなく自動運転（`mpc`、優先度50）への切り替わりを意味するため、意図しない挙動に注意してください。
+> ⚠️ **接続断時の挙動:** Mac⇔Jetson間の無線接続が切れて `gamepad` トピックが 0.3 秒以上途絶えると、`twist_mux`（`launchers/sample_launchers/config/twist_mux.yaml`）は自動的に次に優先度の高い入力へフォールバックします。`make six-lane`（6レーン走行を起動）で使用している場合、これは無操作停止ではなく自動運転（`autonomous`、優先度50）への切り替わりを意味するため、意図しない挙動に注意してください。
 >
 > 🛑 **全入力が途絶えた場合:** `twist_mux` は入力が全てタイムアウトしても何も出力しないため、`motor_controller` に指令タイムアウト（`control/motor_controller/config/motor_controller.yaml` の `cmd_timeout: 0.5` 秒）を設けています。速度指令が 0.5 秒届かなければ目標速度を 0 にして停止します（以前は最後の指令を保持し続け、Wi-Fi 断でそのまま走り続けていました）。また `motor_controller` は速度指令に加減速制限（`max_linear_accel: 2.2` m/s²・`max_linear_decel: 1.5` m/s²・`max_angular_accel: 4.0` rad/s²）をかけて追従するため、停止指令・タイムアウト時も急停止せず 1.5 m/s² で止まります（1.5 m/s から約 1 秒・0.75 m）。web_simulator も同じ値（`js/vehicle_physics.js` の `MOTOR_MAX_*`）で車を動かします。
 

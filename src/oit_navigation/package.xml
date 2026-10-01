@@ -3,7 +3,7 @@
 <package format="3">
   <name>oit_navigation</name>
   <version>0.2.0</version>
-  <description>Lane detection (YOLOP/UFLD), lap mapping and QP raceline driving, traffic light distance</description>
+  <description>YOLOP lane detection, 6-lane driving support, cone / traffic light detection</description>
   <maintainer email="user@todo.todo">user</maintainer>
   <license>Apache-2.0</license>
 

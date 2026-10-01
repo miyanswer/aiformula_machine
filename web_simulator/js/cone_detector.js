@@ -2,11 +2,11 @@
 // onnxruntime-webでブラウザ推論する。js/lane_model_detector.jsと同じ
 // WebGPU->WASMフォールバック構成。コーンは接地物なので、信号機の
 // (traffic_light_distance_node.pyのような)占有率からの距離逆算は不要 --
-// バウンディングボックス下辺中央を lane_navigator.js の projectToGround()
+// バウンディングボックス下辺中央を lane_core.js の projectToGround()
 // (白線検知と同じカメラモデル)にそのまま渡せば車体フレームの地面座標が
 // 直接求まる。
 
-import { projectToGround, DEFAULT_CAMERA } from './lane_navigator.js';
+import { projectToGround, DEFAULT_CAMERA } from './lane_core.js';
 
 const MODEL_INPUT_SIZE = 640;
 const CONF_THRESHOLD = 0.4;

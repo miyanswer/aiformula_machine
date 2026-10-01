@@ -26,7 +26,7 @@ export const TRAFFIC_LIGHT_DETECTOR_PARAMS = {
   focalLengthY: SIM_TRAFFIC_LIGHT_FOCAL_LENGTH_Y,
   referenceImageHeight: 1080,
   minOccupancy: 1e-4,
-  maxValidDistance: 50.0,
+  maxValidDistance: 25.0,
   smoothingAlpha: 0.7,
 };
 

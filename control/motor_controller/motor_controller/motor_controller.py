@@ -1,7 +1,6 @@
 #!/usr/bin/env python
 import time
 from typing import List
-import numpy as np
 from enum import IntEnum
 
 import rclpy
@@ -10,6 +9,7 @@ from geometry_msgs.msg import Twist
 from can_msgs.msg import Frame
 
 from common_python.get_ros_parameter import get_ros_parameter
+from motor_controller.motor_math import rate_limit, rate_limit_linear, to_can_data
 
 
 class DriveWheel(IntEnum):
@@ -88,27 +88,16 @@ class MotorController(Node):
             else min(now - self.last_tick_time, 0.1)
         self.last_tick_time = now
         self.current_v = self.rateLimitLinear(self.current_v, self.target_v, dt)
-        self.current_omega = self.rateLimit(
+        self.current_omega = rate_limit(
             self.current_omega, self.target_omega, self.max_angular_accel * dt)
         self.frame_msg.data = self.toCanData(self.current_v, self.current_omega)
         self.can_pub.publish(self.frame_msg)
 
-    @staticmethod
-    def rateLimit(current: float, target: float, max_step: float) -> float:
-        return current + max(-max_step, min(max_step, target - current))
-
     def rateLimitLinear(self, current: float, target: float, dt: float) -> float:
-        # |v| が小さくなる向き (減速・停止・前後反転の手前まで) は max_linear_decel、
-        # 大きくなる向きは max_linear_accel で制限する。
-        if current * target < 0.0:
-            return self.rateLimit(current, 0.0, self.max_linear_decel * dt)
-        if abs(target) < abs(current):
-            return self.rateLimit(current, target, self.max_linear_decel * dt)
-        return self.rateLimit(current, target, self.max_linear_accel * dt)
+        return rate_limit_linear(current, target, dt, self.max_linear_accel, self.max_linear_decel)
 
     def toCanData(self, linear_velocity: float, angular_velocity: float) -> List[int]:
-        rpm = self.toRefRPM(linear_velocity, angular_velocity)
-        return self.toCanCmd(rpm[DriveWheel.RIGHT]) + self.toCanCmd(rpm[DriveWheel.LEFT])
+        return to_can_data(linear_velocity, angular_velocity, self.diameter, self.tread, self.gear_ratio)
 
     # Feedback CAN Frame reception
     def can_receive_callback(self, msg: Frame):
@@ -116,29 +105,6 @@ class MotorController(Node):
             rpm_left = int.from_bytes(msg.data[0:4], byteorder='little', signed=True)
             rpm_right = int.from_bytes(msg.data[4:8], byteorder='little', signed=True)
             self.get_logger().info(f"Feedback: LEFT RPM = {rpm_left}, RIGHT RPM = {rpm_right}")
-
-    # Velocity -> RPM Calc
-    def toRefRPM(self, linear_velocity, angular_velocity):
-        wheel_angular_velocities = np.zeros(DriveWheel.NUM_DRIVE_WHEELS)
-
-        wheel_angular_velocities[DriveWheel.LEFT] = (
-            linear_velocity / (self.diameter * 0.5)) - (self.tread / self.diameter) * angular_velocity  # [rad/s]
-
-        wheel_angular_velocities[DriveWheel.RIGHT] = (
-            linear_velocity / (self.diameter * 0.5)) + (self.tread / self.diameter) * angular_velocity  # [rad/s]
-
-        minute_to_second = 60.
-        rpm = wheel_angular_velocities * (minute_to_second / (2. * np.pi))
-        if rpm[DriveWheel.LEFT] * rpm[DriveWheel.RIGHT] < 0.0:
-            rpm[:] = 0.0
-            self.get_logger().debug(f"Preventing in-situ rotation ! (rpm: {rpm})")
-        return (rpm * self.gear_ratio).tolist()
-
-    @staticmethod
-    def toCanCmd(rpm: float) -> List[int]:
-        rounded = round(rpm)
-        bytes = rounded.to_bytes(4, "little", signed=True)
-        return list(bytes)
 
 
 def main(args=None):

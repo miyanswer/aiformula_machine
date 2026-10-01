@@ -3,7 +3,7 @@
 
     cone_detector  カメラ画像 -> models/cone.pt で検出 -> 地面投影で base_link の位置を推定
 
-パラメータは navigation_params.yaml の cone_detector セクション (six_lane.launch.py / simulator_test.launch.py と同じ).
+パラメータは navigation_params.yaml の cone_detector セクション (six_lane.launch.py と同じ).
 調整した値はこの YAML に書けば 6レーン走行にもそのまま効く.
 
 例 (実機. 先に bash/1_bringup_hardware.sh で ZED を起動しておく):

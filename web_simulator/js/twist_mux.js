@@ -38,7 +38,7 @@ export class TwistMux {
   }
 
   /** Enables/disables a source's participation entirely (e.g. the "自動運転"
-   * HUD toggle disabling the "mpc" source so it never outranks "gamepad"). */
+   * HUD toggle disabling the "autonomous" source so it never outranks "gamepad"). */
   setEnabled(name, enabled) {
     const source = this.sources.find((s) => s.name === name);
     if (source) source.enabled = enabled;

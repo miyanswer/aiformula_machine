@@ -14,7 +14,7 @@
       gamepad:
         timeout : 0.3  # [sec]
         priority: 150
-      mpc:
+      autonomous:
         timeout : 0.3  # [sec]
         priority: 50
       handle_controller_coasting:
@@ -40,6 +40,6 @@
       gamepad:
         timeout : 0.0  # [sec]
         priority: 151
-      # mpc:
+      # autonomous:
       #   timeout : 0.0  # [sec]
       #   priority: 51

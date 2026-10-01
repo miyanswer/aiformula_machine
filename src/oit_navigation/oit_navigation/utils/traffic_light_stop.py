@@ -3,7 +3,7 @@
 traffic_light_stop.py - 赤信号で信号機の手前 (既定 5〜10m, 目標 7.0m) に止まる速度制限 (ROS 非依存).
 
 traffic_light_distance_node (traffic_light.pt + 画面占有率からの距離逆算) が出す
-赤/青信号までの距離を受け取り, 走行ノード (lane_navigator / six_lane_planner) の最終 cmd_vel に
+赤/青信号までの距離を受け取り, 走行ノード (six_lane_planner) の最終 cmd_vel に
 速度上限を掛ける. 走行方式には依存しない (どちらのノードも最後にこれを通す).
 
 状態:

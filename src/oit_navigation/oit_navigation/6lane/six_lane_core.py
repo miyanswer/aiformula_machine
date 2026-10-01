@@ -26,6 +26,10 @@ import numpy as np
 N_LANES = 6
 ROLES = ('left', 'center', 'right')
 
+# 速度上限 (v_max) の設定範囲 [m/s]. 手動で切り替えるときもこの範囲に丸める
+SPEED_LIMIT_MIN = 0.3
+SPEED_LIMIT_MAX = 3.0
+
 # 局面 (デバッグ表示・教師ルール用)
 STRAIGHT, ENTRY, APEX, EXIT, LOST = 'STRAIGHT', 'ENTRY', 'APEX', 'EXIT', 'LOST'
 
@@ -50,7 +54,15 @@ class SixLaneParams:
     lateral_gain: float = 0.5
     lateral_resync_time: float = 3.0  # [s] ずれがこれだけ続いたら観測の方を信じ直す
     # --- 判断 (教師ルール・特徴量スケール. 学習時と推論時で共通) ---
+    # v_max = 速度上限 [m/s]. 手動で切り替える唯一の値 (set_speed_limit / ROS の speed_limit / シミュレータの HUD).
+    # NN の速度入力は v / v_max (上限に対する相対速度) なので, 上限を変えても NN の判断は変わらない.
+    # 距離で決まる量 (前方注視点など) は, 上限ではなく「現在の車速」を v_ref (調整した基準の速度) と比べて
+    # 比例して自動補正する (speed_scale / effective_control). 上限が高くても, 加速中・減速中は今の速さに合った値になる.
     v_max: float = 1.5
+    v_ref: float = 1.5  # 注視点などを調整した基準の車速 [m/s] (現在の車速 == v_ref のとき補正なし)
+    auto_scale: bool = True  # False で自動補正を切る (注視点などは基準値のまま)
+    hold_distance: float = 0.45  # [m] 次の白線フレームを待つ間 直前の指令を維持する距離 (時間にすると hold_distance / 車速)
+    latency_max: float = 0.5  # [s] 白線・コーン観測の遅れ (検出時刻からの経過) がこれ以上なら補正せず古い観測として捨てる
     kappa_scale: float = 10.0  # NN入力 = kappa * kappa_scale
     kappa_straight: float = 0.015
     kappa_curve: float = 0.06
@@ -94,8 +106,160 @@ class LineObs:
         return self.c[0] + self.c[1] * x + self.c[2] * x * x
 
 
+# ---------------------------------------------------------------------------
+# 観測の遅れ補償: 白線・コーンは画像を撮った時刻の base_link で測られている. 推論の遅れ (age) の間に車が
+# 進んだ分 (速度 v・ヨーレート omega) だけ, 今の base_link に変換し直す. 地図もオドメトリも使わず, この短い時間だけの
+# 平面運動 (円弧) で近似する. web_simulator/js/six_lane_planner.js の compensateLines / compensatePoints と同じ.
+# ---------------------------------------------------------------------------
+def _motion(v: float, omega: float, age: float):
+    """age 秒の間の車の移動 (dx, dy: 旧 base_link での位置, dyaw)."""
+    dyaw = omega * age
+    mid = 0.5 * dyaw
+    return v * age * math.cos(mid), v * age * math.sin(mid), dyaw
+
+
+def compensate_point(x: float, y: float, motion) -> tuple:
+    dx, dy, dyaw = motion
+    px, py = x - dx, y - dy
+    c, s = math.cos(dyaw), math.sin(dyaw)
+    return c * px + s * py, -s * px + c * py
+
+
+def compensate_points(points: Sequence[Sequence[float]], v: float, omega: float, age: float,
+                      latency_max: float = 0.5) -> List[tuple]:
+    """コーンなどの点 [(x, y)] を age 秒進んだ後の base_link へ. age が 0 以下・latency_max 以上なら変換しない."""
+    if age <= 1e-3 or age >= latency_max:
+        return [(float(p[0]), float(p[1])) for p in points]
+    m = _motion(v, omega, age)
+    return [compensate_point(float(p[0]), float(p[1]), m) for p in points]
+
+
+def compensate_lines(lines: Dict[str, Optional['LineObs']], v: float, omega: float, age: float,
+                     latency_max: float = 0.5) -> Dict[str, Optional['LineObs']]:
+    """白線 (2 次式 + 点群) を age 秒進んだ後の base_link へ. 2 次式は変換した標本点で当て直す."""
+    if age <= 1e-3 or age >= latency_max:
+        return lines
+    m = _motion(v, omega, age)
+    out: Dict[str, Optional[LineObs]] = {}
+    for role, ln in lines.items():
+        if ln is None:
+            out[role] = None
+            continue
+        n = 11
+        xs = [ln.x_min + (ln.x_max - ln.x_min) * i / (n - 1) for i in range(n)]
+        pts = [compensate_point(x, ln.y_at(x), m) for x in xs]
+        nx = [q[0] for q in pts]
+        ny = [q[1] for q in pts]
+        if max(nx) - min(nx) < 0.5:
+            out[role] = ln
+            continue
+        A = np.stack([np.ones(n), nx, np.array(nx) ** 2], axis=1)
+        try:
+            c = np.linalg.lstsq(A, np.array(ny), rcond=None)[0]
+        except np.linalg.LinAlgError:
+            out[role] = ln
+            continue
+        px = py = None
+        if ln.px is not None:
+            q = [compensate_point(a, b, m) for a, b in zip(ln.px, ln.py)]
+            px, py = [t[0] for t in q], [t[1] for t in q]
+        out[role] = LineObs([float(c[0]), float(c[1]), float(c[2])], min(nx), max(nx), ln.detected, px, py)
+    return out
+
+
+class LatencyGate:
+    """観測の遅れ (受信時刻 - header.stamp) の検査. 範囲外 (-0.05 s 未満 / latency_max 以上) は古い観測として捨てる.
+    ただし範囲外が skew_frames 回続いたら送り側と時計がずれている (Web シミュレータの rosbridge など) とみなし,
+    遅れ補償は止める (遅れ 0 として使う. 範囲内に戻れば再開). 戻り値 (補償に使う遅れ [s], 観測を使うか)."""
+
+    def __init__(self, latency_max: float = 0.5, skew_frames: int = 10):
+        self.latency_max, self.skew_frames = latency_max, skew_frames
+        self.bad, self.skewed = 0, False
+
+    def check(self, age: Optional[float]):
+        if age is None:
+            return 0.0, True
+        if -0.05 <= age < self.latency_max:
+            self.bad, self.skewed = 0, False
+            return max(age, 0.0), True
+        self.bad += 1
+        if self.skewed or self.bad >= self.skew_frames:
+            self.skewed = True
+            return 0.0, True
+        return 0.0, False
+
+
+# ---------------------------------------------------------------------------
+# 車速推定: 車輪速 (スリップ約 8% の誤差) を IMU の前後加速度で補う相補フィルタ.
+#   v_est += a_imu * dt                      (短時間は IMU の加速度を信じる: 車輪の空転・ロックの瞬間的な誤差を弾く)
+#   v_est += (v_wheel - v_est) * dt / tau    (長時間は車輪速に収束)
+# 停止中 (車輪速 ~ 0) は加速度の偏りを推定して引き, v_est を 0 に戻す. IMU が使えない / 車輪速と大きくずれたら車輪速をそのまま使う.
+# 定常的なスリップ (一定の割合のずれ) は取れないので, 実機で距離を測って wheel_speed_scale で校正する.
+# web_simulator/js/six_lane_planner.js の SpeedEstimator と同じ.
+# ---------------------------------------------------------------------------
+class SpeedEstimator:
+    def __init__(self, tau: float = 1.0, scale: float = 1.0, max_dev: float = 0.4, stationary_speed: float = 0.03,
+                 bias_alpha: float = 0.02):
+        self.tau, self.scale, self.max_dev = tau, scale, max_dev
+        self.stationary_speed, self.bias_alpha = stationary_speed, bias_alpha
+        self.reset()
+
+    def reset(self):
+        self.v = 0.0
+        self.bias = 0.0
+        self.imu_ok = False
+
+    def update(self, v_wheel: float, accel: Optional[float], dt: float) -> float:
+        vw = v_wheel * self.scale
+        dt = clamp(dt, 0.0, 0.2)
+        if accel is None:
+            self.v, self.imu_ok = vw, False
+            return self.v
+        if abs(vw) < self.stationary_speed:
+            self.bias += self.bias_alpha * (accel - self.bias)
+            self.v, self.imu_ok = vw, True
+            return self.v
+        pred = self.v + (accel - self.bias) * dt
+        self.v = pred + clamp(dt / self.tau, 0.0, 1.0) * (vw - pred)
+        self.imu_ok = abs(self.v - vw) <= self.max_dev
+        if not self.imu_ok:
+            self.v = vw  # IMU の向き・取り付けが違うなどで食い違う: 車輪速を信じる
+        return self.v
+
+
 def clamp(v, lo, hi):
     return max(lo, min(hi, v))
+
+
+# ---------------------------------------------------------------------------
+# 現在の車速に応じた自動補正
+# ---------------------------------------------------------------------------
+def clamp_speed_limit(v: float) -> float:
+    return clamp(float(v), SPEED_LIMIT_MIN, SPEED_LIMIT_MAX)
+
+
+def speed_scale(p: SixLaneParams, v: float) -> float:
+    """現在の車速 v / 基準の車速 v_ref (0.5〜2.0 に丸める). 自動補正が無効なら 1."""
+    if not p.auto_scale:
+        return 1.0
+    return clamp(max(v, 0.0) / p.v_ref, 0.5, 2.0)
+
+
+def effective_control(p: SixLaneParams, v: float) -> Dict[str, float]:
+    """現在の車速 v に合わせて自動補正した制御量 (毎周期, 速度上限ではなく今の速さで決まる).
+        前方注視点 lookahead_min / lookahead_max : 車速に比例 (車速 3.0 m/s なら基準の 2 倍先を見る)
+        lost_timeout                              : 車速に反比例 (白線を見失ってから止まるまでに走る距離を一定に近づける)
+        react_scale                               : コーン回避の減速開始距離・先読み距離の倍率 (cone_avoidance.ReactiveAvoider)
+    変えないもの: 曲率を測る距離 stations (カメラの視野で決まる), 横加速度 a_lat_max (車の限界),
+    加減速 accel / decel (モーターの加減速制限), 旋回上限 max_angular_speed (注視点が遠くなる分 v*kappa は増えない)."""
+    k = speed_scale(p, v)
+    return {
+        'scale': k,
+        'lookahead_min': p.lookahead_min * k,
+        'lookahead_max': p.lookahead_max * k,
+        'lost_timeout': p.lost_timeout / max(k, 1.0),
+        'react_scale': k,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -315,19 +479,26 @@ class SixLanePlanner:
         self.s = SixLaneState()
         self.last = {}
 
+    def set_speed_limit(self, v: float) -> float:
+        """速度上限 [m/s] を切り替える (SPEED_LIMIT_MIN〜MAX に丸める). 前方注視点などは step() が自動で補正する."""
+        self.p.v_max = clamp_speed_limit(v)
+        return self.p.v_max
+
     def step(self, dt: float, lines: Optional[Dict[str, Optional[LineObs]]], v_meas: float,
              cones: Sequence[Sequence[float]] = (), reanchored: bool = False) -> Dict:
         """1制御周期. lines=None は観測なし (タイムアウト監視用). 戻り値は指令とデバッグ情報.
         reanchored: 白線の追跡側が根拠 (3本揃い・二重線) をもって役割を付け直したフレーム. 横位置の跳びを受け入れる."""
         p, s = self.p, self.s
+        eff = effective_control(p, v_meas)
         F_meas = vehicle_lane_coordinate(lines, p.x_pos) if lines else None
         if F_meas is None:
             s.lost_time += dt
-            if s.lost_time >= p.lost_timeout:  # 短い欠落は直前の指令を維持, 続けば減速停止
+            if s.lost_time >= eff['lost_timeout']:  # 短い欠落は直前の指令を維持, 続けば減速停止
                 s.v_cmd = max(0.0, s.v_cmd - p.decel * dt)
                 s.omega_cmd = self._rate(s.omega_cmd, 0.0, dt)
                 s.F_filt = None  # 長く見失ったら横位置は観測から取り直す
-            self.last = {**self.last, 'phase': LOST, 'v': s.v_cmd, 'omega': s.omega_cmd, 'lost_time': s.lost_time, 'v_meas': v_meas}
+            self.last = {**self.last, 'phase': LOST, 'v': s.v_cmd, 'omega': s.omega_cmd, 'lost_time': s.lost_time, 'v_meas': v_meas,
+                         'speed_limit': p.v_max, 'speed_scale': eff['scale'], 'lost_timeout': eff['lost_timeout']}
             return self.last
         s.lost_time = 0.0
         # 現在の横位置 (追跡済み). shift = 白線の役割取り違えによる観測のずれ [レーン].
@@ -374,7 +545,7 @@ class SixLanePlanner:
 
         # 制御: 目標レーン中心へ, 進入角を制限した注視点で Pure Pursuit
         v_now = max(v_meas, 0.0)
-        Ld = clamp(v_now * p.lookahead_time, p.lookahead_min, p.lookahead_max)
+        Ld = clamp(v_now * p.lookahead_time, eff['lookahead_min'], eff['lookahead_max'])
         Ft = self._target_coordinate(lines, Ld, s.target_lane)
         y_cur = lane_y(lines, Ld, F_meas)  # 今の横位置を保った場合の注視点 (白線の平行線なので shift に依らない)
         y_tgt = lane_y(lines, Ld, Ft + shift)
@@ -401,6 +572,8 @@ class SixLanePlanner:
             'kappas': list(s.kappas), 'kappas_meas': meas, 'confidence': conf,
             'features': x.tolist(), 'nn_probs': nn_probs.tolist(), 'probs': probs.tolist(),
             'blocked': sorted(blocked), 'lookahead': [tx, ty], 'v': s.v_cmd, 'omega': s.omega_cmd, 'v_meas': v_meas,
+            'speed_limit': p.v_max, 'speed_scale': eff['scale'], 'lookahead_range': [eff['lookahead_min'], eff['lookahead_max']],
+            'lost_timeout': eff['lost_timeout'],
         }
         return self.last
 
@@ -472,12 +645,16 @@ def explain_ja(st: Dict, p: SixLaneParams) -> List[str]:
     """思考結果を日本語の説明文 (行のリスト) にする."""
     if not st or st.get('phase') == LOST or st.get('current_lane') is None:
         t = (st or {}).get('lost_time', 0.0) or 0.0
-        return [f'白線を見失っています ({t:.1f}s)', '→ 減速して停止します' if t >= p.lost_timeout else '→ 直前の指令を維持']
+        lt = st.get('lost_timeout', p.lost_timeout)
+        return [f'白線を見失っています ({t:.1f}s)', '→ 減速して停止します' if t >= lt else '→ 直前の指令を維持']
     sign = st.get('sign', 0)
     d = '左' if sign > 0 else '右' if sign < 0 else ''
     k = lambda v: f"{'+' if v >= 0 else ''}{v:.3f}"  # noqa: E731
     ks = st['kappas']
     lines = [f"速度 {st['v']:.2f} m/s ／ 曲率 近{k(ks[0])} 中{k(ks[1])} 遠{k(ks[2])} [1/m]"]
+    if st.get('lookahead_range'):
+        lr = st['lookahead_range']
+        lines.append(f"現在の車速に合わせて自動補正 (×{st['speed_scale']:.2f}, 速度上限 {st['speed_limit']:.1f} m/s) → 前方注視点 {lr[0]:.1f}〜{lr[1]:.1f} m")
     phase, tt = st['phase'], st['teacher_target']
     if phase == STRAIGHT:
         why = f'前方は直線 → 外側のレーン{p.home_lane}で次のカーブに備える'

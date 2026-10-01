@@ -24,7 +24,7 @@ topics=(
     $(read_yaml "['control']['six_lane_planner']['status']")
     $(read_yaml "['control']['six_lane_planner']['lane_reseed']")
     $(read_yaml "['control']['traffic_light_stop_status']")
-    $(read_yaml "['control']['speed_command']['mpc']")
+    $(read_yaml "['control']['speed_command']['autonomous']")
     $(read_yaml "['control']['speed_command']['gamepad']")      # 手動介入したタイミング
     $(read_yaml "['visualization']['six_lane_planner']['target_path']")
     $(read_yaml "['visualization']['six_lane_planner']['markers']")

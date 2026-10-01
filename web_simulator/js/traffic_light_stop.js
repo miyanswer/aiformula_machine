@@ -1,6 +1,6 @@
 // 赤信号で信号機の手前 (既定 5〜10m, 目標 7.0m) に止まる速度制限。
 // src/oit_navigation/oit_navigation/utils/traffic_light_stop.py の移植 (パラメータ・計算は同一。
-// 変えたら両方直すこと)。走行方式 (周回マップ+QP / 6レーン) に依存せず、最終 cmd_vel に掛ける。
+// 変えたら両方直すこと)。走行方式に依存せず、最終 cmd_vel に掛ける。
 //
 //   NORMAL   : 制限なし
 //   APPROACH : 赤を確認 (連続 redConfirmFrames 回)。v <= sqrt(2 * decel * (d - stopDistance)) で減速。

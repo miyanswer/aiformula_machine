@@ -1,0 +1,148 @@
+【フォルダ説明】aiformula_machine（AI Formula 自律走行システム）
+※ 各「■」から次の「■」の手前までを、1フォルダ分としてそのまま Google ドキュメントにコピペできます。
+※ 記号は「■」「・」だけにしてあるので、貼り付けても表記が崩れません。
+
+────────────────────────────────────────
+
+■ aiformula_machine/（リポジトリ全体）
+役割：AI Formula 実車の自律走行システム一式。実機のコード、Web シミュレータ、Docker 環境をまとめて管理する。
+走行方式：地図を作らず自己位置の積算も使わない「6レーン動的選択走行」のみ。
+主なもの：
+・README.md … 全体の説明と使い方
+・CLAUDE.md … 開発の目的・制約・要件・ルール
+・Makefile … Docker 操作と起動コマンド（make bringup-hw / make six-lane など）
+・compose.yaml … Docker コンテナの定義
+・各フォルダ … 以降の説明を参照
+注意：build / install / log は colcon が自動生成するフォルダで、git には入れない。
+
+■ bash/
+役割：実機や PC 上で使う起動用シェルスクリプトの置き場。
+中身：
+・1_bringup_hardware.sh … 機体ハードウェア（CAN・ZED X・IMU・twist_mux・motor_controller・rosbridge）を起動
+・2_six_lane.sh … 6レーン走行を起動。第1引数で速度上限 [m/s] を指定（例：bash bash/2_six_lane.sh 2.0）
+・teleop_keyboard.sh … キーボードで手動操縦（動作確認用）
+・test_pc_standalone.sh … 実機なしで、録画動画から白線・信号機の検出を確認する
+・camera_web_view.py … カメラ映像をブラウザで見る（Jetson 用）
+使い方：実機では 1 → 2 の順に、別々の端末で起動する。
+
+■ common/
+役割：複数のパッケージが共有する部品。
+中身：
+・aiformula_interfaces/ … 独自のメッセージ型（LaneLine、LaneLines。白線の検出結果）
+・common_cpp/ … C++ の共通ユーティリティ（カメラモデル、パラメータ取得、tf など）
+・common_python/ … Python の共通ユーティリティ（トピック名の読み込み、ワークスペース内パスの解決など）
+・serial/ … シリアル通信ライブラリ
+
+■ control/
+役割：速度指令の切り替えと、モーターへの出力。
+中身：
+・twist_mux/ … 複数の速度指令から優先度の高いものを選ぶ。優先度：ハンドル 250、ゲームパッド 150、自律（six_lane_planner）50。設定は launchers/sample_launchers/config/twist_mux.yaml
+・motor_controller/ … 速度指令（v、ω）を左右の車輪 RPM に変換して CAN（ID 0x210）で送る。加減速の制限（加速 2.2、減速 1.5 m/s²）と、0.5 秒指令が来なければ停止する安全機能を持つ。計算部分は motor_math.py（単体テストあり）
+注意：自律走行より手動操縦が常に優先される。
+
+■ docker/
+役割：実行環境（ROS 2 Humble）の Docker 定義。
+中身：
+・Dockerfile … PC（Mac・x86）用
+・Dockerfile.jetson … Jetson AGX Orin 用（ZED SDK を含む）
+・compose.gpu.yaml / compose.jetson.yaml … GPU・Jetson 用の追加設定
+・cyclonedds.xml … DDS 通信の設定
+・entrypoint.sh … コンテナ起動時の処理
+使い方：make build → make up → make bash（Makefile が Mac・Ubuntu・Jetson を自動判定する）。
+
+■ docs/
+役割：現行のシステムの全体像と運用メモ。
+中身：README.md（システム構成図、起動方法、テスト、実機での確認事項、.git のサイズ縮小手順）。
+注意：古い設計書は削除済み。履歴は git log で確認する。
+
+■ launchers/sample_launchers/
+役割：機体ハードウェアを起動する launch ファイルと、共通設定。
+中身：
+・launch/hardware_bringup.launch.py … 車両モデル・ZED X・IMU・ゲームパッド・twist_mux・motor_controller・CAN・オドメトリ・ポテンショメータをまとめて起動
+・launch/ その他 … 個別起動用（zedx、vectornav、gamepad、twist_mux、socket_can_bridge）、PC 単体テスト用（pc_standalone_test）
+・config/topic_list.yaml … 全トピック名の一覧（ここを変えると全体に反映される）
+・config/twist_mux.yaml … 優先度とタイムアウト
+・config/qos_setting.yaml / frame_id_list.yaml / gamepad … 通信品質・フレーム名・ゲームパッドの設定
+・shellscript/ … CAN・センサー初期化、rosbag と動画の記録スクリプト（record_rosbag.sh 6lane など）
+注意：6レーン走行の launch はここではなく src/oit_navigation 側にある。
+
+■ models/
+役割：AI モデルの学習済み重み。
+中身：
+・honda_shihou_finetuned_best.pth … 白線検出（YOLOP）。実機で使う
+・cone.pt … コーン検出（YOLO）
+・traffic_light.pt / traffic_light_red.pt / traffic_light_green.pt … 信号機検出（YOLO）
+注意：重みは大きいので、git の履歴が約5GB になっている（縮小手順は docs/README.md）。
+
+■ sensing/
+役割：センサーのドライバと、センサー値の処理。
+中身：
+・zed-ros2-wrapper/ … ZED X ステレオカメラの公式ドライバ（外部ソース）
+・vectornav/ … VectorNav IMU のドライバ（外部ソース）
+・odometry_publisher/ … 車輪エンコーダとジャイロの統合オドメトリ（C++）
+・rear_potentiometer/ … 後輪の舵角センサー
+使用可能なセンサー：ZED のカメラ、VectorNav の IMU、CAN で得る車輪 RPM のみ（GNSS は禁止）。
+
+■ src/oit_navigation/（自律走行の本体）
+役割：認識（白線・コーン・信号機）と、6レーン走行の判断・制御を行う ROS 2 パッケージ。
+中身：
+・launch/ … 動画検証、コーン検出、信号機検出の launch
+・config/ … navigation_params.yaml（白線検出・コーン検出・カメラのパラメータ）、traffic_light_params.yaml、RViz 設定
+・oit_navigation/ … プログラム本体（次の項目）
+・test/ … 単体テスト（ROS 不要。python3 -m pytest src/oit_navigation/test で実行）、JS との一致用ゴールデンデータ
+・README.md … 詳しい説明
+
+■ src/oit_navigation/oit_navigation/（プログラム本体）
+役割：ノードとアルゴリズム。
+中身：
+・lane_detector.py … 白線を検出して左・中央・右に割り当てる（YOLOP）
+・cone_detector_node.py … コーンを検出して位置を推定
+・traffic_light_distance_node.py … 赤・青信号を検出して距離を推定
+・verification_gui.py … 動画で検出結果を確認する Web GUI（port 8090）
+・video_publisher.py / image_compressor_node.py … 動画の配信、画像の圧縮
+・export_*.py … モデルを ONNX・TensorRT に変換
+・yolop_lane_backend.py / yolop/ … 白線検出モデルの推論部分
+・lane_core/ … ROS に依存しない部品（カメラの幾何、白線の左・中央・右の割り当て、コーン回避）
+・utils/ … 信号機の停止判断、可視化、画像変換などの補助
+・6lane/ … 6レーン走行（次の項目）
+
+■ src/oit_navigation/oit_navigation/6lane/（6レーン走行）
+役割：このシステムの唯一の走行方式。白線から仮想6レーンを作り、ニューラルネットがアウト・イン・アウトになるレーンを選んで走る。
+中身：
+・six_lane_core.py … ROS に依存しないコア。判断、制御、現在の車速に応じた自動補正、遅れ補償、車速推定
+・six_lane_planner_node.py … ROS ノード
+・six_lane_policy.json / train_policy.py … ニューラルネットの重みと学習スクリプト
+・config/six_lane_params.yaml … パラメータ（speed_limit など）
+・launch/six_lane.launch.py … 6レーン走行の起動（白線・コーン・信号機の検出も一緒に起動）
+・README.md … 速度上限の切り替え方と、自動補正の内容
+重要：速度上限（speed_limit、0.3〜3.0 m/s）だけを手動で切り替える。前方注視点などは自動で補正される。
+注意：コアを変えたら web_simulator/js/six_lane_planner.js も合わせ、ゴールデンデータを作り直して parity.html で一致を確認する。
+
+■ vehicles/sample_vehicle/
+役割：車両の形状と寸法の定義。
+中身：
+・xacro/ … 車両モデル（URDF）。車輪半径 0.127 m、車軸の高さ 0.12 m
+・config/wheel.yaml … 車輪径 0.254 m、トレッド 0.60 m（motor_controller・オドメトリ・シミュレータが共有）
+・config/zedx/ … ZED X カメラの校正値（シリアル SN47800407）
+・launch/ … 車両の tf を配信
+注意：車輪径を変えるときは、シミュレータ（vehicle_physics.js）も同時に変える。
+
+■ web_simulator/（Web シミュレータ）
+役割：ブラウザで動く 3D シミュレータ。実機の物理とパラメータをそのまま再現する。
+使い方：リポジトリのルートで python3 web_simulator/serve.py を実行し、http://localhost:8000/web_simulator/ を開く。
+中身：
+・index.html … 画面
+・js/ … simulator.js（本体）、six_lane_planner.js（実機のコアと同一）、vehicle_physics.js（スリップ ±8% を含む物理）、twist_mux.js、cone_avoidance.js、traffic_light_stop.js など
+・models/ … コース、コーン、信号パネルの 3D モデルと ONNX モデル
+・test/parity.html … 6レーンの計算が実機の Python 版と一致するかを確認するページ
+・vendor/ … three.js、onnxruntime-web
+特徴：速度上限スライダーがある。ROS に接続すると、実機と同じトピックで連携する。
+
+■ build/ install/ log/（自動生成。git 管理外）
+役割：colcon のビルド結果とログ。消してもよい（make clean）。
+
+■ mp4/ jpeg/（git 管理外）
+役割：録画した走行動画（約 37 本）と画像。PC 単体の検証や、検出モデルの確認に使う。
+
+■ .claude/ .superpowers/ .vscode/（開発ツール用。git 管理外）
+役割：Claude Code や VS Code の設定・作業用フォルダ。システムの動作には関係しない。

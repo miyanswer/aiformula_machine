@@ -47,12 +47,6 @@
   history: keep_last
   reliability: best_effort
 
-/aiformula_sensing/gnss_odometry_publisher/odom:
-  depth: 2
-  durability: volatile
-  history: keep_last
-  reliability: best_effort
-
 /aiformula_sensing/rear_potentiometer/yaw:
   depth: 2
   durability: volatile
@@ -60,30 +54,6 @@
   reliability: best_effort
 
 # perception
-/aiformula_perception/object_road_detector/mask_image:
-  depth: 2
-  durability: volatile
-  history: keep_last
-  reliability: best_effort
-
-/aiformula_perception/object_road_detector/rect:
-  depth: 2
-  durability: volatile
-  history: keep_last
-  reliability: best_effort
-
-/aiformula_perception/object_publisher/object_info:
-  depth: 2
-  durability: volatile
-  history: keep_last
-  reliability: best_effort
-
-/aiformula_perception/lane_line_publisher/annotated_mask_image:
-  depth: 2
-  durability: volatile
-  history: keep_last
-  reliability: best_effort
-
 /aiformula_perception/lane_line_publisher/lane_lines/left:
   depth: 2
   durability: volatile
@@ -127,7 +97,7 @@
   history: keep_last
   reliability: best_effort
 
-/aiformula_control/extremum_seeking_mpc/cmd_vel:
+/aiformula_control/six_lane_planner/cmd_vel:
   depth: 2
   durability: volatile
   history: keep_last
@@ -164,12 +134,6 @@
   reliability: best_effort
 
 # visualization
-/aiformula_visualization/road_detector/annotated_mask_image:
-  depth: 2
-  durability: volatile
-  history: keep_last
-  reliability: best_effort
-
 /aiformula_visualization/zed/left_image/compressed:
   depth: 2
   durability: volatile
@@ -183,12 +147,6 @@
   reliability: best_effort
 
 /aiformula_visualization/six_lane_planner/panel/compressed:
-  depth: 2
-  durability: volatile
-  history: keep_last
-  reliability: best_effort
-
-/aiformula_visualization/lane_navigator/panel/compressed:
   depth: 2
   durability: volatile
   history: keep_last

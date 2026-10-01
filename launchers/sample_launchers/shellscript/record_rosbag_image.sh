@@ -1,9 +1,8 @@
 #!/bin/bash
 << COMMENTOUT
-画像だけの rosbag. record_rosbag_{6lane,qp,gamepad}.sh (画像以外) とは別プロセスで, 同じ名前を付けて起動する
+画像だけの rosbag. record_rosbag_{6lane,gamepad}.sh (画像以外) とは別プロセスで, 同じ名前を付けて起動する
 (record_rosbag.sh <名前> なら両方を 1 コマンドで起動する).
     bash record_rosbag_image.sh 6lane      # -> rosbag/<日付_時刻>/6lane/image   (ZED 左画像 + 6レーンの判断パネル)
-    bash record_rosbag_image.sh qp         # -> rosbag/<日付_時刻>/qp/image      (ZED 左画像 + QP の判断パネル)
     bash record_rosbag_image.sh gamepad    # -> rosbag/<日付_時刻>/gamepad/image (ZED 左画像)
 
 既定は Jetson が出している JPEG 版 (.../compressed) を記録する. 別 PC (Dell 等) で記録するときはこれを使うこと:
@@ -19,8 +18,8 @@ source "$(cd "$(dirname "$0")"; pwd)/record_rosbag_common.sh"
 
 name=$1
 case "${name}" in
-    6lane|qp|gamepad) ;;
-    *) echo "使い方: bash record_rosbag_image.sh <6lane|qp|gamepad>" >&2; exit 1 ;;
+    6lane|gamepad) ;;
+    *) echo "使い方: bash record_rosbag_image.sh <6lane|gamepad>" >&2; exit 1 ;;
 esac
 
 if [ "${RAW:-0}" = "1" ]; then
@@ -32,7 +31,6 @@ else
 fi
 case "${name}" in
     6lane) topics+=($(read_yaml "['visualization']['six_lane_planner']['${panel_key}']")) ;;
-    qp) topics+=($(read_yaml "['visualization']['lane_navigator']['${panel_key}']")) ;;
 esac
 if [ "${RECORD_ANNOTATED:-0}" = "1" ]; then
     topics+=(

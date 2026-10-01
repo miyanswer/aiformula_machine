@@ -1,6 +1,6 @@
 # 動画での検出器の検証 (video_test.launch.py / verification_gui.py) 用の RViz2 設定.
 # config/oit_navigation.rviz から, 元の動画 (Camera, video_publisher の生画像) と 白線 / コーン / 信号機 の
-# 注釈付き画像, 白線 (Path) とコーン (Marker) だけを取り出したもの. 周回マップ / QP の表示は含めない.
+# 注釈付き画像, 白線 (Path) とコーン (Marker) だけを取り出したもの. 6レーン走行の表示は含めない.
 Panels:
 - Class: rviz_common/Displays
   Name: Displays

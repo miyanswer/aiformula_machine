@@ -16,7 +16,7 @@
                        x y z roll pitch yaw">
     <xacro:property name="MESH_FILE" value="package://sample_vehicle/xacro/meshes/tire.dae"/>
     <xacro:property name="THICKNESS_SCALE" value="0.05"/>
-    <xacro:property name="SIZE_SCALE" value="0.12"/>
+    <xacro:property name="SIZE_SCALE" value="0.127"/>  <!-- 車輪半径 [m] = wheel.yaml diameter / 2 -->
     <link name="${wheel}_link">
       <visual>
         <origin xyz="${x} ${y} ${z}" rpy="${roll} ${pitch} ${yaw}"/>

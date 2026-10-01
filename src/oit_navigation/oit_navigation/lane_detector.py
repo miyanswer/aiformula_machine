@@ -1,18 +1,14 @@
 #!/usr/bin/env python3
 """
-lane_detector.py - 白線検出ノード (backend: YOLOP または UFLD).
+lane_detector.py - 白線検出ノード (YOLOP).
 
-    カメラ画像 --backend--> 白線ごとの画像点列 --地面投影--> base_link の点列
+    カメラ画像 --YOLOP--> 白線ごとの画像点列 --地面投影--> base_link の点列
         --2 次多項式フィット--> LineTracker で「左境界 / 中央線 / 右境界」に割り当て
         --> aiformula_interfaces/LaneLines (+ RViz 用 Path x3, 注釈画像)
 
-backend:
-    yolop (実機の既定): models/honda_shihou_finetuned_best.pth の白線セグメンテーションマスクから
-                        lane_nav/mask_lines.py で白線ごとの点列を取り出す. TensorRT 対応 (Jetson).
-    ufld              : models/ufld_honda_finetuned_best.pth (UFLD v1) の車線スロットごとの点列.
-                        重みは 245MB で git 管理外なので, 使う場合は各自 models/ に置く.
-
-どちらの backend でも, 線の順番/スロット番号は役割に使わない (lane_nav/line_tracker.py 参照).
+YOLOP: models/honda_shihou_finetuned_best.pth の白線セグメンテーションマスクから
+lane_core/mask_lines.py で白線ごとの点列を取り出す. TensorRT 対応 (Jetson).
+線の順番は役割に使わない (lane_core/line_tracker.py 参照).
 見えなかった線は追跡中の道幅から補完し, detected=false として出す.
 
 推論は専用スレッドで最新フレームだけを処理する (重い推論でコールバックを詰まらせない).
@@ -34,12 +30,12 @@ from sensor_msgs.msg import CompressedImage, Image
 from std_msgs.msg import Float64, Header, String
 
 from aiformula_interfaces.msg import LaneLine, LaneLines
-from common_python.workspace_paths import default_workspace_asset, resolve_workspace_asset
-from oit_navigation.lane_nav import (
+from common_python.workspace_paths import default_workspace_asset
+from oit_navigation.lane_core import (
     CameraModel, LineTracker, LineTrackerParams, fit_line, ground_to_image, project_to_ground,
 )
-from oit_navigation.lane_nav.line_tracker import ROLES, TrackedLines
-from oit_navigation.lane_nav.mask_lines import MaskLinesParams, extract_mask_lines
+from oit_navigation.lane_core.line_tracker import ROLES, TrackedLines
+from oit_navigation.lane_core.mask_lines import MaskLinesParams, extract_mask_lines
 from oit_navigation.utils.image_util import cv2_to_imgmsg, imgmsg_to_cv2
 
 ROLE_COLORS_BGR = {"left": (255, 208, 53), "center": (0, 212, 255), "right": (216, 90, 255)}
@@ -53,22 +49,12 @@ class LaneDetectorNode(Node):
         import torch  # torch の import は重いのでここで
         if torch.get_num_threads() > 2:
             torch.set_num_threads(2)
-        if self.backend == "ufld":
-            from oit_navigation.ufld import UFLDLaneModel
-            weight = resolve_workspace_asset(self.ufld_weight_path)
-            self.model = UFLDLaneModel(weight, device=self.use_device)
-            c = self.model.cfg
-            backend_info = (f"UFLD weights={weight} (ResNet{c.backbone}, griding={c.griding_num}, "
-                            f"rows={c.cls_num_per_lane}, lanes={c.num_lanes}) device={self.model.device}")
-        elif self.backend == "yolop":
-            from oit_navigation.yolop_lane_backend import YOLOPLaneModel
-            self.model = YOLOPLaneModel(
-                self.yolop_weight_path, device=self.use_device, roi_mode=self.roi_mode,
-                top_cut_ratio=self.top_cut_ratio, use_tensorrt=self.use_tensorrt,
-                tensorrt_engine_path=self.tensorrt_engine_path, log=self.get_logger().info)
-            backend_info = f"YOLOP weights={self.model.weight_path} ({self.model.backend_name})"
-        else:
-            raise ValueError(f"backend は 'yolop' か 'ufld' です: {self.backend}")
+        from oit_navigation.yolop_lane_backend import YOLOPLaneModel
+        self.model = YOLOPLaneModel(
+            self.yolop_weight_path, device=self.use_device, roi_mode=self.roi_mode,
+            top_cut_ratio=self.top_cut_ratio, use_tensorrt=self.use_tensorrt,
+            tensorrt_engine_path=self.tensorrt_engine_path, log=self.get_logger().info)
+        backend_info = f"YOLOP weights={self.model.weight_path} ({self.model.backend_name})"
         self.tracker = LineTracker(self.tracker_params)
         self._tracker_lock = threading.Lock()  # tracker は推論スレッドと reseed コールバックの両方から触る
 
@@ -96,16 +82,14 @@ class LaneDetectorNode(Node):
         self._worker = threading.Thread(target=self._worker_loop, daemon=True)
         self._worker.start()
         self.get_logger().info(
-            f"lane_detector ready: backend={self.backend} {backend_info} "
+            f"lane_detector ready: {backend_info} "
             f"topic={self.input_image_topic} lane_width={self.tracker_params.lane_width_init}m")
 
     # ------------------------------------------------------------------ params
     def _declare_and_load_parameters(self):
         d = self.declare_parameter
         self.input_image_topic = d("input_image_topic", "/aiformula_sensing/zed_node/left_image/undistorted").value
-        self.backend = str(d("backend", "yolop").value).lower()
         self.yolop_weight_path = d("weight_path", default_workspace_asset("models", "honda_shihou_finetuned_best.pth")).value
-        self.ufld_weight_path = d("ufld_weight_path", default_workspace_asset("models", "ufld_honda_finetuned_best.pth")).value
         self.use_device = str(d("use_device", "cpu").value)
         # YOLOP 用
         self.roi_mode = str(d("roi_mode", "crop_bottom").value)
@@ -180,17 +164,13 @@ class LaneDetectorNode(Node):
             try:
                 self._process(*item)
             except Exception as e:  # noqa: BLE001
-                self.get_logger().warning(f"UFLD 処理エラー: {e}", throttle_duration_sec=2.0)
+                self.get_logger().warning(f"白線検出の処理エラー: {e}", throttle_duration_sec=2.0)
 
     # ------------------------------------------------------------------ main
     def _process(self, img: np.ndarray, header: Header):
         h, w = img.shape[:2]
-        mask = None
-        if self.backend == "yolop":
-            mask = self.model.infer_mask(img)
-            lanes = extract_mask_lines(mask, self.mask_lines_params)
-        else:
-            lanes = self.model.detect(img)
+        mask = self.model.infer_mask(img)
+        lanes = extract_mask_lines(mask, self.mask_lines_params)
         fits, ground_pts = [], []
         for lane in lanes:
             if lane is None:
@@ -213,7 +193,6 @@ class LaneDetectorNode(Node):
             self.path_pubs[role].publish(self._path_msg(tracked.lines.get(role), out_header))
         self.lanes_pub.publish(msg)
         self.debug_pub.publish(String(data=json.dumps({
-            "backend": self.backend,
             "lines": [None if l is None else len(l["u"]) for l in lanes],
             "detected": tracked.detected, "offsets": {k: round(v, 3) for k, v in tracked.offsets.items()},
         })))
