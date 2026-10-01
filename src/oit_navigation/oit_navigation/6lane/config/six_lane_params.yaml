@@ -20,6 +20,7 @@ six_lane_planner:
     markers_topic: "/aiformula_visualization/six_lane_planner/markers"   # 仮想6レーン・現在/目標・確率・注視点
     panel_topic: "/aiformula_visualization/six_lane_planner/panel"       # 判断パネル画像 (俯瞰図 + 確率 + 日本語の理由)
     panel_rate: 5.0             # [Hz] 0 で出さない
+    markers_rate: 5.0           # [Hz] RViz 用マーカー (0 で出さない). 制御周期 20 Hz の中で毎回作ると Jetson で制御が遅れるので間引く
     panel_font_path: ""         # 空なら Noto CJK 等を自動で探す (sudo apt install fonts-noto-cjk)
     cone_avoidance.reactive: true   # レーン除外の上に, コーン群を外周に沿って抜ける操舵を重ねる (シミュレータと同じ)
     control_rate: 20.0

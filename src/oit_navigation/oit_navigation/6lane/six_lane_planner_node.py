@@ -144,6 +144,7 @@ class SixLanePlannerNode(Node):
         if not self.jt.available:
             self.get_logger().warning('判断パネル用の日本語フォントがありません (sudo apt install fonts-noto-cjk). 日本語は ? になります')
         self._last_panel_t = -1e9
+        self._last_markers_t = -1e9
         self._last_lines: Optional[Dict[str, Optional[LineObs]]] = None
         # 赤信号停止: 最終 cmd_vel に速度上限を掛ける (utils/traffic_light_stop.py)
         self.tl_stop = TrafficLightStopRos(self)
@@ -177,6 +178,7 @@ class SixLanePlannerNode(Node):
         self.markers_topic = d('markers_topic', '/aiformula_visualization/six_lane_planner/markers').value
         self.panel_topic = d('panel_topic', '/aiformula_visualization/six_lane_planner/panel').value
         self.panel_rate = float(d('panel_rate', 5.0).value)     # [Hz] 判断パネル画像 (0 で出さない)
+        self.markers_rate = float(d('markers_rate', 5.0).value)  # [Hz] RViz 用マーカー (0 で出さない)
         self.panel_font_path = str(d('panel_font_path', '').value)  # 空なら Noto CJK などを自動で探す
         self.frame_id = d('frame_id', 'base_link').value
         self.control_rate = float(d('control_rate', 20.0).value)
@@ -324,6 +326,11 @@ class SixLanePlannerNode(Node):
         return compensate_points(cones, self.v, omega_est, age, self.planner.p.latency_max)
 
     def _publish_viz(self, now: float, lines, st: Dict, cones):
+        # RViz 用の可視化は制御周期 (20 Hz) の中で作ると Jetson の CPU で制御が間に合わなくなる (cmd_vel が 8 Hz に落ちた)
+        # ので, マーカーも判断パネルも markers_rate / panel_rate で間引く. 指令と status は毎周期出す
+        if self.markers_rate <= 0 or now - self._last_markers_t < 1.0 / self.markers_rate:
+            return self._publish_panel(now, lines, st, cones)
+        self._last_markers_t = now
         header = Header(stamp=self.get_clock().now().to_msg(), frame_id=self.frame_id)
         markers = six_lane_markers(header, lines, st, lane_y)
         # 回避に使ったコーン (cones_topic) も同じ表示に出す (検出器側の表示とは別に, 判断に使った入力として)
@@ -332,9 +339,13 @@ class SixLanePlannerNode(Node):
             if m.ns == 'cones':
                 m.ns = 'six_lane/cones_used'
         self.markers_pub.publish(marker_array(header, markers))
+        self._publish_panel(now, lines, st, cones)
+
+    def _publish_panel(self, now: float, lines, st: Dict, cones):
         if self.panel_rate <= 0 or now - self._last_panel_t < 1.0 / self.panel_rate:
             return
         self._last_panel_t = now
+        header = Header(stamp=self.get_clock().now().to_msg(), frame_id=self.frame_id)
         tl = self.tl_stop.last_summary
         img = six_lane_panel(self.jt, lines, st, st.get('explain', []) + [f'コーン回避: {self.avoider.debug}'],
                              lane_y, cones=cones, tl=tl)

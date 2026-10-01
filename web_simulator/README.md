@@ -355,7 +355,7 @@ gamepad がタイムアウトし、自動運転（有効になっていれば）
 ```bash
 make rosbridge                 # 1. rosbridge_server
 # 2. ブラウザで http://localhost:8000/web_simulator/ を開いて「接続」
-make sim-nav                   # 3. six_lane.launch.py simulator:=true (SPEED_LIMIT=1.5)
+make sim-nav                   # 3. six_lane.launch.py simulator:=true (SPEED_LIMIT=1.5。Jetson では TensorRT が既定: USE_TENSORRT=true|false で変更)
 # 4. 「自動運転」タブで「ROS2連携」→「スタート位置へ」→「自動運転: ON」
 ```
 
