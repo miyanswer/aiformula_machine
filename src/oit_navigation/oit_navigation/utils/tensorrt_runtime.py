@@ -25,6 +25,19 @@ import numpy as np
 import torch
 
 
+def _patch_numpy_aliases():
+    """Jetson の TensorRT 8.5 の Python バインディングは np.bool を使うが, NumPy 1.24 以降には無く
+    `import tensorrt` が AttributeError になる (エンジンを作れても読み込めない). import の前に別名を補う."""
+    for name, value in (("bool", np.bool_), ("int", int), ("float", float)):
+        try:
+            getattr(np, name)
+        except AttributeError:
+            setattr(np, name, value)
+
+
+_patch_numpy_aliases()
+
+
 class TensorRTYOLOPRunner:
     """Loads a serialized TensorRT engine and runs inference, returning the
     same (raw_detections, ll_seg) tensors the PyTorch path produces so

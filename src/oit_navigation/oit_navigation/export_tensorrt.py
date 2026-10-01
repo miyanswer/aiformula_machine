@@ -32,6 +32,19 @@ import numpy as np
 import torch
 import torch.nn as nn
 
+
+def _patch_numpy_aliases():
+    """Jetson の TensorRT 8.5 の Python バインディングは np.bool を使うが, NumPy 1.24 以降には無く
+    `import tensorrt` が AttributeError になる (エンジンを作れても読み込めない). import の前に別名を補う."""
+    for name, value in (("bool", np.bool_), ("int", int), ("float", float)):
+        try:
+            getattr(np, name)
+        except AttributeError:
+            setattr(np, name, value)
+
+
+_patch_numpy_aliases()
+
 _THIS_DIR = Path(__file__).resolve().parent
 _YOLOP_DIR = _THIS_DIR / "yolop"
 if _YOLOP_DIR.exists() and str(_YOLOP_DIR) not in sys.path:
