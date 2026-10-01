@@ -23,7 +23,7 @@
 import os.path as osp
 import subprocess
 
-from ament_index_python.packages import get_package_share_directory
+from ament_index_python.packages import PackageNotFoundError, get_package_prefix, get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, OpaqueFunction
 from launch_ros.actions import Node
@@ -44,6 +44,16 @@ def _cleanup_old_processes():
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
     except Exception:
         pass
+
+
+def _has_package(name: str) -> bool:
+    """rviz2 が入っていない環境 (画面なしの Jetson イメージなど) では RViz を起動しない (起動すると launch ごと落ちる)."""
+    try:
+        get_package_prefix(name)
+        return True
+    except PackageNotFoundError:
+        print(f"[six_lane.launch] パッケージ '{name}' が無いので RViz は起動しません")
+        return False
 
 
 def _nodes(context):
@@ -116,7 +126,7 @@ def _nodes(context):
             package="oit_navigation", executable="cone_detector", name="cone_detector", output="screen",
             parameters=[osp.join(pkg, "config", "navigation_params.yaml"), cone_params],
         ))
-    if get("rviz").lower() == "true":
+    if get("rviz").lower() == "true" and _has_package("rviz2"):
         nodes.append(Node(
             package="rviz2", executable="rviz2", name="rviz2", output="screen",
             arguments=["-d", osp.join(pkg, "config", "six_lane.rviz")],
