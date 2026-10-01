@@ -28,10 +28,9 @@
 ■ common/
 役割：複数のパッケージが共有する部品。
 中身：
-・aiformula_interfaces/ … 独自のメッセージ型（LaneLine、LaneLines など。白線の検出結果）
+・aiformula_interfaces/ … 独自のメッセージ型（LaneLine、LaneLines。白線の検出結果）
 ・common_cpp/ … C++ の共通ユーティリティ（カメラモデル、パラメータ取得、tf など）
 ・common_python/ … Python の共通ユーティリティ（トピック名の読み込み、ワークスペース内パスの解決など）
-・rviz_aiformula_plugins/ … RViz2 用プラグイン（PC 専用。Jetson ではビルドしない）
 ・serial/ … シリアル通信ライブラリ
 
 ■ control/

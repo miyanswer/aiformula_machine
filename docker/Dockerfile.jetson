@@ -135,7 +135,7 @@ RUN apt-get update && rosdep update && \
 
 # --packages-skip vision_msgs_rviz_plugins: this subpackage of the
 # vision_msgs repo above needs rviz_common, which this image intentionally
-# doesn't ship (no rviz2/rviz_aiformula_plugins on the headless Jetson
+# doesn't ship (no rviz2 on the headless Jetson
 # target - see docker/Dockerfile.jetson's design brief). The vision_msgs
 # package itself (which oit_navigation actually depends on) builds fine
 # without it.

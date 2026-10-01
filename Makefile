@@ -80,13 +80,6 @@ BUILD_ARGS := --build-arg ENABLE_CUDA=$(ENABLE_CUDA) \
               --build-arg TENSORRT_CU=$(TENSORRT_CU) \
               --build-arg TENSORRT_VERSION=$(TENSORRT_VERSION)
 
-# On Jetson, rviz_aiformula_plugins (RViz-only plugins, not needed to drive
-# the real vehicle) can't build - the headless Jetson image intentionally
-# doesn't ship rviz2/rviz_common (see docker/Dockerfile.jetson). Skip it
-# automatically so `make build-ws` / `make build-pkg` just work on Jetson
-# without users needing to remember a manual --packages-skip flag.
-COLCON_SKIP := $(if $(IS_JETSON),--packages-skip rviz_aiformula_plugins,)
-
 JETSON_BUILD_ARGS := --build-arg JETSON_BASE_TAG=$(JETSON_BASE_TAG)
 
 # Jetson build args replace (not add to) the x86 CUDA/TensorRT build args
@@ -233,7 +226,7 @@ build-ws colcon:
 	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
 		$(DOCKER_COMPOSE) up -d; \
 	fi
-	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "$(ROS_SETUP) && colcon build --symlink-install $(COLCON_SKIP)"
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "$(ROS_SETUP) && colcon build --symlink-install"
 
 build-pkg:
 	@if [ -z "$(PKG)" ]; then \
@@ -243,7 +236,7 @@ build-pkg:
 	@if ! $(DOCKER_COMPOSE) ps --services --filter "status=running" | grep -q "$(SERVICE_NAME)"; then \
 		$(DOCKER_COMPOSE) up -d; \
 	fi
-	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "$(ROS_SETUP) && colcon build --packages-select $(PKG) --symlink-install $(COLCON_SKIP)"
+	$(DOCKER_COMPOSE) exec $(SERVICE_NAME) bash -c "$(ROS_SETUP) && colcon build --packages-select $(PKG) --symlink-install"
 
 clean:
 	rm -rf build install log

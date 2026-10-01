@@ -57,7 +57,7 @@ def _nodes(context):
     detector_params = {
         "use_device": get("use_device"),
         "weight_path": get("weight_path"),
-        "use_tensorrt": get("use_tensorrt"),
+        "use_tensorrt": get("use_tensorrt").lower() == "true",  # 文字列ではなく bool で渡す (型が違うと lane_detector が落ちる)
         "input_image_topic": image_topic,
         "lane_width": float(get("lane_width")),
         # 発進位置の横ずれ (中央線から, 左正). 中央線の上と仮定すると右端発進で右白線を中央線と取り違える
