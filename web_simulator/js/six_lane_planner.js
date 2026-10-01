@@ -28,7 +28,7 @@ export const SIX_LANE_PARAMS = {
   lateralGate: 0.35, lateralGain: 0.5, lateralResyncTime: 3.0,
   // 判断 (学習時と共通)
   // vMax = 速度上限 [m/s]。手動で切り替える唯一の値 (HUD の「速度上限」/ setSpeedLimit)。NN の速度入力は v / vMax なので判断は変わらない。
-  // 距離で決まる量 (前方注視点など) は vRef を基準に上限へ比例して自動補正する (speedScale / effectiveControl)。
+  // 距離で決まる量 (前方注視点など) は、上限ではなく「現在の車速」を vRef (調整した基準の車速) と比べて毎周期自動補正する (speedScale / effectiveControl)。
   vMax: 1.5, vRef: 1.5, autoScale: true,
   holdDistance: 0.45, // [m] 次の白線フレームを待つ間 直前の指令を維持する距離 (時間 = 距離 / 車速)
   latencyMax: 0.5, // [s] 観測の遅れがこれ以上なら古い観測として捨てる
@@ -44,21 +44,21 @@ export const SIX_LANE_PARAMS = {
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 // ---------------------------------------------------------------------------
-// 速度上限に応じた自動補正 (six_lane_core.py の speed_scale / effective_control と同じ)
+// 現在の車速に応じた自動補正 (six_lane_core.py の speed_scale / effective_control と同じ)
 // ---------------------------------------------------------------------------
 export const clampSpeedLimit = (v) => clamp(Number(v), SPEED_LIMIT_MIN, SPEED_LIMIT_MAX);
 
-/** 速度上限 / 基準速度 (0.5〜2.0 に丸める)。自動補正が無効なら 1。 */
-export const speedScale = (p) => (p.autoScale ? clamp(p.vMax / p.vRef, 0.5, 2.0) : 1);
+/** 現在の車速 v / 基準の車速 vRef (0.5〜2.0 に丸める)。自動補正が無効なら 1。 */
+export const speedScale = (p, v) => (p.autoScale ? clamp(Math.max(v, 0) / p.vRef, 0.5, 2.0) : 1);
 
-/** 速度上限に合わせて自動補正した制御量。
- *   lookaheadMin / lookaheadMax : 前方注視点。上限に比例
- *   lostTimeout                 : 白線を見失ってから止まるまで。上限に反比例 (走る距離を一定に近づける)
+/** 現在の車速 v に合わせて自動補正した制御量 (毎周期。速度上限ではなく今の速さで決まる)。
+ *   lookaheadMin / lookaheadMax : 前方注視点。車速に比例
+ *   lostTimeout                 : 白線を見失ってから止まるまで。車速に反比例 (走る距離を一定に近づける)
  *   reactScale                  : コーン回避の減速開始距離・先読み距離の倍率 (cone_avoidance.js reactiveAvoid の scale)
  * 変えないもの: 曲率を測る距離 stations (カメラの視野で決まる)、横加速度 aLatMax (車の限界)、
  * 加減速 accel / decel (モーターの加減速制限)、旋回上限 maxAngularSpeed。 */
-export function effectiveControl(p) {
-  const k = speedScale(p);
+export function effectiveControl(p, v) {
+  const k = speedScale(p, v);
   return {
     scale: k, lookaheadMin: p.lookaheadMin * k, lookaheadMax: p.lookaheadMax * k,
     lostTimeout: p.lostTimeout / Math.max(k, 1), reactScale: k,
@@ -367,7 +367,7 @@ export class SixLanePlanner {
    */
   step(dt, lines, vMeas, cones = [], reanchored = false) {
     const p = this.p, s = this.s;
-    const eff = effectiveControl(p);
+    const eff = effectiveControl(p, vMeas);
     const FMeas = lines ? vehicleLaneCoordinate(lines, p.xPos) : null;
     if (FMeas === null) {
       s.lostTime += dt;
@@ -511,14 +511,14 @@ const PHASE_JA = {
 export function explainJa(st, p = SIX_LANE_PARAMS) {
   if (!st || st.phase === LOST || st.currentLane === undefined) {
     const t = st ? st.lostTime || 0 : 0;
-    return [`白線を見失っています (${t.toFixed(1)}s)`, t >= effectiveControl(p).lostTimeout ? '→ 減速して停止します' : '→ 直前の指令を維持'];
+    return [`白線を見失っています (${t.toFixed(1)}s)`, t >= (st.lostTimeout ?? p.lostTimeout) ? '→ 減速して停止します' : '→ 直前の指令を維持'];
   }
   const dir = st.sign > 0 ? '左' : st.sign < 0 ? '右' : '';
   const k = (v) => `${v >= 0 ? '+' : ''}${v.toFixed(3)}`;
   const lines = [];
   lines.push(`速度 ${st.v.toFixed(2)} m/s ／ 曲率 近${k(st.kappas[0])} 中${k(st.kappas[1])} 遠${k(st.kappas[2])} [1/m]`);
   if (st.lookaheadRange) {
-    lines.push(`速度上限 ${st.speedLimit.toFixed(1)} m/s (×${st.speedScale.toFixed(2)}) → 前方注視点 ${st.lookaheadRange[0].toFixed(1)}〜${st.lookaheadRange[1].toFixed(1)} m に自動補正`);
+    lines.push(`現在の車速に合わせて自動補正 (×${st.speedScale.toFixed(2)}, 速度上限 ${st.speedLimit.toFixed(1)} m/s) → 前方注視点 ${st.lookaheadRange[0].toFixed(1)}〜${st.lookaheadRange[1].toFixed(1)} m`);
   }
   let why;
   switch (st.phase) {

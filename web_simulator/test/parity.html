@@ -77,13 +77,13 @@ for (const c of golden.estimator) {
   check('estimator v', got, c.expected);
 }
 
-// 4. 速度上限に応じた自動補正
+// 4. 現在の車速に応じた自動補正 (速度上限ではなく車速で決まる)
 for (const c of golden.effective) {
-  const e = effectiveControl({ ...SIX_LANE_PARAMS, vMax: c.v_max });
-  check(`effective[${c.v_max}] scale`, e.scale, c.expected.scale);
-  check(`effective[${c.v_max}] lookahead`, [e.lookaheadMin, e.lookaheadMax], [c.expected.lookahead_min, c.expected.lookahead_max]);
-  check(`effective[${c.v_max}] lost_timeout`, e.lostTimeout, c.expected.lost_timeout);
-  check(`effective[${c.v_max}] react_scale`, e.reactScale, c.expected.react_scale);
+  const e = effectiveControl({ ...SIX_LANE_PARAMS }, c.v);
+  check(`effective[v=${c.v}] scale`, e.scale, c.expected.scale);
+  check(`effective[v=${c.v}] lookahead`, [e.lookaheadMin, e.lookaheadMax], [c.expected.lookahead_min, c.expected.lookahead_max]);
+  check(`effective[v=${c.v}] lost_timeout`, e.lostTimeout, c.expected.lost_timeout);
+  check(`effective[v=${c.v}] react_scale`, e.reactScale, c.expected.react_scale);
 }
 
 const pass = results.filter((r) => r.ok).length;

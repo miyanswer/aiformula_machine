@@ -191,40 +191,46 @@ def test_decision_panel_renders(planner):
 # ---------------------------------------------------------------------------
 # 速度上限の手動切替と自動補正
 # ---------------------------------------------------------------------------
-def test_speed_limit_is_clamped_and_scales_control(planner):
+def test_speed_limit_is_clamped(planner):
     assert planner.set_speed_limit(10.0) == core.SPEED_LIMIT_MAX
     assert planner.set_speed_limit(0.0) == core.SPEED_LIMIT_MIN
-    planner.set_speed_limit(1.5)
-    e = core.effective_control(planner.p)
-    assert e['scale'] == 1.0 and e['lookahead_min'] == planner.p.lookahead_min and e['lost_timeout'] == planner.p.lost_timeout
-    planner.set_speed_limit(3.0)
-    e = core.effective_control(planner.p)
+    assert planner.set_speed_limit(2.0) == 2.0
+
+
+def test_control_scales_with_current_speed_not_with_limit(planner):
+    """前方注視点・見失い判定・コーン回避の倍率は, 速度上限ではなく現在の車速で決まる."""
+    for lim in (1.5, 3.0):
+        planner.set_speed_limit(lim)
+        e = core.effective_control(planner.p, 1.5)           # 基準の車速: 補正なし (上限に関係しない)
+        assert e['scale'] == 1.0 and e['lookahead_min'] == planner.p.lookahead_min and e['lost_timeout'] == planner.p.lost_timeout
+    e = core.effective_control(planner.p, 3.0)
     assert e['scale'] == pytest.approx(2.0)
-    assert e['lookahead_min'] == pytest.approx(2.0 * planner.p.lookahead_min)  # 注視点は上限に比例
+    assert e['lookahead_min'] == pytest.approx(2.0 * planner.p.lookahead_min)  # 注視点は車速に比例
     assert e['lookahead_max'] == pytest.approx(2.0 * planner.p.lookahead_max)
-    assert e['lost_timeout'] == pytest.approx(0.5 * planner.p.lost_timeout)    # 見失い判定は上限に反比例
-    planner.set_speed_limit(0.75)
-    assert core.effective_control(planner.p)['scale'] == pytest.approx(0.5)    # 0.5〜2.0 に丸める
-    assert core.effective_control(planner.p)['lost_timeout'] == planner.p.lost_timeout  # 上限が低くても短くしない
+    assert e['lost_timeout'] == pytest.approx(0.5 * planner.p.lost_timeout)    # 見失い判定は車速に反比例
+    e = core.effective_control(planner.p, 0.0)
+    assert e['scale'] == pytest.approx(0.5)                                     # 0.5〜2.0 に丸める
+    assert e['lost_timeout'] == planner.p.lost_timeout                          # 遅いときは短くしない
+    assert core.effective_control(planner.p, 99.0)['scale'] == pytest.approx(2.0)
 
 
 def test_auto_scale_can_be_disabled(planner):
     planner.p.auto_scale = False
-    planner.set_speed_limit(3.0)
-    assert core.effective_control(planner.p)['scale'] == 1.0
+    assert core.effective_control(planner.p, 3.0)['scale'] == 1.0
 
 
-def test_lookahead_follows_speed_limit(planner):
-    """同じ走行状態でも上限が高いほど注視点が遠くなる (status の lookahead = [tx, ty])."""
+def test_lookahead_follows_current_speed(planner):
+    """同じ速度上限でも, 今の車速が速いほど注視点が遠い (status の lookahead = [tx, ty])."""
     lines = make_lines(offset=0.0, kappa=0.0)
     far = {}
-    for lim in (1.5, 3.0):
+    for v in (0.75, 1.5, 3.0):
         pl = core.SixLanePlanner(core.LanePolicyNet.load(POLICY), core.SixLaneParams())
-        pl.set_speed_limit(lim)
+        pl.set_speed_limit(3.0)                              # 上限は同じ 3.0
         for _ in range(30):
-            st = pl.step(1 / 15, lines, lim)  # 上限いっぱいで走っている
-        far[lim] = st['lookahead'][0]
-    assert far[3.0] == pytest.approx(2 * far[1.5], rel=0.05)
+            st = pl.step(1 / 15, lines, v)
+        far[v] = st['lookahead'][0]
+    assert far[0.75] < far[1.5] < far[3.0]
+    assert far[3.0] == pytest.approx(4.5, rel=0.05)         # clamp(3.0 * 1.5 s, 4.0, 7.0)
 
 
 def test_nn_decision_is_independent_of_speed_limit():
@@ -239,9 +245,9 @@ def test_nn_decision_is_independent_of_speed_limit():
 
 def test_status_reports_speed_limit(planner):
     planner.set_speed_limit(2.0)
-    st = planner.step(1 / 15, make_lines(), 1.0)
-    assert st['speed_limit'] == 2.0 and st['speed_scale'] == pytest.approx(2.0 / 1.5)
-    assert any('速度上限 2.0 m/s' in line for line in core.explain_ja(st, planner.p))
+    st = planner.step(1 / 15, make_lines(), 3.0)
+    assert st['speed_limit'] == 2.0 and st['speed_scale'] == pytest.approx(2.0)   # 倍率は現在の車速 3.0 / 基準 1.5
+    assert any('現在の車速に合わせて自動補正' in line and '速度上限 2.0 m/s' in line for line in core.explain_ja(st, planner.p))
 
 
 def test_reactive_avoider_scales_with_speed_limit():

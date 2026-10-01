@@ -44,18 +44,20 @@
 | シミュレータ | 「自動運転」タブの **速度上限** スライダー / 1.0・1.5・2.0・3.0 ボタン (WASD・自動運転の最高速度も同じ値になる. ROS 接続中は ROS 側の上限も同時に変わる) |
 | 設定ファイル | `config/six_lane_params.yaml` の `speed_limit` |
 
-上限を変えると、距離で決まる量が基準 (`v_ref` = 1.5 m/s で調整した値) との比 `scale = speed_limit / v_ref` (0.5〜2.0 に丸め) で**自動補正**されます
-(`six_lane_core.effective_control`。JS は `six_lane_planner.js` の `effectiveControl`。`auto_scale: false` で無効):
+距離で決まる量は、**速度上限ではなく現在の車速**と基準 (`v_ref` = 1.5 m/s で調整した値) との比 `scale = 現在の車速 / v_ref` (0.5〜2.0 に丸め) で、
+**毎周期自動補正**されます。上限を 3.0 m/s にしても、発進直後やカーブで遅いときは短い注視点のままで、速くなるにつれて遠くを見ます。
+現在の車速は車輪速 + IMU の推定値 (下記) を使います
+(`six_lane_core.effective_control(p, v)`。JS は `six_lane_planner.js` の `effectiveControl(p, v)`。`auto_scale: false` で無効):
 
 | 量 | 補正 | 理由 |
 |---|---|---|
-| 前方注視点 `lookahead_min` / `lookahead_max` (Pure Pursuit) | × scale | 速いほど遠くを見ないと蛇行する (上限 3.0 m/s なら 4.0〜7.0 m) |
-| 白線を見失ってから停止へ移る `lost_timeout` | ÷ max(scale, 1) | 見失ったまま走る距離を一定に近づける (上限 3.0 m/s なら 0.8 → 0.4 s) |
-| コーン回避の減速開始距離・先読み距離 (`ReactiveAvoider`) | × scale | 速いほど手前から避け始める (減速開始 1.8 → 3.6 m) |
+| 前方注視点 `lookahead_min` / `lookahead_max` (Pure Pursuit) | × scale | 速いほど遠くを見ないと蛇行する (車速 3.0 m/s なら 4.0〜7.0 m) |
+| 白線を見失ってから停止へ移る `lost_timeout` | ÷ max(scale, 1) | 見失ったまま走る距離を一定に近づける (車速 3.0 m/s なら 0.8 → 0.4 s) |
+| コーン回避の減速開始距離・先読み距離 (`ReactiveAvoider`) | × scale | 速いほど手前から避け始める (車速 3.0 m/s なら減速開始 1.8 → 3.6 m) |
 
-**変えないもの**: NN の判断 (速度入力は `v / speed_limit` の相対速度なので上限を変えても同じ判断になる), 曲率を測る距離 3/6/9.5 m
+**変えないもの**: NN の判断 (速度入力は `v / speed_limit` の相対速度なので上限を変えても同じ判断になる。補正に使う現在の車速とは別), 曲率を測る距離 3/6/9.5 m
 (カメラの視野で決まる), 横加速度上限 `a_lat_max` (車の限界), 加減速 `accel`/`decel` (モーターの加減速制限), 旋回上限 `max_angular_speed`
-(注視点が遠くなる分 `v × 曲率` は増えない), 赤信号停止 (計画減速度 0.6 m/s² で `sqrt(2·decel·(d−stop))` に従うので上限が高くても停止距離は守られる。
+(注視点が遠くなる分 `v × 曲率` は増えない), 赤信号停止 (計画減速度 0.6 m/s² で `sqrt(2·decel·(d−stop))` に従うので上限が高くても停止距離は守られる。補正の対象外。
 ただし上限 3.0 m/s では停止距離が約 7.5 m になるので, 赤信号を見つけてから止まるまでに 7.5 m 以上必要).
 
 ## 観測の遅れ補償と車速推定

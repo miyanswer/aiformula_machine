@@ -91,10 +91,8 @@ def build():
     case = {'tau': 1.0, 'scale': 0.95, 'steps': steps}
     case['expected'] = run_estimator(case)
     cases['estimator'].append(case)
-    for lim in (0.3, 0.75, 1.5, 2.2, 3.0):
-        p = core.SixLaneParams()
-        p.v_max = lim
-        cases['effective'].append({'v_max': lim, 'expected': core.effective_control(p)})
+    for v in (0.0, 0.3, 0.75, 1.5, 2.2, 3.0, 5.0):
+        cases['effective'].append({'v': v, 'expected': core.effective_control(core.SixLaneParams(), v)})
     return cases
 
 

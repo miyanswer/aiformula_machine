@@ -45,7 +45,7 @@ class TrafficLightDistanceEstimator:
         vertical_fov_deg: float = 0.0,
         distance_coeff: float = 0.0,
         min_occupancy: float = 1e-4,
-        max_valid_distance: float = 50.0,
+        max_valid_distance: float = 25.0,
         smoothing_alpha: float = 0.7,
     ) -> None:
         """

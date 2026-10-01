@@ -127,7 +127,7 @@ class TrafficLightDistanceNode(Node):
         self.declare_parameter('vertical_fov_deg', 0.0)         # 焦点距離不明時の垂直画角 [deg]
         self.declare_parameter('distance_coeff', 0.0)           # >0 で係数 k を直接指定
         self.declare_parameter('min_occupancy', 1.0e-4)         # ゼロ除算防止の最小占有率
-        self.declare_parameter('max_valid_distance', 50.0)      # 有効距離上限 [m]
+        self.declare_parameter('max_valid_distance', 25.0)      # 有効距離上限 [m]
         self.declare_parameter('smoothing_alpha', 0.7)          # EMA 係数 (1.0で無効)
 
     def _load_parameters(self):

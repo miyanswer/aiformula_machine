@@ -28,10 +28,11 @@ six_lane_planner:
     # --- 速度上限 (手動で切り替える唯一の値) ---
     # launch 引数 speed_limit:= / bash bash/2_six_lane.sh 2.0 / ros2 param set /six_lane_planner speed_limit 2.0 /
     # ros2 topic pub --once <speed_limit_topic> std_msgs/msg/Float64 "{data: 2.0}" で変えられる (0.3〜3.0 m/s に丸める).
-    # NN の速度入力は v / speed_limit (相対速度) なので判断は変わらない. 下の v_ref (= 注視点などを調整した上限) との比で
-    # 前方注視点 (lookahead_min/max)・コーン回避の減速開始距離・白線ロスト判定が自動で補正される (auto_scale: false で無効).
+    # NN の速度入力は v / speed_limit (相対速度) なので判断は変わらない. 前方注視点 (lookahead_min/max)・コーン回避の
+    # 減速開始距離・白線ロスト判定は, 速度上限ではなく「現在の車速」と下の v_ref (= 調整した基準の車速) との比で
+    # 毎周期自動で補正される (auto_scale: false で無効).
     speed_limit: 1.5            # [m/s]
-    v_ref: 1.5                  # [m/s] lookahead_* などを調整した基準の速度上限
+    v_ref: 1.5                  # [m/s] lookahead_* などを調整した基準の車速 (現在の車速 = v_ref のとき補正なし)
     auto_scale: true
     hold_distance: 0.45         # [m] 次の白線フレームを待つ間に直前の指令を維持する距離 (時間 = 距離 / 車速, 最大 0.3 s)
     latency_max: 0.5            # [s] 検出時刻からこれ以上遅れた白線・コーンは捨てる (これ未満は遅れの間に進んだ分を補償)

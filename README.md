@@ -129,7 +129,7 @@ bash bash/1_bringup_hardware.sh
 
 #### B. 6レーン走行を起動（A の後に別端末で）
 白線検出 (YOLOP)・コーン検出・6レーン走行・信号機検知を起動します。車両をコース上に置いて起動すると、白線とコーンを見ながら走ります (ゲームパッドが常に優先)。
-**速度上限は引数で切り替えます**（既定 1.5 m/s、0.3〜3.0）。前方注視点などは上限に合わせて自動で補正されます（[詳細](src/oit_navigation/oit_navigation/6lane/README.md)）。
+**速度上限は引数で切り替えます**（既定 1.5 m/s、0.3〜3.0）。前方注視点などは現在の車速に合わせて自動で補正されます（[詳細](src/oit_navigation/oit_navigation/6lane/README.md)）。
 ```bash
 bash bash/2_six_lane.sh 2.0        # 速度上限 2.0 m/s で起動 (make six-lane SPEED_LIMIT=2.0 でも同じ)
 # 走行中に変えるとき

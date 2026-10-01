@@ -67,8 +67,8 @@ class ReactiveAvoider:
 
     def step(self, now: float, dt: float, v_cmd: float, omega_cmd: float,
              cones: Sequence[Cone], scale: float = 1.0) -> Tuple[float, float]:
-        """scale: 速度上限の自動補正倍率 (six_lane_core.effective_control()['react_scale']). 減速を始める距離と
-        回避を計算する前方距離を, 速度上限に比例して遠くする (上限が高いほど手前から避け始める)."""
+        """scale: 現在の車速に応じた自動補正倍率 (six_lane_core.effective_control(p, v)['react_scale']). 減速を始める距離と
+        回避を計算する前方距離を, 車速に比例して遠くする (速いほど手前から避け始める)."""
         if not self.enabled:
             self.active = False
             return v_cmd, omega_cmd

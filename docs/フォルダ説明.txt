@@ -110,7 +110,7 @@
 ■ src/oit_navigation/oit_navigation/6lane/（6レーン走行）
 役割：このシステムの唯一の走行方式。白線から仮想6レーンを作り、ニューラルネットがアウト・イン・アウトになるレーンを選んで走る。
 中身：
-・six_lane_core.py … ROS に依存しないコア。判断、制御、速度上限の自動補正、遅れ補償、車速推定
+・six_lane_core.py … ROS に依存しないコア。判断、制御、現在の車速に応じた自動補正、遅れ補償、車速推定
 ・six_lane_planner_node.py … ROS ノード
 ・six_lane_policy.json / train_policy.py … ニューラルネットの重みと学習スクリプト
 ・config/six_lane_params.yaml … パラメータ（speed_limit など）

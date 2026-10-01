@@ -40,6 +40,4 @@ def test_estimator_matches_golden():
 
 def test_effective_control_matches_golden():
     for case in GOLDEN['effective']:
-        p = g.core.SixLaneParams()
-        p.v_max = case['v_max']
-        assert _same(g.core.effective_control(p), case['expected'])
+        assert _same(g.core.effective_control(g.core.SixLaneParams(), case['v']), case['expected'])

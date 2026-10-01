@@ -12,7 +12,7 @@
     image_compressor_node  観客向け aiformula_pilot 圧縮映像 (image_compressor:=false で無効. simulator:=true では起動しない)
 
 速度上限 (手動切替): speed_limit:=<m/s> (既定 1.5). 走行中は /aiformula_control/six_lane_planner/speed_limit (Float64)
-前方注視点などは上限に合わせて自動補正される (six_lane_core.effective_control). enable_controller:=false なら認識だけ起動する.
+前方注視点などは現在の車速に合わせて自動補正される (six_lane_core.effective_control). enable_controller:=false なら認識だけ起動する.
 
 例 (実機):
     ros2 launch oit_navigation six_lane.launch.py use_device:=0 use_tensorrt:=true

@@ -19,7 +19,8 @@ six_lane_planner_node.py - 6レーン動的選択走行ノード (地図なし�
 
 速度上限 (手動切替): ROS パラメータ speed_limit (launch 引数 speed_limit:=), 走行中は
     /aiformula_control/six_lane_planner/speed_limit (std_msgs/Float64) か ros2 param set で変えられる.
-    前方注視点・コーン回避の減速開始距離・白線ロスト判定は上限に合わせて自動補正する (six_lane_core.effective_control).
+    前方注視点・コーン回避の減速開始距離・白線ロスト判定は, 速度上限ではなく現在の車速に合わせて毎周期自動補正する
+    (six_lane_core.effective_control).
 観測の遅れ補償: 白線・コーンは検出時刻 (header.stamp) の base_link で測られているので, 遅れの間に進んだ分
     (車速・ヨーレート) だけ今の base_link に変換してから使う (six_lane_core.compensate_lines / compensate_points).
     次の白線フレームが来ない間の指令維持は hold_distance [m] / 車速 [s] まで (速いほど短い).
@@ -244,10 +245,7 @@ class SixLanePlannerNode(Node):
         old = self.planner.p.v_max
         new = self.planner.set_speed_limit(v)
         if abs(new - old) > 1e-6:
-            eff = effective_control(self.planner.p)
-            self.get_logger().info(
-                f'速度上限 {old:.2f} -> {new:.2f} m/s (補正倍率 x{eff["scale"]:.2f}: 前方注視点 '
-                f'{eff["lookahead_min"]:.1f}〜{eff["lookahead_max"]:.1f} m)')
+            self.get_logger().info(f'速度上限 {old:.2f} -> {new:.2f} m/s (前方注視点などは現在の車速に合わせて自動補正)')
 
     def _now(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
@@ -345,7 +343,7 @@ class SixLanePlannerNode(Node):
     def _publish_cmd(self, now: float, raw, cones):
         dt = 0.0 if self._last_cmd_t is None else min(now - self._last_cmd_t, 0.5)
         self._last_cmd_t = now
-        v, omega = self.avoider.step(now, dt, raw[0], raw[1], cones, effective_control(self.planner.p)['react_scale'])
+        v, omega = self.avoider.step(now, dt, raw[0], raw[1], cones, effective_control(self.planner.p, self.v)['react_scale'])
         v, omega = self.tl_stop.apply(now, dt, self.v, v, omega)
         tw = Twist()
         tw.linear.x = float(v)

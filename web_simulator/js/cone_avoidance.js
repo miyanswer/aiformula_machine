@@ -62,7 +62,7 @@ export function clusterConeDetections(cones) {
  * @param {number} prevBias 前回返したbias (レート制限のため)
  * @param {number} dt
  * @param {number} maxRate [rad/s^2] biasの変化率上限
- * @param {number} scale 速度上限の自動補正倍率 (減速を始める距離・回避の前方距離に掛ける. 実機 ReactiveAvoider.step の scale)
+ * @param {number} scale 現在の車速に応じた自動補正倍率 (減速を始める距離・回避の前方距離に掛ける. 実機 ReactiveAvoider.step の scale)
  */
 export function reactiveAvoid(cmd, detections, prevBias, dt, maxRate = 4.0, scale = 1.0) {
   const now = performance.now() / 1000;

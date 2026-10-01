@@ -1203,7 +1203,7 @@ ros2Btn.addEventListener('click', () => setDetectorMode('ros2'));
 
 // ---------------------------------------------------------------------------
 // 速度上限 (手動で切り替える唯一の値): WASD・自動運転の最高速度 (physics) と 6レーン走行の vMax を同時に変える。
-// 前方注視点・コーン回避の減速開始距離・白線ロスト判定は上限に合わせて自動補正される (six_lane_planner.js effectiveControl)。
+// 前方注視点・コーン回避の減速開始距離・白線ロスト判定は、上限ではなく現在の車速に合わせて毎周期自動補正される (six_lane_planner.js effectiveControl)。
 // ROS に接続しているときは実機/ROS 側 six_lane_planner の speed_limit トピックにも送る。
 // ---------------------------------------------------------------------------
 const speedLimitSlider = document.getElementById('speed-limit-slider');
@@ -1212,14 +1212,21 @@ const speedLimitEffEl = document.getElementById('speed-limit-eff');
 let speedLimit = MAX_SPEED;
 try { const saved = parseFloat(localStorage.getItem('aiformula_speed_limit')); if (Number.isFinite(saved)) speedLimit = clampSpeedLimit(saved); } catch (e) { /* ignore */ }
 
+// 補正の表示は現在の車速で決まる (基準 vRef との比)。速度上限を変えたときと、走行中に定期的に更新する
+function updateSpeedLimitEff() {
+  const v = speedEstimator.v;
+  const eff = effectiveControl(sixLanePlanner ? sixLanePlanner.p : { ...SIX_LANE_PARAMS, vMax: speedLimit }, v);
+  speedLimitEffEl.textContent = `現在 ${Math.max(v, 0).toFixed(1)} m/s → 自動補正 ×${eff.scale.toFixed(2)}: 前方注視点 ${eff.lookaheadMin.toFixed(1)}〜${eff.lookaheadMax.toFixed(1)} m / 白線ロスト判定 ${eff.lostTimeout.toFixed(2)} s / コーン回避の減速開始 ${(1.8 * eff.reactScale).toFixed(1)} m`;
+}
+setInterval(updateSpeedLimitEff, 500);
+
 function setSpeedLimit(v, { publish = true } = {}) {
   speedLimit = clampSpeedLimit(v);
   setMaxSpeed(speedLimit);
   if (sixLanePlanner) sixLanePlanner.setSpeedLimit(speedLimit);
   speedLimitSlider.value = String(speedLimit);
   speedLimitValEl.textContent = `${speedLimit.toFixed(1)} m/s`;
-  const eff = effectiveControl({ ...SIX_LANE_PARAMS, vMax: speedLimit });
-  speedLimitEffEl.textContent = `自動補正 ×${eff.scale.toFixed(2)}: 前方注視点 ${eff.lookaheadMin.toFixed(1)}〜${eff.lookaheadMax.toFixed(1)} m / 白線ロスト判定 ${eff.lostTimeout.toFixed(2)} s / コーン回避の減速開始 ${(1.8 * eff.reactScale).toFixed(1)} m`;
+  updateSpeedLimitEff();
   try { localStorage.setItem('aiformula_speed_limit', String(speedLimit)); } catch (e) { /* ignore */ }
   if (publish && speedLimitTopic) speedLimitTopic.publish(new ROSLIB.Message({ data: speedLimit }));
 }
@@ -1641,7 +1648,7 @@ function stepSixLane(lines, now, age = 0) {
     lineTracker.seedLanePosition(st.F);
     if (sixLaneReseedTopic) sixLaneReseedTopic.publish(new ROSLIB.Message({ data: st.F }));
   }
-  const avoided = reactiveAvoid({ v: st.v, omega: st.omega }, cones, prevReactiveBias, dt, 4.0, effectiveControl(pl).reactScale);
+  const avoided = reactiveAvoid({ v: st.v, omega: st.omega }, cones, prevReactiveBias, dt, 4.0, effectiveControl(pl, vMeas).reactScale);
   prevReactiveBias = avoided.bias;
   if (!fastForwarding) avoidanceDebugEl.textContent = avoided.debug;
   const cmd = applyTrafficLightStop(now, dt, vMeas, { v: avoided.v, omega: avoided.omega });

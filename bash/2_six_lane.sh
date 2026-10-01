@@ -10,7 +10,7 @@
 #     SPEED_LIMIT=2.0 bash bash/2_six_lane.sh
 #   走行中に変えるとき (別端末):
 #     ros2 topic pub --once /aiformula_control/six_lane_planner/speed_limit std_msgs/msg/Float64 "{data: 2.0}"
-#   前方注視点などは速度上限に合わせて自動で補正されます (src/oit_navigation/oit_navigation/6lane/README.md)。
+#   前方注視点などは現在の車速に合わせて自動で補正されます (src/oit_navigation/oit_navigation/6lane/README.md)。
 #
 # その他の launch 引数はそのまま渡せます:
 #     bash bash/2_six_lane.sh 1.5 rviz:=true use_tensorrt:=false

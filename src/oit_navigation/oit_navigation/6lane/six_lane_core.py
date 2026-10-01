@@ -56,9 +56,10 @@ class SixLaneParams:
     # --- 判断 (教師ルール・特徴量スケール. 学習時と推論時で共通) ---
     # v_max = 速度上限 [m/s]. 手動で切り替える唯一の値 (set_speed_limit / ROS の speed_limit / シミュレータの HUD).
     # NN の速度入力は v / v_max (上限に対する相対速度) なので, 上限を変えても NN の判断は変わらない.
-    # 距離で決まる量 (前方注視点など) は下の v_ref を基準に上限へ比例して自動補正する (speed_scale / effective_control).
+    # 距離で決まる量 (前方注視点など) は, 上限ではなく「現在の車速」を v_ref (調整した基準の速度) と比べて
+    # 比例して自動補正する (speed_scale / effective_control). 上限が高くても, 加速中・減速中は今の速さに合った値になる.
     v_max: float = 1.5
-    v_ref: float = 1.5  # 注視点などを調整した基準の速度上限 [m/s] (v_max == v_ref のとき補正なし)
+    v_ref: float = 1.5  # 注視点などを調整した基準の車速 [m/s] (現在の車速 == v_ref のとき補正なし)
     auto_scale: bool = True  # False で自動補正を切る (注視点などは基準値のまま)
     hold_distance: float = 0.45  # [m] 次の白線フレームを待つ間 直前の指令を維持する距離 (時間にすると hold_distance / 車速)
     latency_max: float = 0.5  # [s] 白線・コーン観測の遅れ (検出時刻からの経過) がこれ以上なら補正せず古い観測として捨てる
@@ -231,27 +232,27 @@ def clamp(v, lo, hi):
 
 
 # ---------------------------------------------------------------------------
-# 速度上限に応じた自動補正
+# 現在の車速に応じた自動補正
 # ---------------------------------------------------------------------------
 def clamp_speed_limit(v: float) -> float:
     return clamp(float(v), SPEED_LIMIT_MIN, SPEED_LIMIT_MAX)
 
 
-def speed_scale(p: SixLaneParams) -> float:
-    """速度上限 / 基準速度 (0.5〜2.0 に丸める). 自動補正が無効なら 1."""
+def speed_scale(p: SixLaneParams, v: float) -> float:
+    """現在の車速 v / 基準の車速 v_ref (0.5〜2.0 に丸める). 自動補正が無効なら 1."""
     if not p.auto_scale:
         return 1.0
-    return clamp(p.v_max / p.v_ref, 0.5, 2.0)
+    return clamp(max(v, 0.0) / p.v_ref, 0.5, 2.0)
 
 
-def effective_control(p: SixLaneParams) -> Dict[str, float]:
-    """速度上限に合わせて自動補正した制御量.
-        前方注視点 lookahead_min / lookahead_max : 上限に比例 (上限 3.0 なら基準の 2 倍先を見る)
-        lost_timeout                              : 上限に反比例 (白線を見失ってから止まるまでに走る距離を一定に近づける)
+def effective_control(p: SixLaneParams, v: float) -> Dict[str, float]:
+    """現在の車速 v に合わせて自動補正した制御量 (毎周期, 速度上限ではなく今の速さで決まる).
+        前方注視点 lookahead_min / lookahead_max : 車速に比例 (車速 3.0 m/s なら基準の 2 倍先を見る)
+        lost_timeout                              : 車速に反比例 (白線を見失ってから止まるまでに走る距離を一定に近づける)
         react_scale                               : コーン回避の減速開始距離・先読み距離の倍率 (cone_avoidance.ReactiveAvoider)
     変えないもの: 曲率を測る距離 stations (カメラの視野で決まる), 横加速度 a_lat_max (車の限界),
     加減速 accel / decel (モーターの加減速制限), 旋回上限 max_angular_speed (注視点が遠くなる分 v*kappa は増えない)."""
-    k = speed_scale(p)
+    k = speed_scale(p, v)
     return {
         'scale': k,
         'lookahead_min': p.lookahead_min * k,
@@ -488,7 +489,7 @@ class SixLanePlanner:
         """1制御周期. lines=None は観測なし (タイムアウト監視用). 戻り値は指令とデバッグ情報.
         reanchored: 白線の追跡側が根拠 (3本揃い・二重線) をもって役割を付け直したフレーム. 横位置の跳びを受け入れる."""
         p, s = self.p, self.s
-        eff = effective_control(p)
+        eff = effective_control(p, v_meas)
         F_meas = vehicle_lane_coordinate(lines, p.x_pos) if lines else None
         if F_meas is None:
             s.lost_time += dt
@@ -644,7 +645,7 @@ def explain_ja(st: Dict, p: SixLaneParams) -> List[str]:
     """思考結果を日本語の説明文 (行のリスト) にする."""
     if not st or st.get('phase') == LOST or st.get('current_lane') is None:
         t = (st or {}).get('lost_time', 0.0) or 0.0
-        lt = effective_control(p)['lost_timeout']
+        lt = st.get('lost_timeout', p.lost_timeout)
         return [f'白線を見失っています ({t:.1f}s)', '→ 減速して停止します' if t >= lt else '→ 直前の指令を維持']
     sign = st.get('sign', 0)
     d = '左' if sign > 0 else '右' if sign < 0 else ''
@@ -653,7 +654,7 @@ def explain_ja(st: Dict, p: SixLaneParams) -> List[str]:
     lines = [f"速度 {st['v']:.2f} m/s ／ 曲率 近{k(ks[0])} 中{k(ks[1])} 遠{k(ks[2])} [1/m]"]
     if st.get('lookahead_range'):
         lr = st['lookahead_range']
-        lines.append(f"速度上限 {st['speed_limit']:.1f} m/s (×{st['speed_scale']:.2f}) → 前方注視点 {lr[0]:.1f}〜{lr[1]:.1f} m に自動補正")
+        lines.append(f"現在の車速に合わせて自動補正 (×{st['speed_scale']:.2f}, 速度上限 {st['speed_limit']:.1f} m/s) → 前方注視点 {lr[0]:.1f}〜{lr[1]:.1f} m")
     phase, tt = st['phase'], st['teacher_target']
     if phase == STRAIGHT:
         why = f'前方は直線 → 外側のレーン{p.home_lane}で次のカーブに備える'
