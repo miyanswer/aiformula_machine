@@ -103,6 +103,8 @@ ROS_SETUP := source /opt/ros/humble/setup.bash && if [ -f /opt/extra_ros_ws/inst
 DEVICE ?= $(if $(filter 1,$(ENABLE_CUDA)),cuda,cpu)
 VIDEO ?=
 SPEED_LIMIT ?= 1.5
+# Jetson (L4T) では YOLOP を TensorRT で動かす (初回はエンジンのビルドに数分かかる). 他の環境は PyTorch. USE_TENSORRT=true|false で上書き可
+USE_TENSORRT ?= $(if $(IS_JETSON),true,false)
 PKG ?=
 
 .PHONY: help up down stop restart build rebuild ps logs bash shell root-bash root \
@@ -151,7 +153,7 @@ help:
 	@echo "  make rosbridge        Start rosbridge WebSocket server on port 9090"
 	@echo "  make open-sim (sim)   Open 3D Web Simulator in browser (http://localhost:8000)"
 	@echo "  make sim-nav          Run lane_detector + six_lane_planner against the"
-	@echo "                        Web Simulator (its 'ROS2連携' mode, needs 'make rosbridge')  "
+	@echo "                        Web Simulator (its 'ROS2連携' mode, needs 'make rosbridge'). SPEED_LIMIT=1.5 USE_TENSORRT=true (default on Jetson)  "
 	@echo "  make open-rviz (gui)  Open RViz2 Web Display in browser (http://localhost:8080)"
 	@echo "  make rqt-graph        Open rqt_graph in browser GUI (http://localhost:8080)"
 	@echo "  make rqt              Open full rqt dashboard in browser GUI (http://localhost:8080)"
@@ -340,6 +342,7 @@ sim-nav:
 		 ros2 launch oit_navigation six_lane.launch.py \
 		 simulator:=true \
 		 speed_limit:=$(SPEED_LIMIT) \
+		 use_tensorrt:=$(USE_TENSORRT) \
 		 use_device:=$(DEVICE)"
 
 # ------------------------------------------------------------------------------
